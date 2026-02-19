@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "ats-sqt"
+name = "sqt"
 version = "0.1.0"

@@ -63,7 +63,7 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 │  │  • Strictdoc       │         │  • Parallel Execution    │            │
 │  │  • Validation      │         │  • Progress Tracking     │            │
 │  └────────────────────┘         └────────────┬─────────────┘            │
-│                                              │                          │
+│                                              ▼                          │
 │  ┌───────────────────────────────────────────┼──────────────────────┐   │
 │  │                    Tool Adapters          │                      │   │
 │  ├─────────────┬──────────────┬─────────────┬┴───────┬──────────────┤   │
@@ -101,11 +101,11 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    ML-L Specific Part (Klepsydra)                        │
-│                       [Klepsydra Responsibility]                         │
+│                    ML-L Specific Part (Klepsydra)                       │
+│                       [Klepsydra Responsibility]                        │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  • Klepsydra AI specific test suite                                      │
+│  • Klepsydra AI specific test suite                                     │
 │  • Performance Benchmark Framework (PBF)                                │
 │  • Hardware-specific validation (GR740, GR765, RISC-V)                  │
 │  • Binary generation for target hardware                                │
@@ -116,7 +116,7 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│              Hardware/Emulation Layer                                   │
+│                        Hardware/Emulation Layer                         │
 │                                                                         │
 │  ┌──────────────┬──────────────┬──────────────┬─────────────────────┐   │
 │  │ QEMU         │ TSIM         │ GRMON        │ Physical Hardware   │   │
@@ -1068,7 +1068,7 @@ SQT Generic                     ML-L Specific
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. Requirements Definition (Strictdoc)                          │
-│                                                                  │
+│                                                                 │
 │    [REQUIREMENT]                                                │
 │    UID: REQ-ML-L-001                                            │
 │    STATEMENT: Support multi-core inference                      │
@@ -1078,9 +1078,9 @@ SQT Generic                     ML-L Specific
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 2. Parse Requirements                                           │
-│                                                                  │
+│                                                                 │
 │    SQT reads .sdoc file → Extracts requirements → Builds DB     │
-│                                                                  │
+│                                                                 │
 │    struct Requirement {                                         │
 │      uid: "REQ-ML-L-001",                                       │
 │      statement: "Support multi-core...",                        │
@@ -1091,10 +1091,10 @@ SQT Generic                     ML-L Specific
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. Map to Test Cases                                            │
-│                                                                  │
+│                                                                 │
 │    Option A (Convention):                                       │
 │      REQ-ML-L-001 → tests/unit/test_multicore.cpp               │
-│                                                                  │
+│                                                                 │
 │    Option B (Explicit):                                         │
 │      test_mappings.yaml:                                        │
 │        - req: REQ-ML-L-001                                      │
@@ -1104,57 +1104,57 @@ SQT Generic                     ML-L Specific
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 4. Test Discovery                                               │
-│                                                                  │
+│                                                                 │
 │    • Scan test directories                                      │
 │    • Find matching test files                                   │
 │    • Parse test metadata (GoogleTest fixtures)                  │
 │    • Build test execution plan                                  │
-│                                                                  │
+│                                                                 │
 │    Found: 150 unit tests, 45 integration tests                  │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 5. Test Execution                                               │
-│                                                                  │
+│                                                                 │
 │    For each test:                                               │
 │      • Compile test binary                                      │
 │      • Execute test                                             │
 │      • Collect results (pass/fail/skip)                         │
 │      • Collect coverage data                                    │
 │      • Collect execution time                                   │
-│                                                                  │
-│    Unit tests:        ✓ 148 passed, ✗ 2 failed                 │
+│                                                                 │
+│    Unit tests:        ✓ 148 passed, ✗ 2 failed                  │
 │    Coverage:          87.5% line coverage                       │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 6. Hardware Tests (via REST API)                                │
-│                                                                  │
+│                                                                 │
 │    For requirements needing hardware validation:                │
 │      • POST /api/v1/ml-l/validate                               │
 │      • Poll GET /api/v1/jobs/{id}                               │
 │      • Retrieve GET /api/v1/jobs/{id}/results                   │
-│                                                                  │
-│    Hardware test:     ✓ Passed (latency: 87ms < 100ms)         │
+│                                                                 │
+│    Hardware test:     ✓ Passed (latency: 87ms < 100ms)          │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 7. Traceability Matrix Generation                               │
-│                                                                  │
-│    REQ-ML-L-001 → test_multicore.cpp → ✓ Passed → 100% coverage│
-│    REQ-ML-L-002 → test_onnx.cpp      → ✓ Passed → 95% coverage │
-│    REQ-ML-L-003 → Hardware Test      → ✓ Passed → N/A          │
-│                                                                  │
+│                                                                 │
+│    REQ-ML-L-001 → test_multicore.cpp → ✓ Passed → 100% coverage │
+│    REQ-ML-L-002 → test_onnx.cpp      → ✓ Passed → 95% coverage  │
+│    REQ-ML-L-003 → Hardware Test      → ✓ Passed → N/A           │
+│                                                                 │
 │    All 45 requirements verified: ✓                              │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 8. Report Generation                                            │
-│                                                                  │
+│                                                                 │
 │    Generate ECSS-compliant report:                              │
 │      • Executive summary                                        │
 │      • Requirements traceability                                │
@@ -1162,7 +1162,7 @@ SQT Generic                     ML-L Specific
 │      • Coverage analysis                                        │
 │      • Static analysis results                                  │
 │      • Performance metrics                                      │
-│                                                                  │
+│                                                                 │
 │    Output: validation-report.pdf                                │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -1471,7 +1471,7 @@ impl ReportGenerator {
 [package]
 name = "sqt"
 version = "1.0.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 # CLI Framework
@@ -1633,9 +1633,9 @@ sqt/
 | ID | Decision | Rationale | Alternatives Considered | Status |
 |----|----------|-----------|------------------------|--------|
 | **AD-001** | Use Rust for implementation | Memory safety, performance, modern tooling | Python (slower), C++ (less safe) | ✅ Accepted |
-| **AD-002** | YAML as primary config format | Human-readable, widely supported | JSON (verbose), TOML (less known) | ✅ Accepted |
+| **AD-002** | YAML as primary config format | Human-readable, widely supported | JSON (verbose), TOML (less known) | 🟡 Proposed |
 | **AD-003** | REST API for ML-L interface | Language-agnostic, clear decoupling | gRPC (complex), direct linking (coupling) | ✅ Accepted |
-| **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based | ReqIF (complex), Excel (not traceable) | ✅ Accepted |
+| **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based | ReqIF (complex), Excel (not traceable) | 🟡 Proposed |
 | **AD-005** | Delegate hardware testing to ML-L | Complexity, hardware expertise | Implement in SQT (too complex) | ✅ Accepted |
 | **AD-006** | Use Typst for PDF generation | Modern, fast, programmable | LaTeX (complex), Pandoc (limited) | 🟡 Proposed |
 | **AD-007** | Convention-based req-to-test mapping | Simplicity, maintainability | Only explicit mapping (verbose) | 🟡 Proposed |
@@ -1833,15 +1833,10 @@ sqt/
 4. Strictdoc Documentation: https://strictdoc.readthedocs.io/
 5. RTEMS Quality Delivery Process: https://docs.rtems.org/
 
-### Appendix C: Contact Information
 
-- **Ateleris GmbH**: Simon Felix (simon.felix@ateleris.ch)
-- **Klepsydra Technologies AG**: Miguel Rodriguez, Dr. Mandar Harshe
-- **Project Repository**: TBD
+# Notes
+Strictdoc supports custom grammars / fields -> We could inject our definitions there
 
----
+See https://strictdoc.readthedocs.io/en/stable/?a=SDOC-SRS-21 and https://strictdoc.readthedocs.io/en/stable/?a=SDOC-SSS-62 
 
-**Document Version**: 1.0
-**Last Updated**: 2026-02-13
-**Authors**: Ateleris GmbH (based on Q-SMART project requirements)
-**Status**: Draft - Pending Review
+However, do we really want do provide a set of things that can be done? Or do we want to define that in code?
