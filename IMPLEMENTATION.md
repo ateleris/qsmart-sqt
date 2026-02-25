@@ -227,7 +227,7 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ### Phase 1 — Core Type System
 
-- [ ] **T-010** Define `Target`, `Platform`, `MetricValue`, `MetricCollector` trait
+- [x] **T-010** Define `Target`, `Platform`, `MetricValue`, `MetricCollector` trait
   - `Platform`: `enum Platform { Local, Remote(String) }`
   - `Target`: binary path, `Platform`, optional input, working dir, `timeout: Duration`
     — implement `Default` manually with `timeout: Duration::from_secs(30)` so that
@@ -236,7 +236,7 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
   - `MetricCollector`: `name() -> &str`, `collect(target, config) -> Result<MetricValue>`
   - No implementations yet — types and trait only
 
-- [ ] **T-011** Define `Constraint`, `Op`, `Value` types
+- [x] **T-011** Define `Constraint`, `Op`, `Value` types
   - `Op`: `Lte | Gte | Lt | Gt | Eq | Ne`
   - `Value`: typed wrapper (milliseconds, kilobytes, percent, integer, boolean)
     supporting unit-aware comparisons (e.g., `512KB` vs `524288` bytes)
@@ -244,12 +244,12 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
     `serde_yaml::Value::Null` if not set — this is what the orchestrator passes to
     `collect()` for that collector)
 
-- [ ] **T-012** Implement `ConstraintEvaluator`
+- [x] **T-012** Implement `ConstraintEvaluator`
   - `evaluate(actual: &MetricValue, constraint: &Constraint) -> ConstraintOutcome`
   - `ConstraintOutcome`: `{ passed: bool, actual: f64, expected: f64, message: String }`
   - Unit tests covering all six operators and unit conversions
 
-- [ ] **T-013** Define `TestSpec`, `SpecResult`, `RunResult`
+- [x] **T-013** Define `TestSpec`, `SpecResult`, `RunResult`
   - `TestSpec`: requirement UID, target, vec of constraints
   - `SpecResult`: spec + vec of `ConstraintOutcome` + overall pass/fail
   - `RunResult`: vec of `SpecResult` + metadata (timestamp, config version)

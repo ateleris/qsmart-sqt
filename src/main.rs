@@ -4,6 +4,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod config;
+mod constraint;
+mod metrics;
+mod specs;
 
 #[derive(Parser)]
 #[command(name = "sqt", version, about = "Software Qualification Toolkit")]
