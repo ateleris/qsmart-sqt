@@ -14,15 +14,17 @@
 - [2. System Architecture](#2-system-architecture)
 - [3. Configuration Management](#3-configuration-management)
 - [4. Requirements Management](#4-requirements-management)
+  - [4.5 Declarative Test Specifications](#45-declarative-test-specifications)
 - [5. REST API Interface](#5-rest-api-interface)
 - [6. Scope Definition](#6-scope-definition)
 - [7. Requirements to Code Flow](#7-requirements-to-code-flow)
 - [8. Hardware & Emulation Strategy](#8-hardware--emulation-strategy)
 - [9. Report Generation](#9-report-generation)
-- [10. Technology Stack](#10-technology-stack)
-- [11. Key Architectural Decisions](#11-key-architectural-decisions)
-- [12. Open Questions](#12-open-questions)
-- [13. Next Steps](#13-next-steps)
+- [10. Plugin Architecture](#10-plugin-architecture)
+- [11. Technology Stack](#11-technology-stack)
+- [12. Key Architectural Decisions](#12-key-architectural-decisions)
+- [13. Open Questions](#13-open-questions)
+- [14. Next Steps](#14-next-steps)
 
 ---
 
@@ -663,6 +665,137 @@ Generate comprehensive traceability matrix:
 │              │   Job ID: job-12346         │ (1.8MB)     │            │
 └──────────────┴─────────────────────────────┴─────────────┴────────────┘
 ```
+
+### 4.5 Declarative Test Specifications
+
+Rather than mapping requirements to hand-written test code for every case, SQT Generic supports a **declarative test specification** approach: testable traits (metrics/properties) are defined as built-in or plugin-provided capabilities, and requirements directly specify which constraints must hold — no boilerplate test code required.
+
+#### 4.5.1 Concept
+
+Instead of:
+```
+Requirement → Manual test code → Execute → Results
+```
+
+The declarative approach is:
+```
+Requirement + Constraint spec → Auto-executed metric collection → Results
+```
+
+This is similar to property-based testing and contract testing. Strictdoc's custom grammar feature (see Notes section) can be used to embed these specs directly in `.sdoc` files, or they can live in sidecar YAML files alongside requirements.
+
+#### 4.5.2 Sidecar YAML Format (Recommended)
+
+Test specs live in `tests/<req-uid>.test.yaml` alongside the requirements:
+
+```yaml
+# tests/REQ-ML-L-003.test.yaml
+requirement_uid: REQ-ML-L-003
+test_type: performance
+target:
+  binary: ml_l_inference
+  platform: gr740
+  input: datasets/reference_mnist.bin
+
+constraints:
+  - metric: time.execution
+    operator: <=
+    value: 100ms
+
+  - metric: accuracy
+    operator: ">="
+    value: 95%
+
+  - metric: memory.peak_rss
+    operator: <=
+    value: 512KB
+
+  - metric: memory.leaks
+    operator: ==
+    value: 0
+```
+
+The syntax is intentionally uniform: the user specifies `metric`, `operator`, and `value`. Whether the metric is built-in or provided by a plugin makes no difference to the user.
+
+#### 4.5.3 Core Metric Catalogue
+
+The following built-in metrics ship with SQT Generic. Each is implemented as an internal metric collector (same interface as plugins, but compiled in):
+
+**Memory Metrics**
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `memory.peak_rss` | bytes | Peak resident set size |
+| `memory.peak_percent` | % | Peak memory as % of available RAM |
+| `memory.allocations` | count | Number of heap allocations |
+| `memory.leaks` | bytes | Leaked bytes (Valgrind / ASan) |
+
+**Timing Metrics**
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `time.execution` | ms | Total execution time |
+| `time.latency_p50` | ms | 50th percentile latency |
+| `time.latency_p95` | ms | 95th percentile latency |
+| `time.latency_p99` | ms | 99th percentile latency |
+| `time.startup` | ms | Initialization time |
+| `time.deadline_misses` | count | Real-time deadline violations |
+
+**Correctness Metrics**
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `accuracy` | % | ML inference accuracy |
+| `output.matches_reference` | bool | Output matches reference file |
+| `return_code` | int | Process exit code |
+| `error_count` | count | Runtime errors / exceptions |
+
+**Code Quality Metrics**
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `sonar.critical_issues` | count | Critical SonarQube violations |
+| `sonar.blocker_issues` | count | Blocker violations |
+| `sonar.code_smells` | count | Code smell count |
+| `coverage.line_percent` | % | Line coverage |
+| `coverage.branch_percent` | % | Branch coverage |
+| `complexity.cyclomatic_max` | int | Max cyclomatic complexity |
+
+**Hardware Metrics** (collected via Klepsydra API)
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `hardware.temperature` | °C | Operating temperature |
+| `hardware.power_draw` | W | Power consumption |
+| `hardware.cpu_utilization` | % | CPU usage |
+| `hardware.cache_misses` | count | Cache miss rate |
+
+**Phase 1 MVP** targets the 12 most critical metrics: `memory.peak_rss`, `memory.leaks`, `time.execution`, `time.latency_p95`, `accuracy`, `return_code`, `sonar.critical_issues`, `coverage.line_percent`, `hardware.temperature`, `hardware.power_draw`, `hardware.cpu_utilization`, `hardware.cache_misses`.
+
+#### 4.5.4 Execution Flow
+
+```rust
+// Pseudo-code: constraint-driven orchestration
+for req in requirements {
+    if let Some(spec) = load_test_spec(&req.uid) {
+        for constraint in &spec.constraints {
+            // Collector is either built-in or a plugin (same trait)
+            let collector = registry.get(&constraint.metric)?;
+            let actual = collector.collect(&spec.target)?;
+
+            let passed = constraint.evaluate(actual);
+            req.evidence.push(ConstraintResult {
+                metric: constraint.metric.clone(),
+                expected: constraint.value.clone(),
+                actual,
+                passed,
+            });
+        }
+    }
+}
+```
+
+The orchestrator does not need to know whether a collector is built-in or a third-party plugin — the `MetricCollector` trait is identical. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
 
 ---
 
@@ -1463,9 +1596,133 @@ impl ReportGenerator {
 
 ---
 
-## 10. Technology Stack
+## 10. Metric Extensibility
 
-### 10.1 Rust Dependencies
+SQT Generic ships with a set of built-in metric collectors (Section 4.5.3). When a project needs a metric that is not built-in, users extend the tool by adding Rust code directly to the source tree, then recompiling. There is no runtime plugin protocol, no dynamic loading, and no external process bridge.
+
+**Architectural decision: compile-time extensibility only**
+
+| Approach | Chosen? | Reason |
+|---|---|---|
+| Dynamic `.so` / `.dll` | ❌ | No stable Rust ABI; version coupling; crash risk |
+| External process (stdio/JSON) | ❌ | Runtime overhead; IPC complexity; out-of-process failure modes |
+| WebAssembly (WASM) | ❌ | Complex toolchain for what is fundamentally a build-time concern |
+| Embedded scripting (Rhai/Lua) | ❌ | Limited capability for real measurement work |
+| **Compile-time Rust (`inventory` crate)** | ✅ | Zero runtime overhead; full Rust type safety; no central registration file; trivial to add, trivial to test |
+
+The intended extensibility model is: **clone the repository, add a Rust file, compile**. SQT Generic is a qualification tool used by small, technically capable teams. Requiring a recompile is not a constraint — it is a feature, because it means every deployment is a single, auditable, statically-linked binary with a fixed set of collectors.
+
+### 10.1 The `MetricCollector` Trait
+
+Every collector — built-in or user-added — implements the same trait:
+
+```rust
+// src/metrics/mod.rs
+
+pub trait MetricCollector: Send + Sync {
+    /// Unique metric name, e.g. "memory.peak_rss" or "custom.model_drift"
+    fn name(&self) -> &str;
+
+    /// Execute the measurement and return the value + evidence artifacts.
+    /// `config` carries the optional per-constraint YAML block from the test spec;
+    /// collectors that need no configuration may ignore it.
+    fn collect(
+        &self,
+        target: &Target,
+        config: &serde_yaml::Value,
+    ) -> anyhow::Result<MetricValue>;
+}
+```
+
+`MetricValue` carries the measured `f64`, its unit string, and an evidence map (label → file path or inline text) that is written into the QDP report.
+
+### 10.2 Auto-Registration via `inventory`
+
+The [`inventory`](https://crates.io/crates/inventory) crate uses linker sections to collect distributed static items at link time. Each collector file self-registers by calling one macro — no central list is ever maintained.
+
+**Declaration (once, in `src/metrics/mod.rs`):**
+
+```rust
+pub struct CollectorFactory {
+    pub name:   &'static str,
+    pub create: fn() -> Box<dyn MetricCollector>,
+}
+
+inventory::collect!(CollectorFactory);
+```
+
+**Per-collector self-registration (bottom of each collector file):**
+
+```rust
+// src/metrics/builtin/memory_rss.rs
+
+pub struct MemoryPeakRssCollector;
+
+impl MetricCollector for MemoryPeakRssCollector {
+    fn name(&self) -> &str { "memory.peak_rss" }
+    fn collect(&self, target: &Target, _config: &serde_yaml::Value) -> anyhow::Result<MetricValue> {
+        // spawn /usr/bin/time -v, parse "Maximum resident set size"
+    }
+}
+
+inventory::submit! {
+    CollectorFactory { name: "memory.peak_rss", create: || Box::new(MemoryPeakRssCollector) }
+}
+```
+
+**Registry construction (in `src/metrics/registry.rs` — never edited):**
+
+```rust
+pub fn build_registry() -> MetricRegistry {
+    let mut r = MetricRegistry::new();
+    for factory in inventory::iter::<CollectorFactory> {
+        r.register_boxed(factory.name, (factory.create)());
+    }
+    r
+}
+```
+
+Adding a new collector requires no changes to `registry.rs` or any other existing file. The linker picks up the new `inventory::submit!` entry automatically.
+
+### 10.3 How Users Add a Custom Metric
+
+```
+1. Create  src/metrics/custom/my_metric.rs
+2. Implement MetricCollector for your type
+3. Call inventory::submit! { CollectorFactory { ... } } at the bottom
+4. Add `mod my_metric;` to src/metrics/custom/mod.rs
+5. Run cargo build
+```
+
+That is the complete workflow. There is no configuration file to update, no manifest to register, and no process boundary to cross. The resulting binary contains the new collector as a first-class citizen alongside all built-ins.
+
+### 10.4 Project Layout (Metric-Related)
+
+```
+src/
+├── metrics/
+│   ├── mod.rs              ← MetricCollector trait, Target, MetricValue,
+│   │                         CollectorFactory + inventory::collect!
+│   ├── registry.rs         ← build_registry() — never edit this file
+│   ├── builtin/
+│   │   ├── mod.rs
+│   │   ├── return_code.rs
+│   │   ├── execution_time.rs
+│   │   ├── memory_rss.rs
+│   │   ├── memory_leaks.rs
+│   │   ├── coverage_line.rs
+│   │   └── sonar_issues.rs
+│   └── custom/
+│       └── mod.rs          ← users add their collectors here
+```
+
+There is no `sqt-plugin-sdk` crate, no Python package, and no separate plugin binary. The source tree is the SDK.
+
+---
+
+## 11. Technology Stack
+
+### 11.1 Rust Dependencies
 
 ```toml
 [package]
@@ -1531,7 +1788,7 @@ predicates = "3.0"
 tempfile = "3.8"
 ```
 
-### 10.2 External Tools
+### 11.2 External Tools
 
 Tools that SQT orchestrates (must be installed separately):
 
@@ -1546,87 +1803,118 @@ Tools that SQT orchestrates (must be installed separately):
 | **QEMU** | Emulation | `apt install qemu-system` |
 | **Docker** | Containerization | Docker Desktop |
 
-### 10.3 Project Structure
+### 11.3 Project Structure
 
 ```
-sqt/
+sqt/                              # Main SQT Generic application
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
-├── ARCHITECTURE.md          # This document
+├── ARCHITECTURE.md               # This document
 ├── LICENSE
 │
 ├── src/
-│   ├── main.rs              # CLI entry point
-│   ├── lib.rs               # Library root
+│   ├── main.rs                   # CLI entry point
+│   ├── lib.rs                    # Library root
 │   │
-│   ├── config/              # Configuration management
+│   ├── config/                   # Configuration management
 │   │   ├── mod.rs
-│   │   ├── parser.rs        # YAML/JSON parsing
-│   │   ├── validator.rs     # Config validation
-│   │   └── schema.rs        # Config data structures
+│   │   ├── parser.rs             # YAML/JSON parsing
+│   │   ├── validator.rs          # Config validation
+│   │   └── schema.rs             # Config data structures
 │   │
-│   ├── requirements/        # Requirements management
+│   ├── requirements/             # Requirements management
 │   │   ├── mod.rs
-│   │   ├── strictdoc.rs     # Strictdoc parser
-│   │   ├── traceability.rs  # Traceability matrix
-│   │   └── types.rs         # Requirement data structures
+│   │   ├── strictdoc.rs          # Strictdoc parser
+│   │   ├── traceability.rs       # Traceability matrix
+│   │   ├── test_spec.rs          # Declarative test spec parser
+│   │   └── types.rs              # Requirement data structures
 │   │
-│   ├── orchestrator/        # Test orchestration
+│   ├── orchestrator/             # Test orchestration
 │   │   ├── mod.rs
-│   │   ├── runner.rs        # Test execution
-│   │   ├── scheduler.rs     # Job scheduling
-│   │   └── parallel.rs      # Parallel execution
+│   │   ├── runner.rs             # Constraint-driven execution
+│   │   ├── scheduler.rs          # Job scheduling
+│   │   └── parallel.rs           # Parallel execution
 │   │
-│   ├── adapters/            # Tool adapters
+│   ├── plugins/                  # Plugin system (Section 10)
+│   │   ├── mod.rs                # MetricCollector trait + registry
+│   │   ├── external.rs           # ExternalPluginCollector (child process)
+│   │   ├── discovery.rs          # Auto-discovery from plugin_dirs
+│   │   └── builtin/              # Built-in metric collectors
+│   │       ├── memory.rs         # memory.peak_rss, memory.leaks, ...
+│   │       ├── timing.rs         # time.execution, time.latency_*, ...
+│   │       ├── accuracy.rs       # accuracy, output.matches_reference, ...
+│   │       ├── sonarqube.rs      # sonar.* metrics
+│   │       └── coverage.rs       # coverage.line_percent, ...
+│   │
+│   ├── adapters/                 # Tool adapters (local execution)
 │   │   ├── mod.rs
-│   │   ├── sonarqube.rs
 │   │   ├── clang_tidy.rs
 │   │   ├── googletest.rs
 │   │   ├── coverage.rs
 │   │   └── cmake.rs
 │   │
-│   ├── ml_l_api/            # REST API client
+│   ├── ml_l_api/                 # REST API client for Klepsydra
 │   │   ├── mod.rs
-│   │   ├── client.rs        # HTTP client
-│   │   ├── types.rs         # API data structures
-│   │   └── polling.rs       # Job polling logic
+│   │   ├── client.rs             # HTTP client
+│   │   ├── types.rs              # API data structures
+│   │   └── polling.rs            # Job polling with exponential backoff
 │   │
-│   ├── evidence/            # Evidence collection
+│   ├── evidence/                 # Evidence collection
 │   │   ├── mod.rs
-│   │   ├── collector.rs     # Aggregate results
-│   │   └── types.rs         # Evidence data structures
+│   │   ├── collector.rs          # Aggregate results
+│   │   └── types.rs              # Evidence data structures
 │   │
-│   ├── reporting/           # Report generation
+│   ├── reporting/                # Report generation
 │   │   ├── mod.rs
-│   │   ├── pdf.rs           # PDF generation
-│   │   ├── html.rs          # HTML generation
-│   │   ├── json.rs          # JSON export
-│   │   └── templates/       # Report templates
+│   │   ├── pdf.rs                # PDF generation (Typst)
+│   │   ├── html.rs               # HTML generation
+│   │   ├── json.rs               # JSON export
+│   │   └── templates/            # Report templates
 │   │
-│   └── utils/               # Utilities
+│   └── utils/                    # Utilities
 │       ├── mod.rs
 │       ├── logging.rs
 │       └── fs.rs
 │
-├── templates/               # Report templates
-│   ├── ecss-report.typ      # Typst PDF template
-│   ├── report.html          # HTML template
+├── templates/                    # Report templates
+│   ├── ecss-report.typ           # Typst PDF template
+│   ├── report.html               # HTML template
 │   └── traceability.html
 │
-├── tests/                   # Integration tests
+├── tests/                        # Integration tests
 │   ├── integration_tests.rs
 │   ├── fixtures/
 │   └── snapshots/
 │
-└── examples/                # Usage examples
+└── examples/                     # Usage examples
     ├── basic_usage.rs
     └── ci_integration.rs
+
+sqt-plugin-sdk/                   # Rust plugin SDK (separate crate → crates.io)
+├── Cargo.toml
+└── src/
+    ├── lib.rs                    # Plugin trait, PluginInfo, CollectRequest/Result
+    └── main_macro.rs             # plugin_main!() macro
+
+sqt-plugin-sdk-python/            # Python plugin SDK (→ PyPI)
+└── sqt_plugin_sdk/
+    └── __init__.py
+
+plugins/                          # Official bundled plugins
+├── sqt-metric-valgrind/          # Memory leak detection
+├── sqt-metric-sonarqube-full/    # Extended SonarQube metrics
+└── sqt-metric-hw-power/          # Hardware power measurement
+
+examples/plugins/                 # Plugin authoring examples
+├── plugin_bash/                  # Minimal Bash plugin
+├── plugin_python/                # Python SDK example
+└── plugin_rust/                  # Rust SDK example
 ```
 
 ---
 
-## 11. Key Architectural Decisions
+## 12. Key Architectural Decisions
 
 ### Decision Log
 
@@ -1642,6 +1930,8 @@ sqt/
 | **AD-008** | Docker containerization | Reproducibility, isolation | VM (heavy), native (env issues) | ✅ Accepted |
 | **AD-009** | Exponential backoff for polling | Efficient, respectful of API | Fixed interval (wasteful) | ✅ Accepted |
 | **AD-010** | Both PDF and HTML reports | ECSS compliance + developer UX | Only PDF (not dev-friendly) | ✅ Accepted |
+| **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
+| **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
 
 ### Trade-offs
 
@@ -1660,7 +1950,7 @@ sqt/
 
 ---
 
-## 12. Open Questions
+## 13. Open Questions
 
 ### 12.1 Technical Questions
 
@@ -1718,7 +2008,7 @@ sqt/
 
 ---
 
-## 13. Next Steps
+## 14. Next Steps
 
 ### 13.1 Immediate Actions (Week 1-2)
 
