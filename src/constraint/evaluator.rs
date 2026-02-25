@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::{Constraint, Op};
 use crate::metrics::MetricValue;
 
@@ -12,6 +10,13 @@ pub struct ConstraintOutcome {
 }
 
 pub fn evaluate(actual: &MetricValue, constraint: &Constraint) -> ConstraintOutcome {
+    debug_assert_eq!(
+        actual.unit,
+        constraint.value.unit(),
+        "unit mismatch: collector returned '{}' but constraint expects '{}'",
+        actual.unit,
+        constraint.value.unit()
+    );
     let actual_val = actual.value;
     let expected_val = constraint.value.to_f64();
     let unit = &actual.unit;

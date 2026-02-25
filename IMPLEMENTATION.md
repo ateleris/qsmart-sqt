@@ -258,7 +258,7 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ### Phase 2 — Metric Registry and Built-in Collectors
 
-- [ ] **T-020** Implement `MetricRegistry` and `build_registry()`
+- [x] **T-020** Implement `MetricRegistry` and `build_registry()`
   - ~~Declare `CollectorFactory` struct and `inventory::collect!(CollectorFactory)`~~ **Done in
     T-010** — `CollectorFactory` and `inventory::collect!` already live in `src/metrics/mod.rs`
   - Remaining scope: `MetricRegistry` and `build_registry()` only
@@ -274,32 +274,32 @@ Each collector below follows the same two-step pattern:
 a) implement `MetricCollector`, b) call `inventory::submit! { CollectorFactory { ... } }`
 at the bottom of the file. No other file needs to change.
 
-- [ ] **T-021** Implement `ReturnCodeCollector`  (`return_code`)
+- [x] **T-021** Implement `ReturnCodeCollector`  (`return_code`)
   - Spawns the target binary, waits for exit, returns exit code as `f64`
   - Evidence: captured stdout/stderr saved to working dir
   - This is the simplest collector and validates the whole pipeline end-to-end
 
-- [ ] **T-022** Implement `ExecutionTimeCollector`  (`time.execution`)
+- [x] **T-022** Implement `ExecutionTimeCollector`  (`time.execution`)
   - Wraps target execution with `std::time::Instant`
   - Returns wall-clock time in milliseconds
   - Evidence: start time, end time, duration
 
-- [ ] **T-023** Implement `MemoryPeakRssCollector`  (`memory.peak_rss`)
+- [x] **T-023** Implement `MemoryPeakRssCollector`  (`memory.peak_rss`)
   - On Linux: spawn binary via `/usr/bin/time -v`, parse "Maximum resident set size"
   - Returns value in kilobytes
   - Evidence: raw `/usr/bin/time` output saved to working dir
 
-- [ ] **T-024** Implement `MemoryLeaksCollector`  (`memory.leaks`)
+- [x] **T-024** Implement `MemoryLeaksCollector`  (`memory.leaks`)
   - Spawn binary under `valgrind --tool=memcheck --leak-check=full`
   - Parse Valgrind XML output (`--xml=yes --xml-file=...`)
   - Returns total leaked bytes; evidence: Valgrind XML report
 
-- [ ] **T-025** Implement `CoverageLineCollector`  (`coverage.line_percent`)
+- [x] **T-025** Implement `CoverageLineCollector`  (`coverage.line_percent`)
   - Assumes test binary was compiled with `--coverage` (gcov instrumentation)
   - Runs `lcov --capture` then `lcov --summary` and parses line coverage percentage
   - Evidence: lcov `.info` file path and summary text
 
-- [ ] **T-026** Implement `SonarCriticalIssuesCollector`  (`sonar.critical_issues`)
+- [x] **T-026** Implement `SonarCriticalIssuesCollector`  (`sonar.critical_issues`)
   - Invokes `sonar-scanner` with project config
   - Reads issues from SonarQube REST API (`/api/issues/search?severities=CRITICAL`)
   - Returns count of critical issues as `f64`
@@ -481,31 +481,21 @@ serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
 
 ---
 
-### [OPEN] Unit comparison is by convention, not enforcement *(Medium — Phase 2)*
+### [RESOLVED] Unit comparison is by convention, not enforcement *(was Medium)*
 
-`evaluate()` compares raw `f64` values. `MetricValue.unit` is display-only metadata — there
-is no runtime check that the collector's unit matches the constraint's unit. A collector
-returning bytes while the constraint uses `Value::kb(...)` gives a silently wrong result.
-
-**Resolution**: When implementing `build_registry()` (T-020) or the first real collector
-(T-021), add to `evaluate()`:
-
-```rust
-debug_assert_eq!(
-    actual.unit,
-    constraint.value.unit(),
-    "unit mismatch: collector returned '{}' but constraint expects '{}'",
-    actual.unit, constraint.value.unit()
-);
-```
+Added `debug_assert_eq!(actual.unit, constraint.value.unit(), ...)` at the top of
+`evaluate()` in Phase 2. Fires in debug builds if a collector returns a different unit
+than the constraint expects (e.g., collector returns `"bytes"` but constraint uses
+`Value::kb(...)`).
 
 ---
 
-### [OPEN] `MetricCollector::name()` vs `CollectorFactory::name` — unenforceable contract *(Medium — T-020)*
+### [RESOLVED] `MetricCollector::name()` vs `CollectorFactory::name` — unenforceable contract *(was Medium)*
 
-The registry keys off `factory.name`. The instance method `fn name(&self) -> &str` is
-separate and can diverge silently. Address in T-020: add a `debug_assert_eq!` in
-`build_registry()` (noted in the T-020 task description above).
+`build_registry()` now calls `debug_assert_eq!(instance.name(), factory.name, ...)` for
+every factory. Diverging names panic immediately in debug builds. The trait return type
+was also narrowed to `&'static str` to make it clear that names must be compile-time
+constants.
 
 ---
 
@@ -545,11 +535,13 @@ Phase 5.
 
 ---
 
-### [OPEN] `#![allow(dead_code)]` on Phase 1 modules *(Low — Phase 3)*
+### [RESOLVED] `#![allow(dead_code)]` on Phase 1 modules *(was Low)*
 
-`metrics/mod.rs`, `constraint/mod.rs`, and `constraint/evaluator.rs` all carry this
-suppression. Remove the attributes at the start of Phase 3, when the orchestrator begins
-calling into these types, and fix whatever the compiler surfaces. Do not defer past T-032.
+The broad `#![allow(dead_code)]` was removed from `metrics/mod.rs`. Replaced with
+targeted `#[allow(dead_code)]` attributes on specific public API items and impl blocks
+that are not yet wired to `main()` (will be connected in Phase 3 by the orchestrator).
+`constraint/mod.rs` and `constraint/evaluator.rs` retain their broad suppression until
+Phase 3 (T-032) when the orchestrator starts calling into them.
 
 ---
 

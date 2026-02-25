@@ -1,15 +1,20 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub mod builtin;
+pub mod custom;
+pub mod process;
+pub mod registry;
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Platform {
     Local,
     Remote(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Target {
     pub binary: PathBuf,
@@ -31,6 +36,7 @@ impl Default for Target {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MetricValue {
     pub value: f64,
@@ -38,17 +44,25 @@ pub struct MetricValue {
     pub evidence: HashMap<String, String>,
 }
 
+#[allow(dead_code)]
 impl MetricValue {
     pub fn new(value: f64, unit: impl Into<String>) -> Self {
         Self { value, unit: unit.into(), evidence: HashMap::new() }
     }
+
+    pub fn with_evidence(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.evidence.insert(key.into(), value.into());
+        self
+    }
 }
 
+#[allow(dead_code)]
 pub trait MetricCollector: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn collect(&self, target: &Target, config: &serde_yaml::Value) -> anyhow::Result<MetricValue>;
 }
 
+#[allow(dead_code)]
 pub struct CollectorFactory {
     pub name: &'static str,
     pub create: fn() -> Box<dyn MetricCollector>,
