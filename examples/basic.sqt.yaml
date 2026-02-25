@@ -1,0 +1,12 @@
+project:
+  name: "AI ML-L Qualification"
+  version: "1.0.0"
+
+build_dir: "./build"
+
+api:
+  url: "http://localhost:8080"
+  token_env: "SQT_API_TOKEN"
+
+report:
+  output_dir: "./reports"

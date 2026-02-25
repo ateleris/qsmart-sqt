@@ -205,23 +205,23 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ### Phase 0 — Project Scaffold
 
-- [ ] **T-001** Initialize Cargo workspace
-  - `cargo new --bin ats-sqt` (creates `src/main.rs`; add `src/lib.rs` manually later
-    if integration tests need to import internal types)
+- [x] **T-001** Initialize Cargo workspace
   - Add dependencies: `clap`, `serde`, `serde_yaml`, `anyhow`, `thiserror`, `tokio`,
-    `reqwest` (with `blocking` feature), `tracing`, `tracing-subscriber`, `inventory`
-  - Set up `rustfmt.toml` and `clippy` lint configuration
+    `reqwest` (with `json` and `rustls-tls` features), `tracing`, `tracing-subscriber`,
+    `inventory`
+  - Set up `rustfmt.toml` and `clippy` lint configuration (`pedantic` at warn)
 
-- [ ] **T-002** Implement `SqtConfig` struct and YAML parser
-  - Fields: `project.name`, `project.version`, `targets[]`, `ml_l_api.base_url`,
-    `ml_l_api.token_env`, `report.output_dir`
-  - Validate on load: required fields present, paths exist, API URL is well-formed
-  - Unit tests with valid and invalid config fixtures
+- [x] **T-002** Implement `SqtConfig` struct and YAML parser
+  - Fields: `project.name`, `project.version`, `build_dir`, `api.url`,
+    `api.token_env` (optional), `report.output_dir`
+  - Validate on load: required fields non-empty, API URL starts with http/https,
+    relative paths resolved against config file directory
+  - Unit tests with valid and invalid config fixtures (7 tests, all passing)
 
-- [ ] **T-003** Implement CLI skeleton
-  - Single subcommand: `sqt run --config <path>`
-  - Load and validate config, print summary, exit 0
-  - Lays the foundation for error propagation from all later phases
+- [x] **T-003** Implement CLI skeleton
+  - Single subcommand: `sqt run --config <path>` (env: `SQT_CONFIG`)
+  - Load and validate config, print summary via `tracing::info!`, exit 0
+  - `#[tokio::main]` from day one; `tracing_subscriber` with `EnvFilter` (default: info)
 
 ---
 
