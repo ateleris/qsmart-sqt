@@ -258,13 +258,17 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ### Phase 2 — Metric Registry and Built-in Collectors
 
-- [ ] **T-020** Implement `CollectorFactory`, `MetricRegistry`, and `build_registry()`
-  - Declare `CollectorFactory` struct and `inventory::collect!(CollectorFactory)` in
-    `src/metrics/mod.rs`
+- [ ] **T-020** Implement `MetricRegistry` and `build_registry()`
+  - ~~Declare `CollectorFactory` struct and `inventory::collect!(CollectorFactory)`~~ **Done in
+    T-010** — `CollectorFactory` and `inventory::collect!` already live in `src/metrics/mod.rs`
+  - Remaining scope: `MetricRegistry` and `build_registry()` only
   - `MetricRegistry`: `HashMap<String, Box<dyn MetricCollector>>` with `register_boxed()`,
     `get(name)`, and panic-on-duplicate-name in debug builds
   - `build_registry()` in `src/metrics/registry.rs`: iterates `inventory::iter::<CollectorFactory>`
     and registers each one — this function never needs to be touched again
+  - **Note**: in `build_registry()`, add `debug_assert_eq!((factory.create)().name(),
+    factory.name)` for each factory to enforce that the instance `name()` and the registration
+    key match
 
 Each collector below follows the same two-step pattern:
 a) implement `MetricCollector`, b) call `inventory::submit! { CollectorFactory { ... } }`
@@ -448,6 +452,104 @@ T-060 ──► T-061 ──► T-062
 | Full SonarQube quality-gate integration | After basic collectors are working |
 | GR740 / GR765 hardware targets | After Klepsydra API contract is finalised |
 | HTML interactive report | Nice-to-have, after JSON report is working |
+
+---
+
+## Known Issues and Forward Risks
+
+Items identified during implementation review. Each entry has a severity, the phase where
+it matters, and a resolution note.
+
+---
+
+### [RESOLVED] Empty constraints → vacuous PASS *(was High)*
+
+`SpecResult::new` with zero outcomes previously returned `passed = true` (vacuous truth).
+Fixed in Phase 1: `!outcomes.is_empty() && outcomes.iter().all(...)`. A spec with no
+constraints now fails, as expected in a qualification context.
+
+---
+
+### [RESOLVED] `serde_yaml 0.9` deprecated *(was Medium)*
+
+The original `serde_yaml` crate was abandoned by its author in 2024. Migrated to
+`serde-yaml-ng` (the community-maintained fork) via Cargo alias — all source code unchanged:
+
+```toml
+serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
+```
+
+---
+
+### [OPEN] Unit comparison is by convention, not enforcement *(Medium — Phase 2)*
+
+`evaluate()` compares raw `f64` values. `MetricValue.unit` is display-only metadata — there
+is no runtime check that the collector's unit matches the constraint's unit. A collector
+returning bytes while the constraint uses `Value::kb(...)` gives a silently wrong result.
+
+**Resolution**: When implementing `build_registry()` (T-020) or the first real collector
+(T-021), add to `evaluate()`:
+
+```rust
+debug_assert_eq!(
+    actual.unit,
+    constraint.value.unit(),
+    "unit mismatch: collector returned '{}' but constraint expects '{}'",
+    actual.unit, constraint.value.unit()
+);
+```
+
+---
+
+### [OPEN] `MetricCollector::name()` vs `CollectorFactory::name` — unenforceable contract *(Medium — T-020)*
+
+The registry keys off `factory.name`. The instance method `fn name(&self) -> &str` is
+separate and can diverge silently. Address in T-020: add a `debug_assert_eq!` in
+`build_registry()` (noted in the T-020 task description above).
+
+---
+
+### [OPEN] `Target::default().binary` is an empty path *(Medium — T-032)*
+
+`Target::default()` sets `binary: PathBuf::new()`. Any spec that uses `..Default::default()`
+without overriding `binary` will fail at runtime with a cryptic OS error when the orchestrator
+tries to spawn it. The orchestrator (T-032) must validate `target.binary` is non-empty and
+return a clear error before attempting execution.
+
+---
+
+### [OPEN] No `Serialize` on report types *(Low — T-051)*
+
+`RunResult`, `SpecResult`, `ConstraintOutcome`, and `TestSpec` derive `Debug` and `Clone`
+but not `Serialize`. T-051 needs to serialize the full `RunResult` to JSON. Adding
+`#[derive(serde::Serialize)]` now would be zero-cost and would surface any schema surprises
+early (e.g., how `serde_yaml::Value` round-trips through `serde_json`).
+
+---
+
+### [OPEN] `timestamp: String` in `RunResult` — no datetime crate *(Low — T-051)*
+
+Generating an ISO 8601 timestamp from `std::time::SystemTime` without a crate requires
+manual date arithmetic (leap years, month lengths). Add `jiff` or `chrono` to `Cargo.toml`
+in Phase 5 before implementing T-051. Decision deferred intentionally; do not implement a
+hand-rolled formatter.
+
+---
+
+### [OPEN] `serde_yaml::Value` embedded in the `MetricCollector` trait *(Low — Phase 5)*
+
+`fn collect(&self, target: &Target, config: &serde_yaml::Value)` couples the core trait
+interface to the YAML library. If the config serialization layer changes, the trait signature
+must change too. Acceptable for now; revisit if a config abstraction layer is added before
+Phase 5.
+
+---
+
+### [OPEN] `#![allow(dead_code)]` on Phase 1 modules *(Low — Phase 3)*
+
+`metrics/mod.rs`, `constraint/mod.rs`, and `constraint/evaluator.rs` all carry this
+suppression. Remove the attributes at the start of Phase 3, when the orchestrator begins
+calling into these types, and fix whatever the compiler surfaces. Do not defer past T-032.
 
 ---
 

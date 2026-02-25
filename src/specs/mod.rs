@@ -19,7 +19,7 @@ pub struct SpecResult {
 
 impl SpecResult {
     pub fn new(spec: TestSpec, outcomes: Vec<ConstraintOutcome>) -> Self {
-        let passed = outcomes.iter().all(|o| o.passed);
+        let passed = !outcomes.is_empty() && outcomes.iter().all(|o| o.passed);
         Self { spec, outcomes, passed }
     }
 }
@@ -64,6 +64,12 @@ mod tests {
             constraints: vec![Constraint::new("cpu", Op::Lte, Value::pct(80.0))],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn spec_result_fails_if_no_outcomes() {
+        let result = SpecResult::new(make_spec(), vec![]);
+        assert!(!result.passed);
     }
 
     #[test]
