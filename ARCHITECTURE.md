@@ -20,7 +20,7 @@
 - [7. Requirements to Code Flow](#7-requirements-to-code-flow)
 - [8. Hardware & Emulation Strategy](#8-hardware--emulation-strategy)
 - [9. Report Generation](#9-report-generation)
-- [10. Plugin Architecture](#10-plugin-architecture)
+- [10. Metric Extensibility](#10-metric-extensibility)
 - [11. Technology Stack](#11-technology-stack)
 - [12. Key Architectural Decisions](#12-key-architectural-decisions)
 - [13. Open Questions](#13-open-questions)
