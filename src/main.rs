@@ -8,6 +8,7 @@ mod config;
 mod constraint;
 mod metrics;
 mod orchestrator;
+mod report;
 mod specs;
 
 #[derive(Parser)]
@@ -22,6 +23,8 @@ enum Commands {
     Run {
         #[arg(short, long, env = "SQT_CONFIG")]
         config: PathBuf,
+        #[arg(short, long, help = "Write JSON report to this path")]
+        output: Option<PathBuf>,
     },
 }
 
@@ -37,7 +40,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { config } => {
+        Commands::Run { config, output } => {
             let cfg = config::load_config(&config)?;
             cfg.print_summary();
 
@@ -57,12 +60,15 @@ async fn main() -> Result<()> {
 
             let result = orchestrator::run(&specs, &client, &cfg).await?;
 
-            let total = result.results.len();
-            let passed = result.results.iter().filter(|r| r.passed).count();
-            let failed = total - passed;
-            tracing::info!("{passed}/{total} specs passed, {failed} failed");
+            let rep = report::Report::from_run_result(&result);
+            report::print_terminal(&rep);
 
-            if failed > 0 {
+            if let Some(path) = output {
+                report::write_json(&rep, &path)?;
+                tracing::info!("Report written to {}", path.display());
+            }
+
+            if rep.summary.failed > 0 {
                 std::process::exit(1);
             }
         }

@@ -53,6 +53,7 @@ fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
         actual: f64::NAN,
         expected: f64::NAN,
         message: format!("{metric_name}: {reason}: FAIL"),
+        evidence: HashMap::new(),
     }
 }
 
@@ -144,7 +145,15 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
                     match maybe_value {
                         Some(value) => {
                             let metric = MetricValue::new(value, metric_unit(name));
-                            evaluate(&metric, constraint)
+                            let mut outcome = evaluate(&metric, constraint);
+                            if is_analysis_metric(name) {
+                                if let Some(id) = analysis_ids.get(&binary) {
+                                    outcome.evidence.insert("analysis_id".into(), id.clone());
+                                }
+                            } else if let Some(id) = run_ids.get(&key) {
+                                outcome.evidence.insert("run_id".into(), id.clone());
+                            }
+                            outcome
                         }
                         None => failing_outcome(name, "metric unavailable"),
                     }
@@ -161,9 +170,9 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
     })
 }
 
-/// Return the current time as an ISO 8601 placeholder string.
+/// Return the current time as an ISO 8601 string (UTC, second precision).
 fn now_iso8601() -> String {
-    "1970-01-01T00:00:00Z".to_owned()
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 // ---------------------------------------------------------------------------

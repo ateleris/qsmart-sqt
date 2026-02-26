@@ -48,6 +48,7 @@ mod tests {
             actual: 87.3,
             expected: 100.0,
             message: "87.3 ms <= 100 ms: PASS".to_string(),
+            evidence: std::collections::HashMap::new(),
         }
     }
 
@@ -57,6 +58,7 @@ mod tests {
             actual: 110.0,
             expected: 100.0,
             message: "110 ms <= 100 ms: FAIL".to_string(),
+            evidence: std::collections::HashMap::new(),
         }
     }
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::{Constraint, Op};
 use crate::metrics::MetricValue;
 
@@ -7,6 +9,7 @@ pub struct ConstraintOutcome {
     pub actual: f64,
     pub expected: f64,
     pub message: String,
+    pub evidence: HashMap<String, String>,
 }
 
 pub fn evaluate(actual: &MetricValue, constraint: &Constraint) -> ConstraintOutcome {
@@ -38,7 +41,13 @@ pub fn evaluate(actual: &MetricValue, constraint: &Constraint) -> ConstraintOutc
         format!("{actual_val} {unit} {op} {expected_val} {unit}: {status}")
     };
 
-    ConstraintOutcome { passed, actual: actual_val, expected: expected_val, message }
+    ConstraintOutcome {
+        passed,
+        actual: actual_val,
+        expected: expected_val,
+        message,
+        evidence: HashMap::new(),
+    }
 }
 
 #[cfg(test)]
