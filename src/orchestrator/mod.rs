@@ -1,25 +1,71 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::api::types::{ApiTarget, JobRequest, TaskResult, TaskSpec, TaskStatus};
-use crate::api::JobApiClient;
+use crate::api::types::{AnalysisRequest, AnalysisStatusResponse, RunRequest, RunStatusResponse};
+use crate::api::ApiClient;
 use crate::config::SqtConfig;
 use crate::constraint::evaluator::evaluate;
 use crate::constraint::ConstraintOutcome;
-use crate::metrics::MetricValue;
+use crate::metrics::{MetricValue, Target};
 use crate::specs::{RunResult, SpecResult, TestSpec};
 
-/// Run all specs: submit a single job, wait for completion, evaluate constraints.
+/// Metric name prefixes that belong to analysis jobs (binary-level, not per-run).
+const ANALYSIS_PREFIXES: &[&str] = &["sonar.", "static.", "binary."];
+
+/// Return `true` if `name` should be routed to an analysis job rather than a run job.
+fn is_analysis_metric(name: &str) -> bool {
+    ANALYSIS_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// Return the unit string for a metric, matching `Value::unit()`.
+fn metric_unit(name: &str) -> &'static str {
+    match name {
+        "time.execution" => "ms",
+        "memory.peak_rss" | "memory.avg_rss" | "binary.size_kb" => "KB",
+        "cpu.max_pct" | "cpu.avg_pct" | "coverage.line_pct" => "%",
+        "memory.leaks" => "bytes",
+        _ => "",
+    }
+}
+
+/// Build the grouping key for a target: `(binary_path, input_path)`.
+fn run_key(target: &Target) -> (String, Option<String>) {
+    (
+        target.binary.to_string_lossy().into_owned(),
+        target.input.as_ref().map(|p| p.to_string_lossy().into_owned()),
+    )
+}
+
+/// Build a `RunRequest` for a group of specs that share the same `(binary, input)`.
+///
+/// The timeout is the maximum across all specs in the group.
+fn build_run_request(key: &(String, Option<String>), specs: &[&TestSpec]) -> RunRequest {
+    let max_timeout = specs.iter().map(|s| s.target.timeout.as_secs()).max().unwrap_or(30);
+    let (binary, input) = key.clone();
+    RunRequest { binary, input, timeout_secs: Some(max_timeout) }
+}
+
+/// Build a synthetic failing outcome for a metric that could not be evaluated.
+fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
+    ConstraintOutcome {
+        passed: false,
+        actual: f64::NAN,
+        expected: f64::NAN,
+        message: format!("{metric_name}: {reason}: FAIL"),
+    }
+}
+
+/// Run all specs against the two-endpoint API.
+///
+/// Groups specs by `(binary, input)`, submits one run job per group and one
+/// analysis job per unique binary, waits for all results, then evaluates each
+/// spec's constraints.
 ///
 /// # Errors
 ///
 /// Returns an error if job submission or polling fails.
-pub async fn run(
-    specs: &[TestSpec],
-    client: &JobApiClient,
-    config: &SqtConfig,
-) -> Result<RunResult> {
+pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> Result<RunResult> {
     if specs.is_empty() {
         return Ok(RunResult {
             results: vec![],
@@ -28,52 +74,79 @@ pub async fn run(
         });
     }
 
-    // Collect unique task names across all specs, preserving insertion order.
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut tasks: Vec<TaskSpec> = Vec::new();
+    // Group specs by (binary, input).
+    let mut groups: HashMap<(String, Option<String>), Vec<&TestSpec>> = HashMap::new();
     for spec in specs {
-        for constraint in &spec.constraints {
-            if seen.insert(constraint.metric_name.clone()) {
-                let cfg = yaml_to_json(&constraint.config);
-                tasks.push(TaskSpec { name: constraint.metric_name.clone(), config: cfg });
-            }
+        groups.entry(run_key(&spec.target)).or_default().push(spec);
+    }
+
+    // Submit one run job per group.
+    tracing::info!("Submitting {} run job(s) to {}", groups.len(), config.api.url);
+    let mut run_ids: HashMap<(String, Option<String>), String> = HashMap::new();
+    for (key, group) in &groups {
+        let request = build_run_request(key, group);
+        let run_id = client.submit_run(&request).await?;
+        tracing::info!(run_id, binary = %key.0, "Run accepted");
+        run_ids.insert(key.clone(), run_id);
+    }
+
+    // Submit one analysis job per unique binary.
+    let mut seen_binaries: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut analysis_ids: HashMap<String, String> = HashMap::new();
+    for spec in specs {
+        let binary = spec.target.binary.to_string_lossy().into_owned();
+        if seen_binaries.insert(binary.clone()) {
+            let max_timeout = specs
+                .iter()
+                .filter(|s| s.target.binary.to_string_lossy().as_ref() == binary.as_str())
+                .map(|s| s.target.timeout.as_secs())
+                .max()
+                .unwrap_or(30);
+            let request = AnalysisRequest { binary: binary.clone(), timeout_secs: Some(max_timeout) };
+            let analysis_id = client.submit_analysis(&request).await?;
+            tracing::info!(analysis_id, binary = %binary, "Analysis accepted");
+            analysis_ids.insert(binary, analysis_id);
         }
     }
 
-    // Use the first spec's target as the job target.
-    let first_target = &specs[0].target;
-    let api_target = ApiTarget {
-        binary: first_target.binary.to_string_lossy().into_owned(),
-        input: first_target
-            .input
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned()),
-        timeout_secs: Some(first_target.timeout.as_secs()),
-    };
+    // Wait for all run jobs.
+    let mut run_responses: HashMap<(String, Option<String>), RunStatusResponse> = HashMap::new();
+    for (key, run_id) in &run_ids {
+        let response = client.wait_for_run(run_id).await?;
+        tracing::info!(run_id, status = ?response.status, "Run finished");
+        run_responses.insert(key.clone(), response);
+    }
 
-    let request = JobRequest { target: api_target, tasks };
+    // Wait for all analysis jobs.
+    let mut analysis_responses: HashMap<String, AnalysisStatusResponse> = HashMap::new();
+    for (binary, analysis_id) in &analysis_ids {
+        let response = client.wait_for_analysis(analysis_id).await?;
+        tracing::info!(analysis_id, status = ?response.status, "Analysis finished");
+        analysis_responses.insert(binary.clone(), response);
+    }
 
-    tracing::info!("Submitting job to {}", config.api.url);
-    let job_id = client.submit_job(&request).await?;
-    tracing::info!(job_id, "Job accepted, polling for completion");
-
-    let response = client.wait_for_completion(&job_id).await?;
-    tracing::info!(job_id, status = ?response.status, "Job finished");
-
-    // Evaluate each spec's constraints against the task results.
+    // Evaluate constraints for each spec.
     let results: Vec<SpecResult> = specs
         .iter()
         .map(|spec| {
+            let key = run_key(&spec.target);
+            let binary = key.0.clone();
             let outcomes: Vec<ConstraintOutcome> = spec
                 .constraints
                 .iter()
                 .map(|constraint| {
-                    match response.tasks.get(&constraint.metric_name) {
-                        Some(task) => task_result_to_outcome(task, constraint),
-                        None => failing_outcome(
-                            &constraint.metric_name,
-                            "task missing from job response",
-                        ),
+                    let name = &constraint.metric_name;
+                    let maybe_value = if is_analysis_metric(name) {
+                        analysis_responses.get(&binary).and_then(|r| r.metrics.get(name))
+                    } else {
+                        run_responses.get(&key).and_then(|r| r.metrics.get(name))
+                    };
+                    match maybe_value {
+                        Some(value) => {
+                            let metric = MetricValue::new(value, metric_unit(name));
+                            evaluate(&metric, constraint)
+                        }
+                        None => failing_outcome(name, "metric unavailable"),
                     }
                 })
                 .collect();
@@ -88,61 +161,8 @@ pub async fn run(
     })
 }
 
-/// Convert a `TaskResult` into a `ConstraintOutcome` for the given constraint.
-fn task_result_to_outcome(
-    task: &TaskResult,
-    constraint: &crate::constraint::Constraint,
-) -> ConstraintOutcome {
-    match task.status {
-        TaskStatus::Complete => {
-            if let Some(value) = task.value {
-                let unit = task.unit.clone().unwrap_or_default();
-                let metric = MetricValue::new(value, unit);
-                evaluate(&metric, constraint)
-            } else {
-                failing_outcome(&constraint.metric_name, "task complete but value missing")
-            }
-        }
-        TaskStatus::Failed => {
-            let reason = task
-                .error
-                .as_deref()
-                .unwrap_or("task failed with no error message");
-            failing_outcome(&constraint.metric_name, reason)
-        }
-        TaskStatus::Pending | TaskStatus::Running => {
-            failing_outcome(&constraint.metric_name, "task did not complete")
-        }
-    }
-}
-
-/// Build a synthetic failing outcome for a task that could not be evaluated.
-fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
-    ConstraintOutcome {
-        passed: false,
-        actual: f64::NAN,
-        expected: f64::NAN,
-        message: format!("{metric_name}: {reason}: FAIL"),
-    }
-}
-
-/// Convert a `serde_yaml::Value` to a `serde_json::Value`.
-///
-/// Returns `None` when the YAML value is `Null`.
-fn yaml_to_json(yaml: &serde_yaml::Value) -> Option<serde_json::Value> {
-    if yaml.is_null() {
-        return None;
-    }
-    // serde_yaml_ng implements Serialize, so we can round-trip through JSON.
-    serde_json::to_value(yaml).ok()
-}
-
-/// Return the current time as an ISO 8601 string.
-///
-/// Uses a simple formatted string; no external date-time crate required.
+/// Return the current time as an ISO 8601 placeholder string.
 fn now_iso8601() -> String {
-    // chrono is not a dependency — return a placeholder that callers can
-    // replace in Phase 4 when a proper timestamp library is added.
     "1970-01-01T00:00:00Z".to_owned()
 }
 
@@ -152,118 +172,162 @@ fn now_iso8601() -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::types::{TaskResult, TaskStatus};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use crate::api::types::{AnalysisMetrics, RunMetrics};
     use crate::constraint::{Constraint, Op, Value};
-    use crate::metrics::Target;
-    use crate::specs::{RunResult, SpecResult, TestSpec};
+    use crate::constraint::evaluator::evaluate;
+    use crate::metrics::{MetricValue, Platform, Target};
+    use crate::specs::TestSpec;
 
-    use super::{failing_outcome, task_result_to_outcome};
+    use super::{
+        build_run_request, failing_outcome, is_analysis_metric, metric_unit, run_key,
+    };
 
-    fn complete_task(value: f64, unit: &str) -> TaskResult {
-        TaskResult {
-            status: TaskStatus::Complete,
-            value: Some(value),
-            unit: Some(unit.into()),
-            error: None,
-            evidence: None,
+    fn make_target(binary: &str, input: Option<&str>, timeout_secs: u64) -> Target {
+        Target {
+            binary: PathBuf::from(binary),
+            input: input.map(PathBuf::from),
+            platform: Platform::Local,
+            working_dir: PathBuf::from("."),
+            timeout: Duration::from_secs(timeout_secs),
         }
     }
 
-    fn failed_task(error: &str) -> TaskResult {
-        TaskResult {
-            status: TaskStatus::Failed,
-            value: None,
-            unit: None,
-            error: Some(error.into()),
-            evidence: None,
+    fn make_spec(binary: &str, input: Option<&str>, timeout_secs: u64) -> TestSpec {
+        TestSpec {
+            requirement_uid: format!("REQ-{binary}"),
+            target: make_target(binary, input, timeout_secs),
+            constraints: vec![],
         }
     }
 
-    fn make_constraint(name: &str, op: Op, val: Value) -> Constraint {
-        Constraint::new(name, op, val)
+    // --- is_analysis_metric ---
+
+    #[test]
+    fn is_analysis_metric_routing() {
+        assert!(is_analysis_metric("sonar.critical_issues"));
+        assert!(is_analysis_metric("sonar.major_issues"));
+        assert!(is_analysis_metric("static.warnings"));
+        assert!(is_analysis_metric("binary.size_kb"));
+        assert!(!is_analysis_metric("return_code"));
+        assert!(!is_analysis_metric("time.execution"));
+        assert!(!is_analysis_metric("memory.peak_rss"));
+        assert!(!is_analysis_metric("memory.leaks"));
+        assert!(!is_analysis_metric("coverage.line_pct"));
+    }
+
+    // --- metric_unit ---
+
+    #[test]
+    fn metric_unit_matches_known_metrics() {
+        assert_eq!(metric_unit("return_code"), "");
+        assert_eq!(metric_unit("time.execution"), "ms");
+        assert_eq!(metric_unit("memory.peak_rss"), "KB");
+        assert_eq!(metric_unit("memory.avg_rss"), "KB");
+        assert_eq!(metric_unit("binary.size_kb"), "KB");
+        assert_eq!(metric_unit("cpu.max_pct"), "%");
+        assert_eq!(metric_unit("cpu.avg_pct"), "%");
+        assert_eq!(metric_unit("coverage.line_pct"), "%");
+        assert_eq!(metric_unit("memory.leaks"), "bytes");
+        assert_eq!(metric_unit("sonar.critical_issues"), "");
+        assert_eq!(metric_unit("ml.accuracy"), "");
+        assert_eq!(metric_unit("unknown_metric"), "");
+    }
+
+    // --- RunMetrics.get ---
+
+    #[test]
+    fn run_metric_extraction_complete() {
+        let m = RunMetrics {
+            return_code: Some(0),
+            time_execution: Some(87.3),
+            ..Default::default()
+        };
+        assert_eq!(m.get("return_code"), Some(0.0));
+        assert_eq!(m.get("time.execution"), Some(87.3));
     }
 
     #[test]
-    fn complete_task_passing_maps_to_passing_outcome() {
-        let task = complete_task(87.3, "ms");
-        let constraint = make_constraint("time.execution", Op::Lte, Value::ms(100.0));
-        let outcome = task_result_to_outcome(&task, &constraint);
+    fn run_metric_extraction_null() {
+        let m = RunMetrics::default();
+        assert!(m.get("return_code").is_none());
+        assert!(m.get("time.execution").is_none());
+        assert!(m.get("memory.peak_rss").is_none());
+    }
+
+    // --- AnalysisMetrics.get ---
+
+    #[test]
+    fn analysis_metric_extraction() {
+        let m = AnalysisMetrics {
+            sonar_critical_issues: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(m.get("sonar.critical_issues"), Some(3.0));
+        assert!(m.get("sonar.major_issues").is_none());
+        assert!(m.get("binary.size_kb").is_none());
+    }
+
+    // --- failing_outcome ---
+
+    #[test]
+    fn null_metric_maps_to_failing_outcome() {
+        let outcome = failing_outcome("time.execution", "metric unavailable");
+        assert!(!outcome.passed);
+        assert!(outcome.message.contains("time.execution"));
+        assert!(outcome.message.contains("FAIL"));
+    }
+
+    // --- constraint evaluation ---
+
+    #[test]
+    fn present_metric_maps_to_passing_outcome() {
+        let constraint = Constraint::new("time.execution", Op::Lte, Value::ms(100.0));
+        let metric = MetricValue::new(87.3, metric_unit("time.execution"));
+        let outcome = evaluate(&metric, &constraint);
         assert!(outcome.passed);
         assert!(outcome.message.contains("PASS"));
     }
 
     #[test]
-    fn complete_task_failing_maps_to_failing_outcome() {
-        let task = complete_task(150.0, "ms");
-        let constraint = make_constraint("time.execution", Op::Lte, Value::ms(100.0));
-        let outcome = task_result_to_outcome(&task, &constraint);
+    fn present_metric_maps_to_failing_outcome() {
+        let constraint = Constraint::new("time.execution", Op::Lte, Value::ms(100.0));
+        let metric = MetricValue::new(150.0, metric_unit("time.execution"));
+        let outcome = evaluate(&metric, &constraint);
         assert!(!outcome.passed);
         assert!(outcome.message.contains("FAIL"));
     }
 
+    // --- run_key / grouping ---
+
     #[test]
-    fn failed_task_maps_to_failing_outcome() {
-        let task = failed_task("valgrind not found");
-        let constraint = make_constraint("memory.leaks", Op::Eq, Value::bool(false));
-        let outcome = task_result_to_outcome(&task, &constraint);
-        assert!(!outcome.passed);
-        assert!(outcome.message.contains("valgrind not found"));
-        assert!(outcome.message.contains("FAIL"));
+    fn grouping_deduplicates_same_binary_input() {
+        let t1 = make_target("/bin/app", Some("input.bin"), 30);
+        let t2 = make_target("/bin/app", Some("input.bin"), 60);
+        assert_eq!(run_key(&t1), run_key(&t2));
+        let key = run_key(&t1);
+        assert_eq!(key.0, "/bin/app");
+        assert_eq!(key.1.as_deref(), Some("input.bin"));
     }
 
     #[test]
-    fn missing_task_maps_to_failing_outcome() {
-        let outcome = failing_outcome("custom.metric", "task missing from job response");
-        assert!(!outcome.passed);
-        assert!(outcome.message.contains("custom.metric"));
-        assert!(outcome.message.contains("FAIL"));
+    fn grouping_separates_different_inputs() {
+        let t_a = make_target("/bin/app", Some("input_a.bin"), 30);
+        let t_b = make_target("/bin/app", Some("input_b.bin"), 30);
+        assert_ne!(run_key(&t_a), run_key(&t_b));
     }
 
     #[test]
-    fn empty_specs_produce_empty_run_result() {
-        let result = RunResult {
-            results: vec![],
-            timestamp: "1970-01-01T00:00:00Z".into(),
-            config_version: "1.0.0".into(),
-        };
-        assert!(result.results.is_empty());
-    }
+    fn grouping_takes_max_timeout() {
+        let spec30 = make_spec("/bin/app", None, 30);
+        let spec60 = make_spec("/bin/app", None, 60);
+        let spec45 = make_spec("/bin/app", None, 45);
 
-    #[test]
-    fn spec_result_aggregates_multiple_constraints() {
-        // Two constraints: first passes, second fails — overall spec fails.
-        let spec = TestSpec {
-            requirement_uid: "REQ-ORCH-001".into(),
-            target: Target::default(),
-            constraints: vec![
-                make_constraint("return_code", Op::Eq, Value::int(0)),
-                make_constraint("time.execution", Op::Lte, Value::ms(100.0)),
-            ],
-        };
-
-        let outcomes = vec![
-            task_result_to_outcome(&complete_task(0.0, ""), &spec.constraints[0]),
-            task_result_to_outcome(&complete_task(150.0, "ms"), &spec.constraints[1]),
-        ];
-
-        let result = SpecResult::new(spec, outcomes);
-        assert!(!result.passed, "spec should fail when any constraint fails");
-    }
-
-    #[test]
-    fn deduplication_keeps_first_occurrence() {
-        // Both constraints reference the same metric name.
-        let spec = TestSpec {
-            requirement_uid: "REQ-ORCH-002".into(),
-            target: Target::default(),
-            constraints: vec![
-                make_constraint("return_code", Op::Eq, Value::int(0)),
-                make_constraint("return_code", Op::Ne, Value::int(1)),
-            ],
-        };
-        // Simulate deduplication: collect unique names.
-        let names: std::collections::HashSet<_> =
-            spec.constraints.iter().map(|c| &c.metric_name).collect();
-        assert_eq!(names.len(), 1);
+        let refs: Vec<&TestSpec> = vec![&spec30, &spec60, &spec45];
+        let key = run_key(&spec30.target);
+        let request = build_run_request(&key, &refs);
+        assert_eq!(request.timeout_secs, Some(60));
     }
 }

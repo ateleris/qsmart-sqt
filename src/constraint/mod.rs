@@ -35,6 +35,7 @@ pub enum Value {
     Percent(f64),
     Integer(i64),
     Boolean(bool),
+    Bytes(f64),
 }
 
 impl Value {
@@ -53,11 +54,17 @@ impl Value {
     pub fn bool(b: bool) -> Self {
         Value::Boolean(b)
     }
+    pub fn bytes(v: f64) -> Self {
+        Value::Bytes(v)
+    }
 
     #[allow(clippy::cast_precision_loss)]
     pub fn to_f64(&self) -> f64 {
         match self {
-            Value::Milliseconds(v) | Value::Kilobytes(v) | Value::Percent(v) => *v,
+            Value::Milliseconds(v)
+            | Value::Kilobytes(v)
+            | Value::Percent(v)
+            | Value::Bytes(v) => *v,
             Value::Integer(v) => *v as f64,
             Value::Boolean(b) => {
                 if *b {
@@ -74,6 +81,7 @@ impl Value {
             Value::Milliseconds(_) => "ms",
             Value::Kilobytes(_) => "KB",
             Value::Percent(_) => "%",
+            Value::Bytes(_) => "bytes",
             Value::Integer(_) | Value::Boolean(_) => "",
         }
     }
@@ -142,6 +150,13 @@ mod tests {
         assert_eq!(Op::Gt.to_string(), ">");
         assert_eq!(Op::Eq.to_string(), "==");
         assert_eq!(Op::Ne.to_string(), "!=");
+    }
+
+    #[test]
+    fn value_bytes_roundtrip() {
+        let v = Value::bytes(1024.5);
+        assert_eq!(v.to_f64(), 1024.5);
+        assert_eq!(v.unit(), "bytes");
     }
 
     #[test]

@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
                 .token_env
                 .as_ref()
                 .and_then(|var| std::env::var(var).ok());
-            let client = api::JobApiClient::new(&cfg.api.url, token.as_deref())?;
+            let client = api::ApiClient::new(&cfg.api.url, token.as_deref())?;
 
             let result = orchestrator::run(&specs, &client, &cfg).await?;
 
