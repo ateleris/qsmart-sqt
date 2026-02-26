@@ -61,14 +61,15 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 │  │  Configuration     │         │    Orchestrator          │            │
 │  │  Parser            │────────▶│  (API Client + Polling)  │            │
 │  │                    │         │                          │            │
-│  │  • YAML/JSON       │         │  • Collect task names    │            │
-│  │  • Strictdoc       │         │  • Submit one job        │            │
-│  │  • Validation      │         │  • Poll until complete   │            │
+│  │  • YAML/JSON       │         │  • Group specs by target │            │
+│  │  • Strictdoc       │         │  • Submit run + analysis │            │
+│  │  • Validation      │         │  • Poll all until done   │            │
 │  └────────────────────┘         └────────────┬─────────────┘            │
 │                                              │                          │
 │  ┌───────────────────────────────────────────┼──────────────────────┐   │
 │  │          Constraint Evaluator             │                      │   │
-│  │  • Map TaskResult → MetricValue           │                      │   │
+│  │  • Map RunMetrics/AnalysisMetrics fields  │                      │   │
+│  │    → MetricValue; null = failed constraint│                      │   │
 │  │  • Evaluate constraints against values    │                      │   │
 │  └───────────────────────────────────────────┼──────────────────────┘   │
 │                                              │                          │
@@ -798,74 +799,116 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
+#### Design principles
+
+Two job types reflect a fundamental split in the measurement lifecycle:
+
+| Type | Endpoint | Triggered by | Metrics |
+|---|---|---|---|
+| **Execution run** | `POST /api/v1/runs` | Each unique `(binary, input)` pair | Runtime: return code, timing, memory, CPU, leaks, coverage, ML accuracy |
+| **Binary analysis** | `POST /api/v1/analysis` | Each unique binary | Static: Sonar issues, static warnings, binary size |
+
+The client does **not** enumerate which metrics it wants. The server returns everything
+it can measure in a **fixed schema**; fields that are unavailable are `null`. A `null`
+field means "tool not available or not configured", not infrastructure failure.
+
 ### 5.2 API Endpoints
 
-There are exactly two endpoints. Results are included directly in the GET response;
-there is no separate `/results` endpoint.
+All four endpoints follow the same asynchronous pattern: submit → receive a resource ID
+(202 Accepted) → poll until `status` is terminal. Results are embedded directly in the
+GET response; there is no separate `/results` endpoint.
 
-#### 5.2.1 Submit Job
+#### 5.2.1 Submit Execution Run
 
-**Endpoint**: `POST /api/v1/jobs`
+**Endpoint**: `POST /api/v1/runs`
 
 **Request Body**:
 ```json
 {
-  "target": {
-    "binary": "build/ml_l_inference",
-    "input": "datasets/reference.bin",
-    "timeout_secs": 60
-  },
-  "tasks": [
-    { "name": "return_code" },
-    { "name": "time.execution" },
-    { "name": "memory.peak_rss" },
-    { "name": "memory.leaks" },
-    { "name": "coverage.line_percent", "config": { "info_file": "coverage.info" } },
-    { "name": "sonar.critical_issues", "config": { "project_key": "my-project" } }
-  ]
+  "binary": "build/ml_l_inference",
+  "input": "datasets/reference.bin",
+  "timeout_secs": 60
 }
 ```
 
 **Response** (202 Accepted):
 ```json
-{
-  "job_id": "job-abc123",
-  "status": "accepted",
-  "created_at": "2026-02-26T10:00:00Z"
-}
+{ "run_id": "run-abc123", "status": "accepted", "created_at": "2026-02-26T10:00:00Z" }
 ```
 
-#### 5.2.2 Get Job Status and Results
+#### 5.2.2 Get Execution Run Status
 
-**Endpoint**: `GET /api/v1/jobs/{job_id}`
+**Endpoint**: `GET /api/v1/runs/{run_id}`
 
-**Response** (partial — job still running):
+**Response** (terminal — run complete):
 ```json
 {
-  "job_id": "job-abc123",
-  "status": "running",
+  "run_id": "run-abc123",
+  "binary": "build/ml_l_inference",
+  "input": "datasets/reference.bin",
+  "status": "complete",
   "created_at": "2026-02-26T10:00:00Z",
   "started_at": "2026-02-26T10:00:01Z",
-  "tasks": {
-    "return_code":   { "status": "complete", "value": 0.0, "unit": "" },
-    "time.execution":{ "status": "complete", "value": 87.3, "unit": "ms" },
-    "memory.leaks":  { "status": "running" },
-    "coverage.line_percent": { "status": "failed", "error": "lcov not installed" }
+  "completed_at": "2026-02-26T10:00:03Z",
+  "metrics": {
+    "return_code":      0,
+    "time.execution":   87.3,
+    "memory.peak_rss":  4096.0,
+    "memory.avg_rss":   3200.0,
+    "cpu.max_pct":      94.1,
+    "cpu.avg_pct":      71.3,
+    "memory.leaks":     0.0,
+    "coverage.line_pct": 87.2,
+    "ml.accuracy":      0.983,
+    "ml.f1_score":      null,
+    "ml.recall":        null,
+    "ml.precision":     null
   }
 }
 ```
 
-**Job status values**: `accepted` | `running` | `complete` | `failed`
+#### 5.2.3 Submit Binary Analysis
 
-**Task status values**: `pending` | `running` | `complete` | `failed`
+**Endpoint**: `POST /api/v1/analysis`
 
-When `status == "complete"`: every task is `complete` or `failed`.
-When `status == "failed"`: infrastructure-level failure (not per-task).
+**Request Body**:
+```json
+{ "binary": "build/ml_l_inference" }
+```
 
-**Terminal states**: `complete` and `failed`. SQT stops polling when the
-job reaches a terminal state. A `complete` job may contain individually
-`failed` tasks — these are recorded as failed constraints, not as
-infrastructure errors.
+**Response** (202 Accepted):
+```json
+{ "analysis_id": "analysis-def456", "status": "accepted", "created_at": "2026-02-26T10:00:00Z" }
+```
+
+#### 5.2.4 Get Binary Analysis Status
+
+**Endpoint**: `GET /api/v1/analysis/{analysis_id}`
+
+**Response** (terminal — analysis complete):
+```json
+{
+  "analysis_id": "analysis-def456",
+  "binary": "build/ml_l_inference",
+  "status": "complete",
+  "created_at": "2026-02-26T10:00:00Z",
+  "started_at": "2026-02-26T10:00:01Z",
+  "completed_at": "2026-02-26T10:00:05Z",
+  "metrics": {
+    "sonar.critical_issues": 0,
+    "sonar.major_issues":    3,
+    "static.warnings":       1,
+    "binary.size_kb":        412.0
+  }
+}
+```
+
+**Status values** (both job types): `accepted` | `running` | `complete` | `failed`
+
+**Terminal states**: `complete` and `failed`. SQT stops polling when the job reaches a
+terminal state. A `complete` job may have `null` metric fields — those indicate
+unavailable tools, not infrastructure failure. A `failed` status means the job could not
+run at all (binary not found, server error, etc.).
 
 ### 5.3 Error Handling
 
@@ -890,28 +933,33 @@ infrastructure errors.
 
 ### 5.4 Polling Strategy
 
-SQT Generic implements exponential backoff for polling. Because results are
-embedded in the GET response, no separate results fetch is needed:
+SQT Generic implements exponential backoff for all polling (runs and analyses).
+Results are embedded in the GET response — no separate fetch is needed:
 
-```rust
-async fn wait_for_completion(job_id: &str) -> Result<JobStatusResponse> {
-    let mut delay = Duration::from_secs(1);
-    let max_delay = Duration::from_secs(30);
-
-    loop {
-        let resp = client.get_status(job_id).await?;
-
-        match resp.status {
-            JobStatus::Complete => return Ok(resp),
-            JobStatus::Failed   => return Err(anyhow!("Job failed: {:?}", resp.error)),
-            JobStatus::Accepted | JobStatus::Running => {
-                tokio::time::sleep(delay).await;
-                delay = std::cmp::min(delay * 2, max_delay);
-            }
-        }
-    }
-}
 ```
+initial delay: 1 s
+backoff factor: ×2 per poll
+maximum delay: 30 s
+```
+
+The orchestrator submits all run jobs and the analysis job(s) in parallel, then
+awaits each concurrently. Total wall-clock time is bounded by the slowest job,
+not the sum of all jobs.
+
+#### Metric routing
+
+When evaluating constraints, the orchestrator routes each `constraint.metric_name`
+to the correct job type using a prefix convention:
+
+| Metric name prefix | Source job type |
+|---|---|
+| `sonar.*` | Binary analysis |
+| `static.*` | Binary analysis |
+| `binary.*` | Binary analysis |
+| Everything else | Execution run |
+
+A metric that is `null` in the response is treated as a **failed constraint** by
+the evaluator — identical to a task failing in the old design.
 
 ---
 
@@ -1311,7 +1359,29 @@ docker:
 - **Format**: Structured JSON
 - **Use case**: CI/CD integration, metrics tracking
 
-### 9.2 Report Content Structure
+### 9.2 Report Structure Principles
+
+The report is **requirement-centric**: the outer loop is requirements, not runs.
+
+A single qualification run may execute the same binary with multiple inputs
+(e.g. `reference.bin`, `edge_case.bin`, `stress.bin`). Each input produces one
+execution run. Each requirement's `TestSpec` references the `(binary, input)` pair
+relevant to it. The orchestrator groups specs by `(binary, input)`, submits one job
+per group, and fans results back to each spec.
+
+The report table shows one row per requirement, citing its evidence source:
+
+```
+REQ-ML-L-001  PASS  return_code=0 ✓  time=87ms ✓    [ml_l_inference + reference.bin]
+REQ-ML-L-002  FAIL  return_code=1 ✗                  [ml_l_inference + edge_case.bin]
+REQ-ML-L-003  PASS  peak_rss=3.9MB ✓                 [ml_l_inference + reference.bin]
+REQ-STATIC-001 PASS sonar.critical=0 ✓               [ml_l_inference, static analysis]
+```
+
+The run is evidence *for* the requirement — not the unit of reporting. Multiple
+requirements can share the same run without re-executing the binary.
+
+### 9.3 Report Content Structure
 
 ```
 Validation Report - Klepsydra AI ML-L v1.0.0
@@ -1373,7 +1443,7 @@ Date: 2026-02-13 14:30:00 UTC
 ═══════════════════════════════════════════════════════════════
 ```
 
-### 9.3 Report Templates
+### 9.4 Report Templates
 
 #### PDF Template (Typst)
 ```typst
@@ -1413,7 +1483,7 @@ Date: 2026-02-13 14:30:00 UTC
 // ... more sections ...
 ```
 
-### 9.4 Report Generation Implementation
+### 9.5 Report Generation Implementation
 
 ```rust
 pub struct ReportGenerator {

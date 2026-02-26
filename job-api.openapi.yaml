@@ -7,16 +7,47 @@ info:
     Implemented by the ML-L Specific server (Klepsydra) and by the local
     development API server (SQT Generic local-dev binary).
 
-    All operations follow the same two-step asynchronous pattern:
-    1. Submit a job → receive a `job_id` (202 Accepted)
-    2. Poll `GET /api/v1/jobs/{job_id}` until `status` is `complete` or `failed`
+    ## Two-Endpoint Design
 
-    Task results (values, units, evidence) are included directly in the GET
-    response — there is no separate `/results` endpoint. Partial results are
-    visible while the job is still running.
+    The API exposes two distinct job types, reflecting a fundamental split in
+    the measurement lifecycle:
+
+    ### Execution runs — `POST /api/v1/runs`
+
+    One run per `(binary, input)` pair. Executes the binary with the specified
+    input and returns a **fixed-schema** set of runtime metrics: return code,
+    execution time, memory usage (peak and average RSS), CPU usage (max and
+    average), memory leaks (Valgrind), line coverage (lcov), and — for ML
+    inference binaries — accuracy, F1 score, recall, and precision.
+
+    The client does **not** enumerate which metrics it wants. The server
+    returns everything it can measure; fields that are unavailable (tool not
+    installed, binary not instrumented, no ground truth configured) are `null`.
+
+    ### Binary analysis — `POST /api/v1/analysis`
+
+    One analysis per binary. Input-independent. Returns static and structural
+    metrics: Sonar issue counts, static analyser warnings, and binary size.
+    This is called once per unique binary across all qualification runs.
+
+    ## Polling pattern (both endpoints)
+
+    Both job types follow the same two-step asynchronous pattern:
+    1. Submit → receive a resource ID (202 Accepted)
+    2. Poll `GET` until `status` is `complete` or `failed`
 
     SQT Generic uses exponential backoff when polling (initial 1 s, max 30 s).
-  version: "1.0.0"
+
+    Results are included directly in the GET response — there is no separate
+    `/results` endpoint.
+
+    ## Metric availability
+
+    A metric field being `null` in the response is *not* a failure — it means
+    the server could not or did not measure it (missing tool, uninstrumented
+    binary, no ground truth configured server-side). SQT Generic treats a null
+    metric as a failed constraint when a spec references it.
+  version: "2.0.0"
   contact:
     name: Ateleris
 
@@ -28,62 +59,49 @@ security:
   - bearerAuth: []
 
 tags:
-  - name: Jobs
-    description: Job submission and status retrieval
+  - name: Runs
+    description: Per-(binary, input) execution jobs
+  - name: Analysis
+    description: Per-binary static analysis jobs
 
 paths:
 
   # ---------------------------------------------------------------------------
-  # Submit a job
+  # Execution runs
   # ---------------------------------------------------------------------------
 
-  /api/v1/jobs:
+  /api/v1/runs:
     post:
-      operationId: submitJob
-      summary: Submit a qualification job
+      operationId: submitRun
+      summary: Submit an execution run
       description: |
-        Submits a single job containing one or more measurement tasks. The
-        server runs all tasks in parallel (where possible) and returns a
-        `job_id` for status polling.
+        Executes `binary` with `input` and collects all available runtime
+        metrics. The server determines which metrics to collect; the client
+        does not supply a task list.
 
-        Task names use the same identifiers as SQT Generic metric collectors:
-        `return_code`, `time.execution`, `memory.peak_rss`, `memory.leaks`,
-        `coverage.line_percent`, `sonar.critical_issues`, etc.
-
-        Per-task configuration (e.g., lcov `info_file`, SonarQube
-        `project_key`) is passed via the optional `config` object.
-      tags: [Jobs]
+        Submit once per unique `(binary, input)` pair. Results from a single
+        run are shared across all test specifications that reference the same
+        pair.
+      tags: [Runs]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/JobRequest"
+              $ref: "#/components/schemas/RunRequest"
             example:
-              target:
-                binary: "build/ml_l_inference"
-                input: "datasets/reference.bin"
-                timeout_secs: 60
-              tasks:
-                - name: "return_code"
-                - name: "time.execution"
-                - name: "memory.peak_rss"
-                - name: "memory.leaks"
-                - name: "coverage.line_percent"
-                  config:
-                    info_file: "coverage.info"
-                - name: "sonar.critical_issues"
-                  config:
-                    project_key: "my-project"
+              binary: "build/ml_l_inference"
+              input: "datasets/reference.bin"
+              timeout_secs: 60
       responses:
         "202":
-          description: Job accepted and queued
+          description: Run accepted and queued
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JobAccepted"
+                $ref: "#/components/schemas/RunAccepted"
               example:
-                job_id: "job-abc123"
+                run_id: "run-abc123"
                 status: "accepted"
                 created_at: "2026-02-26T10:00:00Z"
         "400":
@@ -93,63 +111,134 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  # ---------------------------------------------------------------------------
-  # Poll job status (includes partial and final results)
-  # ---------------------------------------------------------------------------
-
-  /api/v1/jobs/{job_id}:
+  /api/v1/runs/{run_id}:
     get:
-      operationId: getJobStatus
-      summary: Get job status and task results
+      operationId: getRunStatus
+      summary: Get execution run status and metrics
       description: |
-        Returns the current status of a job and per-task results. Task results
-        are included as they complete — a task may have a `value` even while
-        the overall job is still `running`.
+        Returns the current status and all available runtime metrics for the
+        run. Metrics are populated as they become available — a field may be
+        non-null while `status` is still `running`.
 
-        Poll this endpoint with exponential backoff until the job `status` is
-        `complete` or `failed`.
+        Poll with exponential backoff until `status` is `complete` or
+        `failed`. A `complete` status means the binary ran to completion; some
+        metric fields may still be `null` if the corresponding tool was
+        unavailable.
 
-        When `status == "complete"`: every task is either `complete` or
-        `failed`.
-
-        When `status == "failed"`: infrastructure-level failure (e.g., the
-        target binary could not be started). Per-task `failed` status is
-        distinct from job-level failure.
-      tags: [Jobs]
+        A `failed` status indicates an infrastructure-level failure (e.g. the
+        binary could not be launched).
+      tags: [Runs]
       parameters:
-        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/RunId"
       responses:
         "200":
-          description: Job status and available task results
+          description: Run status and available metrics
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/JobStatus"
+                $ref: "#/components/schemas/RunStatusResponse"
               example:
-                job_id: "job-abc123"
-                status: "running"
+                run_id: "run-abc123"
+                binary: "build/ml_l_inference"
+                input: "datasets/reference.bin"
+                status: "complete"
                 created_at: "2026-02-26T10:00:00Z"
                 started_at: "2026-02-26T10:00:01Z"
-                tasks:
-                  return_code:
-                    status: "complete"
-                    value: 0.0
-                    unit: ""
-                  time.execution:
-                    status: "complete"
-                    value: 87.3
-                    unit: "ms"
-                  memory.peak_rss:
-                    status: "complete"
-                    value: 4096.0
-                    unit: "KB"
-                  memory.leaks:
-                    status: "running"
-                  coverage.line_percent:
-                    status: "failed"
-                    error: "lcov not installed"
-                  sonar.critical_issues:
-                    status: "pending"
+                completed_at: "2026-02-26T10:00:03Z"
+                metrics:
+                  return_code: 0
+                  time.execution: 87.3
+                  memory.peak_rss: 4096.0
+                  memory.avg_rss: 3200.0
+                  cpu.max_pct: 94.1
+                  cpu.avg_pct: 71.3
+                  memory.leaks: 0.0
+                  coverage.line_pct: 87.2
+                  ml.accuracy: 0.983
+                  ml.f1_score: null
+                  ml.recall: null
+                  ml.precision: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Binary analysis
+  # ---------------------------------------------------------------------------
+
+  /api/v1/analysis:
+    post:
+      operationId: submitAnalysis
+      summary: Submit a binary analysis
+      description: |
+        Runs input-independent static and structural analysis on `binary`.
+        Call once per unique binary across the qualification run — do not
+        repeat for each input.
+
+        Covers: Sonar quality gate, static analyser warnings, binary size.
+        ML-L Specific servers may add hardware-specific metrics (e.g. worst-
+        case execution time bounds, stack depth analysis).
+      tags: [Analysis]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalysisRequest"
+            example:
+              binary: "build/ml_l_inference"
+      responses:
+        "202":
+          description: Analysis accepted and queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisAccepted"
+              example:
+                analysis_id: "analysis-def456"
+                status: "accepted"
+                created_at: "2026-02-26T10:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/analysis/{analysis_id}:
+    get:
+      operationId: getAnalysisStatus
+      summary: Get binary analysis status and metrics
+      description: |
+        Returns the current status and all available static analysis metrics.
+
+        Poll with exponential backoff until `status` is `complete` or
+        `failed`. Terminal state semantics are identical to runs.
+      tags: [Analysis]
+      parameters:
+        - $ref: "#/components/parameters/AnalysisId"
+      responses:
+        "200":
+          description: Analysis status and available metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisStatusResponse"
+              example:
+                analysis_id: "analysis-def456"
+                binary: "build/ml_l_inference"
+                status: "complete"
+                created_at: "2026-02-26T10:00:00Z"
+                started_at: "2026-02-26T10:00:01Z"
+                completed_at: "2026-02-26T10:00:05Z"
+                metrics:
+                  sonar.critical_issues: 0
+                  sonar.major_issues: 3
+                  static.warnings: 1
+                  binary.size_kb: 412.0
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -174,14 +263,23 @@ components:
         read from the environment variable named in `config.api.token_env`.
 
   parameters:
-    JobId:
-      name: job_id
+    RunId:
+      name: run_id
       in: path
       required: true
-      description: Unique job identifier as returned by POST /api/v1/jobs.
+      description: Unique run identifier as returned by POST /api/v1/runs.
       schema:
         type: string
-        example: "job-abc123"
+        example: "run-abc123"
+
+    AnalysisId:
+      name: analysis_id
+      in: path
+      required: true
+      description: Unique analysis identifier as returned by POST /api/v1/analysis.
+      schema:
+        type: string
+        example: "analysis-def456"
 
   responses:
     BadRequest:
@@ -193,7 +291,7 @@ components:
           example:
             error:
               code: "VALIDATION_ERROR"
-              message: "Unknown task name: custom.undefined_metric"
+              message: "binary path must not be empty"
               timestamp: "2026-02-26T10:00:00Z"
 
     Unauthorized:
@@ -209,7 +307,7 @@ components:
               timestamp: "2026-02-26T10:00:00Z"
 
     NotFound:
-      description: Job not found
+      description: Resource not found
       content:
         application/json:
           schema:
@@ -217,7 +315,7 @@ components:
           example:
             error:
               code: "NOT_FOUND"
-              message: "Job not found: job-abc123"
+              message: "Run not found: run-abc123"
               timestamp: "2026-02-26T10:00:00Z"
 
     InternalError:
@@ -229,30 +327,16 @@ components:
           example:
             error:
               code: "INTERNAL_ERROR"
-              message: "Unexpected failure during task execution"
+              message: "Unexpected failure during metric collection"
               timestamp: "2026-02-26T10:00:00Z"
 
   schemas:
 
     # -------------------------------------------------------------------------
-    # Request
+    # Run — request and response
     # -------------------------------------------------------------------------
 
-    JobRequest:
-      type: object
-      required: [target, tasks]
-      properties:
-        target:
-          $ref: "#/components/schemas/Target"
-        tasks:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/TaskSpec"
-          description: List of measurement tasks to run. Names must match
-            registered metric collectors on the server.
-
-    Target:
+    RunRequest:
       type: object
       required: [binary]
       properties:
@@ -264,48 +348,25 @@ components:
           example: "build/ml_l_inference"
         input:
           type: string
-          description: Optional path to the input data file fed to the binary.
+          description: |
+            Path to the input file fed to the binary on stdin or as a
+            positional argument (server-side convention).
           example: "datasets/reference.bin"
         timeout_secs:
           type: integer
           minimum: 1
           default: 60
-          description: Maximum execution time per task invocation in seconds.
+          description: Maximum execution time in seconds.
           example: 60
 
-    TaskSpec:
+    RunAccepted:
       type: object
-      required: [name]
+      required: [run_id, status, created_at]
       properties:
-        name:
+        run_id:
           type: string
-          description: |
-            Metric name identifying the measurement task. Uses the same
-            identifiers as SQT Generic metric collectors, e.g.:
-            `return_code`, `time.execution`, `memory.peak_rss`,
-            `memory.leaks`, `coverage.line_percent`, `sonar.critical_issues`.
-          example: "coverage.line_percent"
-        config:
-          type: object
-          additionalProperties: true
-          description: |
-            Optional task-specific configuration. Content is task-defined.
-            Examples:
-            - `coverage.line_percent`: `{ "info_file": "coverage.info" }`
-            - `sonar.critical_issues`: `{ "project_key": "my-project" }`
-
-    # -------------------------------------------------------------------------
-    # Responses
-    # -------------------------------------------------------------------------
-
-    JobAccepted:
-      type: object
-      required: [job_id, status, created_at]
-      properties:
-        job_id:
-          type: string
-          description: Unique job identifier for subsequent polling.
-          example: "job-abc123"
+          description: Unique run identifier for subsequent polling.
+          example: "run-abc123"
         status:
           type: string
           enum: [accepted]
@@ -313,78 +374,230 @@ components:
         created_at:
           type: string
           format: date-time
-          description: ISO 8601 timestamp when the job was created.
           example: "2026-02-26T10:00:00Z"
 
-    JobStatus:
+    RunStatusResponse:
       type: object
-      required: [job_id, status, created_at, tasks]
+      required: [run_id, binary, status, created_at, metrics]
       properties:
-        job_id:
+        run_id:
           type: string
-          example: "job-abc123"
+          example: "run-abc123"
+        binary:
+          type: string
+          example: "build/ml_l_inference"
+        input:
+          type: string
+          description: Input file path, if one was supplied.
+          example: "datasets/reference.bin"
         status:
           $ref: "#/components/schemas/JobStatusEnum"
         created_at:
           type: string
           format: date-time
-          example: "2026-02-26T10:00:00Z"
         started_at:
           type: string
           format: date-time
-          description: When the server began executing tasks. Absent if still
-            in the accepted/queued state.
-          example: "2026-02-26T10:00:01Z"
+          description: When execution started. Absent if still queued.
         completed_at:
           type: string
           format: date-time
-          description: When all tasks finished. Only present when
-            `status == "complete"` or `status == "failed"`.
+          description: When execution finished. Present only when terminal.
         error:
           type: string
-          description: Infrastructure-level error message. Only present when
-            `status == "failed"`.
-        tasks:
-          type: object
-          additionalProperties:
-            $ref: "#/components/schemas/TaskResult"
-          description: |
-            Map from task name to result. Keys match the `name` fields in the
-            original `JobRequest.tasks` array. Tasks that have not yet started
-            may be absent or have `status: "pending"`.
+          description: Infrastructure-level error. Present only when `status == "failed"`.
+        metrics:
+          $ref: "#/components/schemas/RunMetrics"
 
-    TaskResult:
+    RunMetrics:
       type: object
-      required: [status]
+      description: |
+        Fixed-schema runtime metrics for a single `(binary, input)` execution.
+        All fields are always present in a terminal response. `null` means the
+        metric was not available for this run (tool not installed, binary not
+        instrumented, no ground truth configured server-side, etc.).
       properties:
-        status:
-          $ref: "#/components/schemas/TaskStatusEnum"
-        value:
+        return_code:
+          type: integer
+          nullable: true
+          description: Process exit code. 0 = success.
+          example: 0
+        time.execution:
           type: number
           format: double
-          description: Measured numeric value. Only present when
-            `status == "complete"`.
+          nullable: true
+          description: Wall-clock execution time in milliseconds.
           example: 87.3
-        unit:
-          type: string
-          description: Unit of the measured value (e.g., `"ms"`, `"KB"`,
-            `"%"`, `""`). Only present when `status == "complete"`.
-          example: "ms"
-        error:
-          type: string
-          description: Error message. Only present when `status == "failed"`.
-          example: "lcov not installed"
-        evidence:
-          type: object
-          additionalProperties:
-            type: string
+        memory.peak_rss:
+          type: number
+          format: double
+          nullable: true
+          description: Peak resident set size in kilobytes (via `/usr/bin/time`).
+          example: 4096.0
+        memory.avg_rss:
+          type: number
+          format: double
+          nullable: true
+          description: Average resident set size in kilobytes.
+          example: 3200.0
+        cpu.max_pct:
+          type: number
+          format: double
+          nullable: true
+          description: Peak CPU usage as a percentage (0–100).
+          example: 94.1
+        cpu.avg_pct:
+          type: number
+          format: double
+          nullable: true
+          description: Average CPU usage as a percentage (0–100).
+          example: 71.3
+        memory.leaks:
+          type: number
+          format: double
+          nullable: true
           description: |
-            Optional map of evidence label → file path or inline content.
-            Server-side paths to artefacts produced during measurement (e.g.,
-            Valgrind XML report, lcov info file).
+            Total bytes leaked according to Valgrind memcheck. 0 = no leaks.
+            `null` = Valgrind not available or not run.
+          example: 0.0
+        coverage.line_pct:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Line coverage percentage (0–100). Requires a binary instrumented
+            with `--coverage` (gcov). `null` = lcov not available or binary
+            not instrumented.
+          example: 87.2
+        ml.accuracy:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Model accuracy (0.0–1.0). `null` if the binary is not an ML
+            inference binary or if no ground truth is configured server-side.
+          example: 0.983
+        ml.f1_score:
+          type: number
+          format: double
+          nullable: true
+          description: F1 score (0.0–1.0). `null` if not available.
+          example: null
+        ml.recall:
+          type: number
+          format: double
+          nullable: true
+          description: Recall (0.0–1.0). `null` if not available.
+          example: null
+        ml.precision:
+          type: number
+          format: double
+          nullable: true
+          description: Precision (0.0–1.0). `null` if not available.
+          example: null
 
     # -------------------------------------------------------------------------
-    # Enumerations
+    # Analysis — request and response
+    # -------------------------------------------------------------------------
+
+    AnalysisRequest:
+      type: object
+      required: [binary]
+      properties:
+        binary:
+          type: string
+          description: |
+            Path or identifier of the binary to analyse. Resolved server-side.
+          example: "build/ml_l_inference"
+        timeout_secs:
+          type: integer
+          minimum: 1
+          default: 300
+          description: Maximum analysis time in seconds. Defaults to 5 minutes.
+          example: 300
+
+    AnalysisAccepted:
+      type: object
+      required: [analysis_id, status, created_at]
+      properties:
+        analysis_id:
+          type: string
+          description: Unique analysis identifier for subsequent polling.
+          example: "analysis-def456"
+        status:
+          type: string
+          enum: [accepted]
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-02-26T10:00:00Z"
+
+    AnalysisStatusResponse:
+      type: object
+      required: [analysis_id, binary, status, created_at, metrics]
+      properties:
+        analysis_id:
+          type: string
+          example: "analysis-def456"
+        binary:
+          type: string
+          example: "build/ml_l_inference"
+        status:
+          $ref: "#/components/schemas/JobStatusEnum"
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          description: When analysis started. Absent if still queued.
+        completed_at:
+          type: string
+          format: date-time
+          description: When analysis finished. Present only when terminal.
+        error:
+          type: string
+          description: Infrastructure-level error. Present only when `status == "failed"`.
+        metrics:
+          $ref: "#/components/schemas/AnalysisMetrics"
+
+    AnalysisMetrics:
+      type: object
+      description: |
+        Fixed-schema static and structural metrics for a binary.
+        All fields are always present in a terminal response. `null` means the
+        metric was not available (tool not configured, SonarQube unreachable, etc.).
+      properties:
+        sonar.critical_issues:
+          type: integer
+          nullable: true
+          description: |
+            Count of CRITICAL-severity SonarQube issues. `null` if SonarQube
+            is not configured or unreachable.
+          example: 0
+        sonar.major_issues:
+          type: integer
+          nullable: true
+          description: |
+            Count of MAJOR-severity SonarQube issues. `null` if SonarQube
+            is not configured or unreachable.
+          example: 3
+        static.warnings:
+          type: integer
+          nullable: true
+          description: |
+            Total warnings from static analysers (cppcheck, clang-tidy, etc.).
+            `null` if no static analyser is configured.
+          example: 1
+        binary.size_kb:
+          type: number
+          format: double
+          nullable: true
+          description: Binary size on disk in kilobytes.
+          example: 412.0
+
+    # -------------------------------------------------------------------------
+    # Shared
     # -------------------------------------------------------------------------
 
     JobStatusEnum:
@@ -392,21 +605,13 @@ components:
       enum: [accepted, running, complete, failed]
       description: |
         - `accepted`: Job received and queued, not yet started
-        - `running`: At least one task is executing
-        - `complete`: All tasks finished (each task is `complete` or `failed`)
+        - `running`: Job is executing
+        - `complete`: Job finished; metric fields reflect final measured values
         - `failed`: Infrastructure-level failure; the job could not run
 
         Terminal states: `complete` and `failed`. Clients MUST stop polling
-        when the status is terminal.
-
-    TaskStatusEnum:
-      type: string
-      enum: [pending, running, complete, failed]
-      description: |
-        - `pending`: Task is queued, waiting for execution
-        - `running`: Task is currently executing
-        - `complete`: Task finished and produced a value
-        - `failed`: Task encountered an error (see `error` field)
+        when the status is terminal. A `complete` job may have `null` metric
+        fields — those indicate unavailable tools, not infrastructure failure.
 
     # -------------------------------------------------------------------------
     # Error
