@@ -182,9 +182,9 @@ ats-sqt/
     │   └── mod.rs              ← run all specs, collect results
     │
     ├── api/
-    │   ├── mod.rs              ← REST client for ML-L Specific (Klepsydra)
+    │   ├── mod.rs              ← JobApiClient — REST client for job-api.openapi.yaml
     │   ├── client.rs
-    │   └── types.rs
+    │   └── types.rs            ← JobRequest, JobStatus, TaskResult, …
     │
     ├── evidence/
     │   └── mod.rs              ← RunResult, RequirementResult aggregation
@@ -258,6 +258,12 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ### Phase 2 — Metric Registry and Built-in Collectors
 
+> **Architecture note**: These collectors execute tools locally (valgrind, lcov, etc.).
+> In the primary (API-first) architecture, they run **server-side** — either in the
+> ML-L Specific server (Klepsydra) or in a local dev API server. The code remains in
+> this crate as reference implementations and will be exposed via the local dev server
+> binary in a future phase. The orchestrator (Phase 3) never calls collectors directly.
+
 - [x] **T-020** Implement `MetricRegistry` and `build_registry()`
   - ~~Declare `CollectorFactory` struct and `inventory::collect!(CollectorFactory)`~~ **Done in
     T-010** — `CollectorFactory` and `inventory::collect!` already live in `src/metrics/mod.rs`
@@ -306,75 +312,64 @@ at the bottom of the file. No other file needs to change.
   - Evidence: JSON response saved to working dir
   - **Note**: uses `reqwest::blocking` (HTTP from a sync fn). The orchestrator must call
     this collector inside `tokio::task::spawn_blocking` to avoid blocking the async
-    executor. Same rule applies to `RemoteCollector` (T-043).
+    executor. The same constraint applies to the local dev server (T-063) when it invokes
+    this collector.
 
 ---
 
-### Phase 3 — Test Specs and Orchestrator
+### Phase 3 — API Client, Specs, and Orchestrator
 
-- [ ] **T-030** Define `all_specs()` convention
+- [ ] **T-030** Define API types (`src/api/types.rs`)
+  - `JobRequest`, `Target` (API version), `TaskSpec`, `JobAccepted`
+  - `JobStatusResponse`, `TaskResult`, `ErrorResponse`
+  - Derived from `job-api.openapi.yaml`
+  - All fields `Deserialize` + `Serialize`
+
+- [ ] **T-031** Implement `JobApiClient` (`src/api/client.rs`)
+  - `new(base_url, token)` — creates `reqwest` async client
+  - `submit_job(req: &JobRequest) -> Result<String>` — returns `job_id`
+  - `get_status(job_id: &str) -> Result<JobStatusResponse>`
+  - `wait_for_completion(job_id: &str) -> Result<JobStatusResponse>` with exponential
+    backoff (initial 1 s, max 30 s)
+  - Bearer token read from env var specified in `config.api.token_env`
+
+- [ ] **T-032** Define `all_specs()` convention (`src/specs/mod.rs`)
   - `src/specs/mod.rs` exports `pub fn all_specs() -> Vec<TestSpec>`
   - Each spec file in `src/specs/` adds its specs to the vec
   - **Note**: unlike metrics, specs are NOT auto-discovered via `inventory`. Adding a
     new spec requires two manual steps: `mod my_spec;` in `specs/mod.rs` and a call to
     `my_spec::spec()` inside `all_specs()`. This is intentional — specs are project-
     specific configuration, not reusable plugins.
+  - `Target` in specs now only needs `binary`, `input`, and `timeout` (no `Platform`)
   - Document the pattern so users know exactly what to add and where
 
-- [ ] **T-031** Write first example spec (`src/specs/example.rs`)
-  - Uses `ReturnCodeCollector` and `ExecutionTimeCollector` against a local binary
+- [ ] **T-033** Write first example spec (`src/specs/example.rs`)
+  - Uses `return_code` and `time.execution` constraints against a local binary
   - Serves as the template users copy when adding their own specs
   - Compile and run this as the first end-to-end smoke test
 
-- [ ] **T-032** Implement `Orchestrator`
-  - `run(specs: &[TestSpec], registry: &MetricRegistry) -> RunResult`
-  - For each spec: for each constraint: look up collector by `constraint.metric_name` →
-    call `collector.collect(spec.target, &constraint.config)` → evaluate outcome
-  - Collect all outcomes; mark spec passed iff all constraints pass
-  - Handle collector errors gracefully: record as failed constraint with error message,
-    continue with remaining specs
+- [ ] **T-034** Implement `Orchestrator` (`src/orchestrator/mod.rs`)
+  - `run(specs: &[TestSpec], client: &JobApiClient, config: &SqtConfig) -> RunResult`
+  - Collects all required task names from all spec constraints (deduplicates)
+  - Builds a `JobRequest` and submits ONE job via `JobApiClient`
+  - Polls until complete via `wait_for_completion`
+  - For each spec: for each constraint: look up task result by `constraint.metric_name`
+    → map `TaskResult` to `MetricValue` → call `evaluate` → collect outcome
+  - Mark spec passed iff all constraints pass; record task errors as failed constraints
+  - Returns `RunResult`
 
-- [ ] **T-033** Wire orchestrator into CLI
-  - `sqt run`: load config → build registry → load all specs → run orchestrator →
-    print summary → exit with 0 (all pass) or 1 (any fail)
-
----
-
-### Phase 4 — ML-L Specific REST API Client
-
-- [ ] **T-040** Define API types (`src/api/types.rs`)
-  - `JobSubmitRequest`, `JobSubmitResponse`, `JobStatus`, `JobResults`
-  - Derived from `ml-l-api.minimal.openapi.yaml`
-  - All fields `serde`-deserializable
-
-- [ ] **T-041** Implement `MllApiClient`
-  - `submit_job(req) -> Result<String>` (returns job ID)
-  - `get_status(job_id) -> Result<JobStatus>`
-  - `get_results(job_id) -> Result<JobResults>`
-  - Bearer token read from env var specified in config
-
-- [ ] **T-042** Implement polling loop with exponential backoff
-  - `wait_for_completion(job_id) -> Result<JobResults>`
-  - Initial delay: 1 s; max delay: 30 s; max total wait: configurable
-  - Returns `Err` on `failed` or `cancelled` status
-
-- [ ] **T-043** Implement `RemoteCollector` wrapper
-  - A `MetricCollector` that delegates to the ML-L API for a single metric
-  - Submits a job, polls to completion, extracts the relevant metric from `JobResults`
-  - Registered in the registry like any built-in
-  - This makes remote hardware metrics transparent to the orchestrator
-
-- [ ] **T-044** Write mock API server for offline testing
-  - Simple `axum` or `warp` server that returns canned responses
-  - Used in integration tests so CI does not require a live Klepsydra endpoint
+- [ ] **T-035** Wire orchestrator into CLI
+  - `sqt run`: load config → load all specs → create `JobApiClient` → run orchestrator
+    → print summary → exit with 0 (all pass) or 1 (any fail)
 
 ---
 
-### Phase 5 — Evidence Collection and Reporting
+### Phase 4 — Evidence Collection and Reporting
 
 - [ ] **T-050** Implement `EvidenceStore`
   - Writes all evidence files to a timestamped output directory
   - `store(run_id, label, content)` → writes file, returns path
+  - Evidence content sourced from `TaskResult.evidence` map in job response
   - `manifest() -> Vec<EvidenceEntry>` for inclusion in reports
 
 - [ ] **T-051** Implement JSON report (`src/report/json.rs`)
@@ -393,21 +388,27 @@ at the bottom of the file. No other file needs to change.
 
 ---
 
-### Phase 6 — Polish and CI Integration
+### Phase 5 — Polish and CI Integration
 
 - [ ] **T-060** Structured logging
   - Replace `println!` with `tracing` spans and events throughout
-  - `sqt run --log-level debug` shows full collector invocation detail
+  - `sqt run --log-level debug` shows full API request/response detail
   - `sqt run --log-level warn` (default) shows only failures and summary
 
 - [ ] **T-061** Integration test suite
-  - Tests in `tests/` using the mock API server from T-044
-  - One test per built-in collector using real local binaries (`/bin/true`, `/bin/false`)
+  - Tests in `tests/` using a mock job API server (axum or warp)
+  - Mock server returns canned `JobStatusResponse` for offline CI
   - One full orchestrator test covering pass and fail paths
 
 - [ ] **T-062** CI workflow (GitHub Actions)
   - `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
   - Runs on every push to `main` and every pull request
+
+- [ ] **T-063** Local dev API server binary
+  - Second binary in the Cargo workspace: `sqt-server`
+  - Uses the Phase 2 metric collectors as task implementations
+  - Implements the `job-api.openapi.yaml` contract
+  - Allows end-to-end testing without a live Klepsydra endpoint
 
 ---
 
@@ -415,29 +416,26 @@ at the bottom of the file. No other file needs to change.
 
 ```
 T-001 ──► T-002 ──► T-003
-                         │
-T-010 ──► T-011          │
-       └► T-012          │
-       └► T-013          │
-                         ▼
-T-020 ◄── T-010     T-030 ──► T-031
-T-021..T-026 ◄── T-020, T-010
+T-010 ──► T-011
+       └► T-012
+       └► T-013
+
+Phase 2 (done): T-020..T-026
+  T-020 ◄── T-010
+  T-021..T-026 ◄── T-020, T-010
   (each self-registers via inventory::submit!)
-          │                    │
-          ▼                    ▼
-         T-032 ◄── T-013, T-020, T-030
-          │
-          ▼
-         T-033 ◄── T-002, T-003
-          │
-          ▼
-T-040..T-044 (parallel with T-021..T-026)
-          │
-          ▼
-T-050 ──► T-051 ──► T-052 ──► T-053
-          │
-          ▼
-T-060 ──► T-061 ──► T-062
+
+Phase 3 (new):
+  T-030 (API types) ──► T-031 (API client)
+  T-032 (specs)     ──► T-033 (example spec)
+  T-031 + T-033     ──► T-034 (orchestrator) ──► T-035 (CLI wiring)
+  T-035 ◄── T-002, T-003, T-013
+
+Phase 4: T-050 ──► T-051 ──► T-052 ──► T-053
+  T-050 ◄── T-034
+
+Phase 5: T-060 ──► T-061 ──► T-062 ──► T-063
+  T-061 ◄── T-034
 ```
 
 ---
@@ -532,6 +530,25 @@ hand-rolled formatter.
 interface to the YAML library. If the config serialization layer changes, the trait signature
 must change too. Acceptable for now; revisit if a config abstraction layer is added before
 Phase 5.
+
+---
+
+### [OPEN] `MetricCollector` trait signature couples to local execution *(Medium — T-063)*
+
+`MetricCollector::collect(&self, target: &Target, config: &serde_yaml::Value)` assumes
+the collector has local access to spawn processes. In the API-first architecture, the
+orchestrator never calls collectors directly — it submits jobs and maps results. The
+trait remains valid for the local dev API server (T-063). Revisit the interface when
+building the server binary.
+
+---
+
+### [OPEN] `Platform` enum no longer used by orchestrator *(Low — T-034)*
+
+`Platform::Local/Remote` was designed for direct collector dispatch. The orchestrator
+now always talks to an API URL (from `config.api.url`) — no platform selection needed.
+`Platform` remains used by local collectors internally for the `bail!` guard. Consider
+removing `Platform` from `Target` when the orchestrator is wired up in T-034.
 
 ---
 

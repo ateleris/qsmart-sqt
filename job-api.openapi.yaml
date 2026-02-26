@@ -1,0 +1,440 @@
+openapi: "3.1.0"
+
+info:
+  title: SQT Job API
+  description: |
+    Generic REST API for submitting qualification jobs and polling their status.
+    Implemented by the ML-L Specific server (Klepsydra) and by the local
+    development API server (SQT Generic local-dev binary).
+
+    All operations follow the same two-step asynchronous pattern:
+    1. Submit a job → receive a `job_id` (202 Accepted)
+    2. Poll `GET /api/v1/jobs/{job_id}` until `status` is `complete` or `failed`
+
+    Task results (values, units, evidence) are included directly in the GET
+    response — there is no separate `/results` endpoint. Partial results are
+    visible while the job is still running.
+
+    SQT Generic uses exponential backoff when polling (initial 1 s, max 30 s).
+  version: "1.0.0"
+  contact:
+    name: Ateleris
+
+servers:
+  - url: http://localhost:8080
+    description: Local development / default
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Jobs
+    description: Job submission and status retrieval
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Submit a job
+  # ---------------------------------------------------------------------------
+
+  /api/v1/jobs:
+    post:
+      operationId: submitJob
+      summary: Submit a qualification job
+      description: |
+        Submits a single job containing one or more measurement tasks. The
+        server runs all tasks in parallel (where possible) and returns a
+        `job_id` for status polling.
+
+        Task names use the same identifiers as SQT Generic metric collectors:
+        `return_code`, `time.execution`, `memory.peak_rss`, `memory.leaks`,
+        `coverage.line_percent`, `sonar.critical_issues`, etc.
+
+        Per-task configuration (e.g., lcov `info_file`, SonarQube
+        `project_key`) is passed via the optional `config` object.
+      tags: [Jobs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobRequest"
+            example:
+              target:
+                binary: "build/ml_l_inference"
+                input: "datasets/reference.bin"
+                timeout_secs: 60
+              tasks:
+                - name: "return_code"
+                - name: "time.execution"
+                - name: "memory.peak_rss"
+                - name: "memory.leaks"
+                - name: "coverage.line_percent"
+                  config:
+                    info_file: "coverage.info"
+                - name: "sonar.critical_issues"
+                  config:
+                    project_key: "my-project"
+      responses:
+        "202":
+          description: Job accepted and queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+              example:
+                job_id: "job-abc123"
+                status: "accepted"
+                created_at: "2026-02-26T10:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Poll job status (includes partial and final results)
+  # ---------------------------------------------------------------------------
+
+  /api/v1/jobs/{job_id}:
+    get:
+      operationId: getJobStatus
+      summary: Get job status and task results
+      description: |
+        Returns the current status of a job and per-task results. Task results
+        are included as they complete — a task may have a `value` even while
+        the overall job is still `running`.
+
+        Poll this endpoint with exponential backoff until the job `status` is
+        `complete` or `failed`.
+
+        When `status == "complete"`: every task is either `complete` or
+        `failed`.
+
+        When `status == "failed"`: infrastructure-level failure (e.g., the
+        target binary could not be started). Per-task `failed` status is
+        distinct from job-level failure.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job status and available task results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+              example:
+                job_id: "job-abc123"
+                status: "running"
+                created_at: "2026-02-26T10:00:00Z"
+                started_at: "2026-02-26T10:00:01Z"
+                tasks:
+                  return_code:
+                    status: "complete"
+                    value: 0.0
+                    unit: ""
+                  time.execution:
+                    status: "complete"
+                    value: 87.3
+                    unit: "ms"
+                  memory.peak_rss:
+                    status: "complete"
+                    value: 4096.0
+                    unit: "KB"
+                  memory.leaks:
+                    status: "running"
+                  coverage.line_percent:
+                    status: "failed"
+                    error: "lcov not installed"
+                  sonar.critical_issues:
+                    status: "pending"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Bearer token for the job API server. Pass via the
+        `Authorization: Bearer <token>` header. In SQT Generic the token is
+        read from the environment variable named in `config.api.token_env`.
+
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      description: Unique job identifier as returned by POST /api/v1/jobs.
+      schema:
+        type: string
+        example: "job-abc123"
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: "VALIDATION_ERROR"
+              message: "Unknown task name: custom.undefined_metric"
+              timestamp: "2026-02-26T10:00:00Z"
+
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: "UNAUTHORIZED"
+              message: "Invalid or missing Bearer token"
+              timestamp: "2026-02-26T10:00:00Z"
+
+    NotFound:
+      description: Job not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: "NOT_FOUND"
+              message: "Job not found: job-abc123"
+              timestamp: "2026-02-26T10:00:00Z"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: "INTERNAL_ERROR"
+              message: "Unexpected failure during task execution"
+              timestamp: "2026-02-26T10:00:00Z"
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Request
+    # -------------------------------------------------------------------------
+
+    JobRequest:
+      type: object
+      required: [target, tasks]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
+        tasks:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TaskSpec"
+          description: List of measurement tasks to run. Names must match
+            registered metric collectors on the server.
+
+    Target:
+      type: object
+      required: [binary]
+      properties:
+        binary:
+          type: string
+          description: |
+            Path or identifier of the binary under test. Resolved server-side
+            relative to the server's working directory.
+          example: "build/ml_l_inference"
+        input:
+          type: string
+          description: Optional path to the input data file fed to the binary.
+          example: "datasets/reference.bin"
+        timeout_secs:
+          type: integer
+          minimum: 1
+          default: 60
+          description: Maximum execution time per task invocation in seconds.
+          example: 60
+
+    TaskSpec:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: |
+            Metric name identifying the measurement task. Uses the same
+            identifiers as SQT Generic metric collectors, e.g.:
+            `return_code`, `time.execution`, `memory.peak_rss`,
+            `memory.leaks`, `coverage.line_percent`, `sonar.critical_issues`.
+          example: "coverage.line_percent"
+        config:
+          type: object
+          additionalProperties: true
+          description: |
+            Optional task-specific configuration. Content is task-defined.
+            Examples:
+            - `coverage.line_percent`: `{ "info_file": "coverage.info" }`
+            - `sonar.critical_issues`: `{ "project_key": "my-project" }`
+
+    # -------------------------------------------------------------------------
+    # Responses
+    # -------------------------------------------------------------------------
+
+    JobAccepted:
+      type: object
+      required: [job_id, status, created_at]
+      properties:
+        job_id:
+          type: string
+          description: Unique job identifier for subsequent polling.
+          example: "job-abc123"
+        status:
+          type: string
+          enum: [accepted]
+          description: Always `accepted` in the 202 response.
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the job was created.
+          example: "2026-02-26T10:00:00Z"
+
+    JobStatus:
+      type: object
+      required: [job_id, status, created_at, tasks]
+      properties:
+        job_id:
+          type: string
+          example: "job-abc123"
+        status:
+          $ref: "#/components/schemas/JobStatusEnum"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-02-26T10:00:00Z"
+        started_at:
+          type: string
+          format: date-time
+          description: When the server began executing tasks. Absent if still
+            in the accepted/queued state.
+          example: "2026-02-26T10:00:01Z"
+        completed_at:
+          type: string
+          format: date-time
+          description: When all tasks finished. Only present when
+            `status == "complete"` or `status == "failed"`.
+        error:
+          type: string
+          description: Infrastructure-level error message. Only present when
+            `status == "failed"`.
+        tasks:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/TaskResult"
+          description: |
+            Map from task name to result. Keys match the `name` fields in the
+            original `JobRequest.tasks` array. Tasks that have not yet started
+            may be absent or have `status: "pending"`.
+
+    TaskResult:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/TaskStatusEnum"
+        value:
+          type: number
+          format: double
+          description: Measured numeric value. Only present when
+            `status == "complete"`.
+          example: 87.3
+        unit:
+          type: string
+          description: Unit of the measured value (e.g., `"ms"`, `"KB"`,
+            `"%"`, `""`). Only present when `status == "complete"`.
+          example: "ms"
+        error:
+          type: string
+          description: Error message. Only present when `status == "failed"`.
+          example: "lcov not installed"
+        evidence:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Optional map of evidence label → file path or inline content.
+            Server-side paths to artefacts produced during measurement (e.g.,
+            Valgrind XML report, lcov info file).
+
+    # -------------------------------------------------------------------------
+    # Enumerations
+    # -------------------------------------------------------------------------
+
+    JobStatusEnum:
+      type: string
+      enum: [accepted, running, complete, failed]
+      description: |
+        - `accepted`: Job received and queued, not yet started
+        - `running`: At least one task is executing
+        - `complete`: All tasks finished (each task is `complete` or `failed`)
+        - `failed`: Infrastructure-level failure; the job could not run
+
+        Terminal states: `complete` and `failed`. Clients MUST stop polling
+        when the status is terminal.
+
+    TaskStatusEnum:
+      type: string
+      enum: [pending, running, complete, failed]
+      description: |
+        - `pending`: Task is queued, waiting for execution
+        - `running`: Task is currently executing
+        - `complete`: Task finished and produced a value
+        - `failed`: Task encountered an error (see `error` field)
+
+    # -------------------------------------------------------------------------
+    # Error
+    # -------------------------------------------------------------------------
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, timestamp]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - NOT_FOUND
+                - TIMEOUT
+                - UNAUTHORIZED
+                - INTERNAL_ERROR
+              description: Machine-readable error code.
+            message:
+              type: string
+              description: Human-readable error description.
+            details:
+              type: string
+              description: Optional additional context.
+            timestamp:
+              type: string
+              format: date-time

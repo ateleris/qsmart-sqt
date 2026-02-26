@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+mod example;
+
 use crate::constraint::{Constraint, ConstraintOutcome};
 use crate::metrics::Target;
 
@@ -32,7 +34,7 @@ pub struct RunResult {
 }
 
 pub fn all_specs() -> Vec<TestSpec> {
-    vec![]
+    vec![example::spec()]
 }
 
 #[cfg(test)]
@@ -73,8 +75,8 @@ mod tests {
     }
 
     #[test]
-    fn all_specs_returns_empty_vec() {
-        assert!(all_specs().is_empty());
+    fn all_specs_returns_nonempty_vec() {
+        assert!(!all_specs().is_empty());
     }
 
     #[test]

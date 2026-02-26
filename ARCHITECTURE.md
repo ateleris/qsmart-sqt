@@ -59,82 +59,58 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 │                                                                         │
 │  ┌────────────────────┐         ┌──────────────────────────┐            │
 │  │  Configuration     │         │    Orchestrator          │            │
-│  │  Parser            │────────▶│    (Test Runner)         │            │
+│  │  Parser            │────────▶│  (API Client + Polling)  │            │
 │  │                    │         │                          │            │
-│  │  • YAML/JSON       │         │  • Job Scheduling        │            │
-│  │  • Strictdoc       │         │  • Parallel Execution    │            │
-│  │  • Validation      │         │  • Progress Tracking     │            │
+│  │  • YAML/JSON       │         │  • Collect task names    │            │
+│  │  • Strictdoc       │         │  • Submit one job        │            │
+│  │  • Validation      │         │  • Poll until complete   │            │
 │  └────────────────────┘         └────────────┬─────────────┘            │
-│                                              ▼                          │
+│                                              │                          │
 │  ┌───────────────────────────────────────────┼──────────────────────┐   │
-│  │                    Tool Adapters          │                      │   │
-│  ├─────────────┬──────────────┬─────────────┬┴───────┬──────────────┤   │
-│  │ Static      │ Unit Test    │ Coverage    │ Build  │ Performance  │   │
-│  │ Analysis    │ Runners      │ Tools       │ System │ Analysis     │   │
-│  │             │              │             │        │              │   │
-│  │ •SonarQube  │ •GoogleTest  │ •gcov       │ •CMake │ •Benchmark   │   │
-│  │ •clang-tidy │ •Catch2      │ •lcov       │ •Cargo │  aggregation │   │
-│  │ •cppcheck   │ •CppUTest    │ •llvm-cov   │ •Make  │              │   │
-│  │ •cpplint    │ •pytest      │             │        │              │   │
-│  └─────────────┴──────────────┴─────────────┴────────┴──────────────┘   │
-│                                                                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │          Evidence Collector & Traceability Manager                │  │
-│  │                                                                   │  │
-│  │  • Requirements ↔ Tests mapping                                   │  │
-│  │  • Test results aggregation                                       │  │
-│  │  • Coverage metrics collection                                    │  │
-│  │  • Static analysis results parsing                                │  │
-│  │  • Traceability matrix generation                                 │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                  Report Generator                                 │  │
-│  │                                                                   │  │
-│  │  • PDF generation (ECSS-compliant templates)                      │  │
-│  │  • HTML reports (developer-friendly)                              │  │
-│  │  • JSON artifacts (machine-readable)                              │  │
-│  │  • Traceability matrices (HTML/PDF)                               │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-└─────────────────────────────────┬───────────────────────────────────────┘
-                                  │
-                                  │ REST API (HTTP/JSON)
-                                  │
-                                  ▼
+│  │          Constraint Evaluator             │                      │   │
+│  │  • Map TaskResult → MetricValue           │                      │   │
+│  │  • Evaluate constraints against values    │                      │   │
+│  └───────────────────────────────────────────┼──────────────────────┘   │
+│                                              │                          │
+│  ┌───────────────────────────────────────────┼──────────────────────┐   │
+│  │          Evidence Collector & Traceability Manager               │   │
+│  │  • Requirements ↔ Tests mapping                                  │   │
+│  │  • Aggregate per-task evidence from job results                  │   │
+│  │  • Traceability matrix generation                                │   │
+│  └───────────────────────────────────────────┼──────────────────────┘   │
+│                                              │                          │
+│  ┌───────────────────────────────────────────┼──────────────────────┐   │
+│  │                  Report Generator         │                      │   │
+│  │  • PDF generation (ECSS-compliant templates)                     │   │
+│  │  • HTML reports (developer-friendly)                             │   │
+│  │  • JSON artifacts (machine-readable)                             │   │
+│  │  • Traceability matrices (HTML/PDF)                              │   │
+│  └───────────────────────────────────────────┼──────────────────────┘   │
+│                                              │                          │
+└──────────────────────────────────────────────┼──────────────────────────┘
+                                               │
+                           REST API (POST job, GET status)
+                                               │
+                                               ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    ML-L Specific Part (Klepsydra)                       │
-│                       [Klepsydra Responsibility]                        │
+│                           Job API Server                                │
+│             (ML-L Specific / Local Dev Server)                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  • Klepsydra AI specific test suite                                     │
-│  • Performance Benchmark Framework (PBF)                                │
-│  • Hardware-specific validation (GR740, GR765, RISC-V)                  │
-│  • Binary generation for target hardware                                │
-│  • ML model conversion and optimization                                 │
-│  • Hardware execution management                                        │
+│  Task Runners:                                                          │
+│  • return_code, time.execution                                          │
+│  • memory.peak_rss (via /usr/bin/time)                                  │
+│  • memory.leaks (via valgrind)                                          │
+│  • coverage.line_percent (via lcov)                                     │
+│  • sonar.critical_issues (via SonarQube API)                            │
+│  • (Klepsydra-specific tasks: PBF, hardware execution)                  │
+│                                                                         │
+│  Job Queue + Parallel Task Execution                                    │
 │                                                                         │
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   │
                                   ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Hardware/Emulation Layer                         │
-│                                                                         │
-│  ┌──────────────┬──────────────┬──────────────┬─────────────────────┐   │
-│  │ QEMU         │ TSIM         │ GRMON        │ Physical Hardware   │   │
-│  │              │              │              │                     │   │
-│  │ •RISC-V      │ •LEON/GR740  │ •GR740       │ •GR740 Eval Board   │   │
-│  │ •ARM         │ •GR765       │  debug       │ •GR765 Dev Board    │   │
-│  │ •x86 (host)  │              │              │ •Custom targets     │   │
-│  └──────────────┴──────────────┴──────────────┴─────────────────────┘   │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                  Docker Containers                               │   │
-│  │  • Linux-based test environments                                 │   │
-│  │  • Toolchain isolation                                           │   │
-│  │  • Reproducible builds                                           │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+                    Hardware / Emulation Layer
 ```
 
 ### 2.2 Component Responsibilities
@@ -142,8 +118,9 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 #### SQT Generic (Ateleris - Open Source)
 - Configuration management
 - Requirements parsing and traceability
-- Generic tool orchestration
-- REST API client
+- Job submission and polling via REST API
+- Metric extraction from job results
+- Constraint evaluation against extracted values
 - Evidence collection
 - Report generation
 
@@ -156,15 +133,13 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 
 #### Clear Separation of Concerns
 ```
-Generic (Tool-agnostic)     │  Specific (ML-L/Hardware-specific)
-────────────────────────────┼────────────────────────────────────
-YAML/JSON config parsing    │  Klepsydra AI test execution
-Strictdoc requirements      │  PBF performance benchmarking
-SonarQube orchestration     │  Binary compilation for targets
-GoogleTest runner           │  Hardware flashing/execution
-Coverage aggregation        │  Target-specific metrics
-PDF report generation       │  Hardware communication (JTAG/serial)
-REST API client             │  REST API server
+Generic (SQT)                │  Server (ML-L Specific / Local)
+─────────────────────────────┼──────────────────────────────────
+YAML config parsing           │  Tool execution (valgrind, lcov…)
+Specs + constraint evaluation │  SonarQube integration
+Job submission + polling      │  Binary execution on hardware
+Evidence collection           │  Job queue + parallel task dispatch
+Report generation             │  REST API server
 ```
 
 ---
@@ -303,11 +278,11 @@ integration_tests:
       test_dir: "./tests/integration/regression"
       timeout: 900
 
-# Hardware Testing (via REST API to ML-L Specific)
+# Hardware Testing (via Job API — see job-api.openapi.yaml)
 hardware_tests:
   enabled: true
   rest_api:
-    endpoint: "http://localhost:8080/ml-l-api/v1"
+    endpoint: "http://localhost:8080"
     timeout: 3600                    # seconds
     retry_attempts: 3
     authentication:
@@ -344,10 +319,10 @@ hardware_tests:
       description: "QEMU ARM Cortex-A"
       command: "qemu-system-arm -M virt"
 
-# Performance Benchmarking (via ML-L API)
+# Performance Benchmarking (via Job API — see job-api.openapi.yaml)
 performance_tests:
   enabled: true
-  rest_api_endpoint: "http://localhost:8080/ml-l-api/v1/benchmark"
+  rest_api_endpoint: "http://localhost:8080"
 
   benchmarks:
     - name: "inference_latency"
@@ -775,27 +750,32 @@ The following built-in metrics ship with SQT Generic. Each is implemented as an 
 #### 4.5.4 Execution Flow
 
 ```rust
-// Pseudo-code: constraint-driven orchestration
-for req in requirements {
-    if let Some(spec) = load_test_spec(&req.uid) {
-        for constraint in &spec.constraints {
-            // Collector is either built-in or a plugin (same trait)
-            let collector = registry.get(&constraint.metric)?;
-            let actual = collector.collect(&spec.target)?;
+// Pseudo-code: API-driven orchestration
 
-            let passed = constraint.evaluate(actual);
-            req.evidence.push(ConstraintResult {
-                metric: constraint.metric.clone(),
-                expected: constraint.value.clone(),
-                actual,
-                passed,
-            });
-        }
+// Collect all required task names from specs
+let tasks: Vec<TaskSpec> = specs.iter()
+    .flat_map(|s| s.constraints.iter())
+    .map(|c| TaskSpec { name: c.metric_name.clone(), config: c.config.clone() })
+    .collect();
+
+// Submit ONE job with all tasks
+let job_id = api_client.submit_job(&target, &tasks).await?;
+
+// Poll until complete (exponential backoff)
+let job = api_client.wait_for_completion(&job_id).await?;
+
+// Evaluate constraints against task results
+for spec in &specs {
+    for constraint in &spec.constraints {
+        let task_result = job.tasks.get(&constraint.metric_name)?;
+        let actual = MetricValue::new(task_result.value, &task_result.unit);
+        let outcome = evaluate(&actual, constraint);
+        results.push(outcome);
     }
 }
 ```
 
-The orchestrator does not need to know whether a collector is built-in or a third-party plugin — the `MetricCollector` trait is identical. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
+The orchestrator never calls metric collectors directly — all tool execution happens server-side. The `MetricCollector` trait (and Phase 2 built-in collectors) remains valid as the implementation layer for the local dev API server. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
 
 ---
 
@@ -803,11 +783,13 @@ The orchestrator does not need to know whether a collector is built-in or a thir
 
 ### 5.1 API Contract (OpenAPI Specification)
 
-The interface between SQT Generic and ML-L Specific is defined via REST API.
+The full interface contract is defined in **`job-api.openapi.yaml`** at the root of the
+repository. The spec is generic — it is implemented both by the ML-L Specific server
+(Klepsydra) and by the local development API server binary.
 
 #### Base URL
 ```
-http://localhost:8080/ml-l-api/v1
+http://localhost:8080
 ```
 
 #### Authentication
@@ -818,195 +800,72 @@ Content-Type: application/json
 
 ### 5.2 API Endpoints
 
-#### 5.2.1 Submit ML-L Validation Job
+There are exactly two endpoints. Results are included directly in the GET response;
+there is no separate `/results` endpoint.
 
-**Endpoint**: `POST /api/v1/ml-l/validate`
+#### 5.2.1 Submit Job
 
-**Description**: Submit a validation job for the ML-L on a specific target platform.
+**Endpoint**: `POST /api/v1/jobs`
 
 **Request Body**:
 ```json
 {
-  "ml_l_version": "1.0.0",
-  "target_platform": "gr740-rtems6",
-  "test_suite": "performance",
-  "model": {
-    "format": "onnx",
-    "path": "/path/to/model.onnx",
-    "name": "resnet50"
+  "target": {
+    "binary": "build/ml_l_inference",
+    "input": "datasets/reference.bin",
+    "timeout_secs": 60
   },
-  "test_config": {
-    "iterations": 100,
-    "warmup_iterations": 10,
-    "input_size": [1, 3, 224, 224],
-    "measure_memory": true
-  },
-  "execution_mode": "hardware",
-  "timeout_seconds": 600
+  "tasks": [
+    { "name": "return_code" },
+    { "name": "time.execution" },
+    { "name": "memory.peak_rss" },
+    { "name": "memory.leaks" },
+    { "name": "coverage.line_percent", "config": { "info_file": "coverage.info" } },
+    { "name": "sonar.critical_issues", "config": { "project_key": "my-project" } }
+  ]
 }
 ```
 
 **Response** (202 Accepted):
 ```json
 {
-  "job_id": "job-a1b2c3d4-e5f6-7890",
-  "status": "queued",
-  "created_at": "2026-02-13T14:30:00Z",
-  "estimated_duration_seconds": 300,
-  "status_url": "/api/v1/jobs/job-a1b2c3d4-e5f6-7890"
+  "job_id": "job-abc123",
+  "status": "accepted",
+  "created_at": "2026-02-26T10:00:00Z"
 }
 ```
 
-#### 5.2.2 Check Job Status
+#### 5.2.2 Get Job Status and Results
 
 **Endpoint**: `GET /api/v1/jobs/{job_id}`
 
-**Response**:
+**Response** (partial — job still running):
 ```json
 {
-  "job_id": "job-a1b2c3d4-e5f6-7890",
+  "job_id": "job-abc123",
   "status": "running",
-  "progress_percent": 65,
-  "created_at": "2026-02-13T14:30:00Z",
-  "started_at": "2026-02-13T14:30:15Z",
-  "current_step": "Hardware execution",
-  "logs_url": "/api/v1/jobs/job-a1b2c3d4-e5f6-7890/logs",
-  "estimated_completion": "2026-02-13T14:35:00Z"
-}
-```
-
-**Possible Status Values**:
-- `queued`: Job is waiting to be executed
-- `running`: Job is currently executing
-- `completed`: Job finished successfully
-- `failed`: Job encountered an error
-- `cancelled`: Job was cancelled by user
-
-#### 5.2.3 Get Job Results
-
-**Endpoint**: `GET /api/v1/jobs/{job_id}/results`
-
-**Response** (when status = completed):
-```json
-{
-  "job_id": "job-a1b2c3d4-e5f6-7890",
-  "status": "completed",
-  "completed_at": "2026-02-13T14:34:45Z",
-  "duration_seconds": 270,
-
-  "results": {
-    "functional": {
-      "tests_total": 150,
-      "tests_passed": 148,
-      "tests_failed": 2,
-      "tests_skipped": 0,
-      "coverage_percent": 87.5,
-      "failed_tests": [
-        {
-          "name": "test_edge_case_1",
-          "error": "Assertion failed: expected 0.95, got 0.94"
-        },
-        {
-          "name": "test_overflow_handling",
-          "error": "Timeout after 10 seconds"
-        }
-      ]
-    },
-
-    "performance": {
-      "inference_latency": {
-        "mean_ms": 87.3,
-        "std_ms": 2.1,
-        "min_ms": 84.5,
-        "max_ms": 93.2,
-        "p50_ms": 87.0,
-        "p95_ms": 91.5,
-        "p99_ms": 92.8
-      },
-      "throughput": {
-        "mean_fps": 11.5,
-        "std_fps": 0.3
-      },
-      "memory_usage": {
-        "heap_kb": 1847,
-        "stack_kb": 128,
-        "static_kb": 512,
-        "total_kb": 2487
-      }
-    },
-
-    "artifacts": {
-      "binary_path": "/artifacts/ml-l-gr740-v1.0.0.elf",
-      "binary_size_kb": 2048,
-      "test_report_json": "/artifacts/test-report.json",
-      "test_report_html": "/artifacts/test-report.html",
-      "profiling_data": "/artifacts/profile.json"
-    }
-  },
-
-  "metadata": {
-    "platform": "gr740-rtems6",
-    "ml_l_version": "1.0.0",
-    "test_suite": "performance",
-    "execution_environment": {
-      "hardware": "GR740 Evaluation Board",
-      "os": "RTEMS 6.1",
-      "cpu_freq_mhz": 250
-    }
+  "created_at": "2026-02-26T10:00:00Z",
+  "started_at": "2026-02-26T10:00:01Z",
+  "tasks": {
+    "return_code":   { "status": "complete", "value": 0.0, "unit": "" },
+    "time.execution":{ "status": "complete", "value": 87.3, "unit": "ms" },
+    "memory.leaks":  { "status": "running" },
+    "coverage.line_percent": { "status": "failed", "error": "lcov not installed" }
   }
 }
 ```
 
-#### 5.2.4 Execute Hardware Test
+**Job status values**: `accepted` | `running` | `complete` | `failed`
 
-**Endpoint**: `POST /api/v1/hardware/execute`
+**Task status values**: `pending` | `running` | `complete` | `failed`
 
-**Request**:
-```json
-{
-  "platform": "gr740-eval-board",
-  "binary_path": "./build/ml-l-test.elf",
-  "test_type": "functional",
-  "timeout_seconds": 600,
-  "collect_metrics": true,
-  "serial_output": true
-}
-```
+When `status == "complete"`: every task is `complete` or `failed`.
+When `status == "failed"`: infrastructure-level failure (not per-task).
 
-**Response**:
-```json
-{
-  "job_id": "job-hw-12345",
-  "status": "queued",
-  "platform": "gr740-eval-board"
-}
-```
-
-#### 5.2.5 Performance Benchmark
-
-**Endpoint**: `POST /api/v1/performance/benchmark`
-
-**Request**:
-```json
-{
-  "model": "resnet50",
-  "platform": "gr740-rtems6",
-  "benchmark_config": {
-    "input_size": [1, 3, 224, 224],
-    "iterations": 100,
-    "warmup_iterations": 10,
-    "measure_power": false
-  }
-}
-```
-
-**Response**:
-```json
-{
-  "job_id": "job-bench-67890",
-  "status": "queued"
-}
-```
+**Terminal states**: `complete` and `failed`. SQT stops polling when the
+job reaches a terminal state. A `complete` job may contain individually
+`failed` tasks — these are recorded as failed constraints, not as
+infrastructure errors.
 
 ### 5.3 Error Handling
 
@@ -1023,33 +882,29 @@ Content-Type: application/json
 ```
 
 **Error Codes**:
-- `VALIDATION_ERROR`: Invalid request parameters
-- `NOT_FOUND`: Resource not found (job_id, model, etc.)
+- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown task name)
+- `NOT_FOUND`: Job not found
 - `TIMEOUT`: Operation exceeded timeout
-- `HARDWARE_ERROR`: Hardware execution failed
-- `COMPILATION_ERROR`: Binary compilation failed
+- `UNAUTHORIZED`: Missing or invalid Bearer token
 - `INTERNAL_ERROR`: Internal server error
 
 ### 5.4 Polling Strategy
 
-The SQT Generic should implement exponential backoff for polling:
+SQT Generic implements exponential backoff for polling. Because results are
+embedded in the GET response, no separate results fetch is needed:
 
 ```rust
-async fn wait_for_job_completion(job_id: &str) -> Result<JobResults> {
+async fn wait_for_completion(job_id: &str) -> Result<JobStatusResponse> {
     let mut delay = Duration::from_secs(1);
     let max_delay = Duration::from_secs(30);
 
     loop {
-        let status = check_job_status(job_id).await?;
+        let resp = client.get_status(job_id).await?;
 
-        match status.status {
-            JobStatus::Completed => {
-                return get_job_results(job_id).await;
-            }
-            JobStatus::Failed => {
-                return Err(Error::JobFailed(status.error_message));
-            }
-            JobStatus::Running | JobStatus::Queued => {
+        match resp.status {
+            JobStatus::Complete => return Ok(resp),
+            JobStatus::Failed   => return Err(anyhow!("Job failed: {:?}", resp.error)),
+            JobStatus::Accepted | JobStatus::Running => {
                 tokio::time::sleep(delay).await;
                 delay = std::cmp::min(delay * 2, max_delay);
             }
@@ -1077,28 +932,25 @@ async fn wait_for_job_completion(job_id: &str) -> Result<JobResults> {
    - Build requirements database
 
 3. **Static Analysis Orchestration**
-   - Invoke SonarQube scanner
-   - Run clang-tidy on source code
-   - Execute cppcheck
-   - Parse and aggregate results
+   - Submit tasks (e.g., `sonar.critical_issues`) via the job API
+   - Server handles tool invocation (SonarQube, clang-tidy, cppcheck)
+   - Parse and evaluate metric values from job results
 
 4. **Unit Test Execution**
-   - Discover unit tests (pattern matching)
-   - Execute GoogleTest/Catch2/CppUTest suites
-   - Collect test results (JUnit XML)
-   - Handle test failures and timeouts
+   - Submit tasks (e.g., `return_code`, `coverage.line_percent`) via the job API
+   - Server handles test discovery, execution, and coverage collection
+   - Evaluate pass/fail from returned metric values
 
 5. **Coverage Analysis**
-   - Run tests with coverage instrumentation
-   - Collect coverage data (gcov, lcov)
-   - Generate coverage reports (HTML, Cobertura)
-   - Compute coverage metrics
+   - Submit `coverage.line_percent` (and related) tasks via the job API
+   - Server runs tests with coverage instrumentation and returns results
+   - Evaluate against configured thresholds
 
 6. **REST API Client**
-   - Implement HTTP client for ML-L API
-   - Submit validation jobs
-   - Poll for job status
-   - Retrieve results
+   - Implement HTTP client for the job API (see `job-api.openapi.yaml`)
+   - Submit one job per spec with all required task names
+   - Poll for job status until complete
+   - Extract metric values from task results
 
 7. **Evidence Collection**
    - Aggregate all tool outputs
@@ -1372,9 +1224,9 @@ emulation:
 For **space-specific hardware** (GR740, GR765, LEON), delegate to ML-L Specific:
 
 ```yaml
-# Hardware via API (Klepsydra responsibility)
+# Hardware via Job API (Klepsydra responsibility — see job-api.openapi.yaml)
 hardware_tests:
-  rest_api_endpoint: "http://localhost:8080/ml-l-api/v1"
+  rest_api_endpoint: "http://localhost:8080"
 
   platforms:
     - name: "gr740-eval-board"
