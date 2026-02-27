@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::api::types::{AnalysisRequest, AnalysisStatusResponse, RunRequest, RunStatusResponse};
+use crate::api::types::{AnalysisRequest, RunRequest, RunStatusResponse};
 use crate::api::ApiClient;
 use crate::config::SqtConfig;
 use crate::constraint::evaluator::evaluate;
@@ -29,21 +29,19 @@ fn metric_unit(name: &str) -> &'static str {
     }
 }
 
-/// Build the grouping key for a target: `(binary_path, input_path)`.
-fn run_key(target: &Target) -> (String, Option<String>) {
-    (
-        target.binary.to_string_lossy().into_owned(),
-        target.input.as_ref().map(|p| p.to_string_lossy().into_owned()),
-    )
+/// Build the grouping key for a target: the input path.
+///
+/// The server knows its own binary, so grouping is by input only.
+fn run_key(target: &Target) -> Option<String> {
+    target.input.as_ref().map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Build a `RunRequest` for a group of specs that share the same `(binary, input)`.
+/// Build a `RunRequest` for a group of specs that share the same input.
 ///
 /// The timeout is the maximum across all specs in the group.
-fn build_run_request(key: &(String, Option<String>), specs: &[&TestSpec]) -> RunRequest {
+fn build_run_request(input: &Option<String>, specs: &[&TestSpec]) -> RunRequest {
     let max_timeout = specs.iter().map(|s| s.target.timeout.as_secs()).max().unwrap_or(30);
-    let (binary, input) = key.clone();
-    RunRequest { binary, input, timeout_secs: Some(max_timeout) }
+    RunRequest { input: input.clone(), timeout_secs: Some(max_timeout) }
 }
 
 /// Build a synthetic failing outcome for a metric that could not be evaluated.
@@ -59,9 +57,11 @@ fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
 
 /// Run all specs against the two-endpoint API.
 ///
-/// Groups specs by `(binary, input)`, submits one run job per group and one
-/// analysis job per unique binary, waits for all results, then evaluates each
-/// spec's constraints.
+/// Groups specs by input, submits one run job per unique input and one
+/// analysis job for the server's configured binary, waits for all results,
+/// then evaluates each spec's constraints.
+///
+/// The server knows which binary to test — the client does not send it.
 ///
 /// # Errors
 ///
@@ -75,82 +75,62 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
         });
     }
 
-    // Group specs by (binary, input).
-    let mut groups: HashMap<(String, Option<String>), Vec<&TestSpec>> = HashMap::new();
+    // Group specs by input.
+    let mut groups: HashMap<Option<String>, Vec<&TestSpec>> = HashMap::new();
     for spec in specs {
         groups.entry(run_key(&spec.target)).or_default().push(spec);
     }
 
-    // Submit one run job per group.
+    // Submit one run job per input group.
     tracing::info!("Submitting {} run job(s) to {}", groups.len(), config.api.url);
-    let mut run_ids: HashMap<(String, Option<String>), String> = HashMap::new();
-    for (key, group) in &groups {
-        let request = build_run_request(key, group);
+    let mut run_ids: HashMap<Option<String>, String> = HashMap::new();
+    for (input, group) in &groups {
+        let request = build_run_request(input, group);
         let run_id = client.submit_run(&request).await?;
-        tracing::info!(run_id, binary = %key.0, "Run accepted");
-        run_ids.insert(key.clone(), run_id);
+        tracing::info!(run_id, input = ?input, "Run accepted");
+        run_ids.insert(input.clone(), run_id);
     }
 
-    // Submit one analysis job per unique binary.
-    let mut seen_binaries: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut analysis_ids: HashMap<String, String> = HashMap::new();
-    for spec in specs {
-        let binary = spec.target.binary.to_string_lossy().into_owned();
-        if seen_binaries.insert(binary.clone()) {
-            let max_timeout = specs
-                .iter()
-                .filter(|s| s.target.binary.to_string_lossy().as_ref() == binary.as_str())
-                .map(|s| s.target.timeout.as_secs())
-                .max()
-                .unwrap_or(30);
-            let request = AnalysisRequest { binary: binary.clone(), timeout_secs: Some(max_timeout) };
-            let analysis_id = client.submit_analysis(&request).await?;
-            tracing::info!(analysis_id, binary = %binary, "Analysis accepted");
-            analysis_ids.insert(binary, analysis_id);
-        }
-    }
+    // Submit a single analysis job (the server knows which binary to analyse).
+    let analysis_timeout = specs.iter().map(|s| s.target.timeout.as_secs()).max().unwrap_or(30);
+    let analysis_request = AnalysisRequest { timeout_secs: Some(analysis_timeout) };
+    let analysis_id = client.submit_analysis(&analysis_request).await?;
+    tracing::info!(analysis_id, "Analysis accepted");
 
     // Wait for all run jobs.
-    let mut run_responses: HashMap<(String, Option<String>), RunStatusResponse> = HashMap::new();
-    for (key, run_id) in &run_ids {
+    let mut run_responses: HashMap<Option<String>, RunStatusResponse> = HashMap::new();
+    for (input, run_id) in &run_ids {
         let response = client.wait_for_run(run_id).await?;
         tracing::info!(run_id, status = ?response.status, "Run finished");
-        run_responses.insert(key.clone(), response);
+        run_responses.insert(input.clone(), response);
     }
 
-    // Wait for all analysis jobs.
-    let mut analysis_responses: HashMap<String, AnalysisStatusResponse> = HashMap::new();
-    for (binary, analysis_id) in &analysis_ids {
-        let response = client.wait_for_analysis(analysis_id).await?;
-        tracing::info!(analysis_id, status = ?response.status, "Analysis finished");
-        analysis_responses.insert(binary.clone(), response);
-    }
+    // Wait for the analysis job.
+    let analysis_response = client.wait_for_analysis(&analysis_id).await?;
+    tracing::info!(analysis_id, status = ?analysis_response.status, "Analysis finished");
 
     // Evaluate constraints for each spec.
     let results: Vec<SpecResult> = specs
         .iter()
         .map(|spec| {
-            let key = run_key(&spec.target);
-            let binary = key.0.clone();
+            let input = run_key(&spec.target);
             let outcomes: Vec<ConstraintOutcome> = spec
                 .constraints
                 .iter()
                 .map(|constraint| {
                     let name = &constraint.metric_name;
                     let maybe_value = if is_analysis_metric(name) {
-                        analysis_responses.get(&binary).and_then(|r| r.metrics.get(name))
+                        analysis_response.metrics.get(name)
                     } else {
-                        run_responses.get(&key).and_then(|r| r.metrics.get(name))
+                        run_responses.get(&input).and_then(|r| r.metrics.get(name))
                     };
                     match maybe_value {
                         Some(value) => {
                             let metric = MetricValue::new(value, metric_unit(name));
                             let mut outcome = evaluate(&metric, constraint);
                             if is_analysis_metric(name) {
-                                if let Some(id) = analysis_ids.get(&binary) {
-                                    outcome.evidence.insert("analysis_id".into(), id.clone());
-                                }
-                            } else if let Some(id) = run_ids.get(&key) {
+                                outcome.evidence.insert("analysis_id".into(), analysis_id.clone());
+                            } else if let Some(id) = run_ids.get(&input) {
                                 outcome.evidence.insert("run_id".into(), id.clone());
                             }
                             outcome
@@ -312,13 +292,11 @@ mod tests {
     // --- run_key / grouping ---
 
     #[test]
-    fn grouping_deduplicates_same_binary_input() {
+    fn grouping_deduplicates_same_input() {
         let t1 = make_target("/bin/app", Some("input.bin"), 30);
         let t2 = make_target("/bin/app", Some("input.bin"), 60);
         assert_eq!(run_key(&t1), run_key(&t2));
-        let key = run_key(&t1);
-        assert_eq!(key.0, "/bin/app");
-        assert_eq!(key.1.as_deref(), Some("input.bin"));
+        assert_eq!(run_key(&t1), Some("input.bin".to_string()));
     }
 
     #[test]
@@ -329,14 +307,20 @@ mod tests {
     }
 
     #[test]
+    fn grouping_none_input() {
+        let t = make_target("/bin/app", None, 30);
+        assert_eq!(run_key(&t), None);
+    }
+
+    #[test]
     fn grouping_takes_max_timeout() {
         let spec30 = make_spec("/bin/app", None, 30);
         let spec60 = make_spec("/bin/app", None, 60);
         let spec45 = make_spec("/bin/app", None, 45);
 
         let refs: Vec<&TestSpec> = vec![&spec30, &spec60, &spec45];
-        let key = run_key(&spec30.target);
-        let request = build_run_request(&key, &refs);
+        let input = run_key(&spec30.target);
+        let request = build_run_request(&input, &refs);
         assert_eq!(request.timeout_secs, Some(60));
     }
 }

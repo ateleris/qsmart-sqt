@@ -801,12 +801,16 @@ Content-Type: application/json
 
 #### Design principles
 
+The server is configured at startup with the path to the **binary under test**.
+Clients do not specify a binary in their requests — all jobs implicitly run against
+the server's configured binary.
+
 Two job types reflect a fundamental split in the measurement lifecycle:
 
 | Type | Endpoint | Triggered by | Metrics |
 |---|---|---|---|
-| **Execution run** | `POST /api/v1/runs` | Each unique `(binary, input)` pair | Runtime: return code, timing, memory, CPU, leaks, coverage, ML accuracy |
-| **Binary analysis** | `POST /api/v1/analysis` | Each unique binary | Static: Sonar issues, static warnings, binary size |
+| **Execution run** | `POST /api/v1/runs` | Each unique `input` | Runtime: return code, timing, memory, CPU, leaks, coverage, ML accuracy |
+| **Binary analysis** | `POST /api/v1/analysis` | Once per qualification session | Static: Sonar issues, static warnings, binary size |
 
 The client does **not** enumerate which metrics it wants. The server returns everything
 it can measure in a **fixed schema**; fields that are unavailable are `null`. A `null`
@@ -825,7 +829,6 @@ GET response; there is no separate `/results` endpoint.
 **Request Body**:
 ```json
 {
-  "binary": "build/ml_l_inference",
   "input": "datasets/reference.bin",
   "timeout_secs": 60
 }
@@ -844,7 +847,6 @@ GET response; there is no separate `/results` endpoint.
 ```json
 {
   "run_id": "run-abc123",
-  "binary": "build/ml_l_inference",
   "input": "datasets/reference.bin",
   "status": "complete",
   "created_at": "2026-02-26T10:00:00Z",
@@ -873,7 +875,7 @@ GET response; there is no separate `/results` endpoint.
 
 **Request Body**:
 ```json
-{ "binary": "build/ml_l_inference" }
+{ "timeout_secs": 300 }
 ```
 
 **Response** (202 Accepted):
@@ -889,7 +891,6 @@ GET response; there is no separate `/results` endpoint.
 ```json
 {
   "analysis_id": "analysis-def456",
-  "binary": "build/ml_l_inference",
   "status": "complete",
   "created_at": "2026-02-26T10:00:00Z",
   "started_at": "2026-02-26T10:00:01Z",
@@ -1363,11 +1364,12 @@ docker:
 
 The report is **requirement-centric**: the outer loop is requirements, not runs.
 
-A single qualification run may execute the same binary with multiple inputs
+A single qualification session may test the binary with multiple inputs
 (e.g. `reference.bin`, `edge_case.bin`, `stress.bin`). Each input produces one
-execution run. Each requirement's `TestSpec` references the `(binary, input)` pair
-relevant to it. The orchestrator groups specs by `(binary, input)`, submits one job
-per group, and fans results back to each spec.
+execution run. Each requirement's `TestSpec` references the input relevant to it.
+The orchestrator groups specs by input, submits one run job per unique input, and
+fans results back to each spec. The server knows which binary to test — it is
+configured at startup, not sent per request.
 
 The report table shows one row per requirement, citing its evidence source:
 

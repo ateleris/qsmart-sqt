@@ -7,12 +7,10 @@ use tokio::sync::RwLock;
 /// What kind of job was submitted.
 pub enum JobKind {
     Run {
-        binary: String,
         input: Option<String>,
         timeout_secs: u64,
     },
     Analysis {
-        binary: String,
         timeout_secs: u64,
     },
 }
@@ -31,11 +29,10 @@ pub struct JobState {
 }
 
 impl JobState {
-    pub fn new_run(id: String, binary: String, input: Option<String>, timeout_secs: u64) -> Self {
+    pub fn new_run(id: String, input: Option<String>, timeout_secs: u64) -> Self {
         Self {
             id,
             kind: JobKind::Run {
-                binary,
                 input,
                 timeout_secs,
             },
@@ -49,11 +46,10 @@ impl JobState {
         }
     }
 
-    pub fn new_analysis(id: String, binary: String, timeout_secs: u64) -> Self {
+    pub fn new_analysis(id: String, timeout_secs: u64) -> Self {
         Self {
             id,
             kind: JobKind::Analysis {
-                binary,
                 timeout_secs,
             },
             status: JobStatus::Accepted,
@@ -63,13 +59,6 @@ impl JobState {
             error: None,
             run_metrics: None,
             analysis_metrics: None,
-        }
-    }
-
-    /// Helper: extract the binary path regardless of job kind.
-    pub fn binary(&self) -> &str {
-        match &self.kind {
-            JobKind::Run { binary, .. } | JobKind::Analysis { binary, .. } => binary,
         }
     }
 }

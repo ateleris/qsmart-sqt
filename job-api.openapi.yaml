@@ -14,9 +14,9 @@ info:
 
     ### Execution runs — `POST /api/v1/runs`
 
-    One run per `(binary, input)` pair. Executes the binary with the specified
-    input and returns a **fixed-schema** set of runtime metrics: return code,
-    execution time, memory usage (peak and average RSS), CPU usage (max and
+    One run per unique `input`. Executes the server's configured binary with the
+    specified input and returns a **fixed-schema** set of runtime metrics: return
+    code, execution time, memory usage (peak and average RSS), CPU usage (max and
     average), memory leaks (Valgrind), line coverage (lcov), and — for ML
     inference binaries — accuracy, F1 score, recall, and precision.
 
@@ -26,9 +26,9 @@ info:
 
     ### Binary analysis — `POST /api/v1/analysis`
 
-    One analysis per binary. Input-independent. Returns static and structural
-    metrics: Sonar issue counts, static analyser warnings, and binary size.
-    This is called once per unique binary across all qualification runs.
+    One analysis per qualification session. Input-independent. Returns static
+    and structural metrics: Sonar issue counts, static analyser warnings, and
+    binary size.
 
     ## Polling pattern (both endpoints)
 
@@ -47,7 +47,7 @@ info:
     the server could not or did not measure it (missing tool, uninstrumented
     binary, no ground truth configured server-side). SQT Generic treats a null
     metric as a failed constraint when a spec references it.
-  version: "2.0.0"
+  version: "1.0.0"
   contact:
     name: Ateleris
 
@@ -60,9 +60,9 @@ security:
 
 tags:
   - name: Runs
-    description: Per-(binary, input) execution jobs
+    description: Per-input execution jobs
   - name: Analysis
-    description: Per-binary static analysis jobs
+    description: Static analysis jobs
 
 paths:
 
@@ -75,13 +75,12 @@ paths:
       operationId: submitRun
       summary: Submit an execution run
       description: |
-        Executes `binary` with `input` and collects all available runtime
-        metrics. The server determines which metrics to collect; the client
-        does not supply a task list.
+        Executes the server's configured binary with `input` and collects all
+        available runtime metrics. The server determines which metrics to
+        collect; the client does not supply a task list.
 
-        Submit once per unique `(binary, input)` pair. Results from a single
-        run are shared across all test specifications that reference the same
-        pair.
+        Submit once per unique `input`. Results from a single run are shared
+        across all test specifications that reference the same input.
       tags: [Runs]
       requestBody:
         required: true
@@ -90,7 +89,6 @@ paths:
             schema:
               $ref: "#/components/schemas/RunRequest"
             example:
-              binary: "build/ml_l_inference"
               input: "datasets/reference.bin"
               timeout_secs: 60
       responses:
@@ -139,7 +137,6 @@ paths:
                 $ref: "#/components/schemas/RunStatusResponse"
               example:
                 run_id: "run-abc123"
-                binary: "build/ml_l_inference"
                 input: "datasets/reference.bin"
                 status: "complete"
                 created_at: "2026-02-26T10:00:00Z"
@@ -174,9 +171,9 @@ paths:
       operationId: submitAnalysis
       summary: Submit a binary analysis
       description: |
-        Runs input-independent static and structural analysis on `binary`.
-        Call once per unique binary across the qualification run — do not
-        repeat for each input.
+        Runs input-independent static and structural analysis on the server's
+        configured binary. Call once per qualification session — the server
+        knows which binary to analyse.
 
         Covers: Sonar quality gate, static analyser warnings, binary size.
         ML-L Specific servers may add hardware-specific metrics (e.g. worst-
@@ -189,7 +186,7 @@ paths:
             schema:
               $ref: "#/components/schemas/AnalysisRequest"
             example:
-              binary: "build/ml_l_inference"
+              timeout_secs: 300
       responses:
         "202":
           description: Analysis accepted and queued
@@ -229,7 +226,6 @@ paths:
                 $ref: "#/components/schemas/AnalysisStatusResponse"
               example:
                 analysis_id: "analysis-def456"
-                binary: "build/ml_l_inference"
                 status: "complete"
                 created_at: "2026-02-26T10:00:00Z"
                 started_at: "2026-02-26T10:00:01Z"
@@ -291,7 +287,7 @@ components:
           example:
             error:
               code: "VALIDATION_ERROR"
-              message: "binary path must not be empty"
+              message: "invalid timeout_secs value"
               timestamp: "2026-02-26T10:00:00Z"
 
     Unauthorized:
@@ -338,19 +334,13 @@ components:
 
     RunRequest:
       type: object
-      required: [binary]
       properties:
-        binary:
-          type: string
-          description: |
-            Path or identifier of the binary under test. Resolved server-side
-            relative to the server's working directory.
-          example: "build/ml_l_inference"
         input:
           type: string
           description: |
             Path to the input file fed to the binary on stdin or as a
-            positional argument (server-side convention).
+            positional argument (server-side convention). Optional — omit
+            for binaries that take no input.
           example: "datasets/reference.bin"
         timeout_secs:
           type: integer
@@ -378,14 +368,11 @@ components:
 
     RunStatusResponse:
       type: object
-      required: [run_id, binary, status, created_at, metrics]
+      required: [run_id, status, created_at, metrics]
       properties:
         run_id:
           type: string
           example: "run-abc123"
-        binary:
-          type: string
-          example: "build/ml_l_inference"
         input:
           type: string
           description: Input file path, if one was supplied.
@@ -412,7 +399,7 @@ components:
     RunMetrics:
       type: object
       description: |
-        Fixed-schema runtime metrics for a single `(binary, input)` execution.
+        Fixed-schema runtime metrics for a single execution run.
         All fields are always present in a terminal response. `null` means the
         metric was not available for this run (tool not installed, binary not
         instrumented, no ground truth configured server-side, etc.).
@@ -502,13 +489,7 @@ components:
 
     AnalysisRequest:
       type: object
-      required: [binary]
       properties:
-        binary:
-          type: string
-          description: |
-            Path or identifier of the binary to analyse. Resolved server-side.
-          example: "build/ml_l_inference"
         timeout_secs:
           type: integer
           minimum: 1
@@ -534,14 +515,11 @@ components:
 
     AnalysisStatusResponse:
       type: object
-      required: [analysis_id, binary, status, created_at, metrics]
+      required: [analysis_id, status, created_at, metrics]
       properties:
         analysis_id:
           type: string
           example: "analysis-def456"
-        binary:
-          type: string
-          example: "build/ml_l_inference"
         status:
           $ref: "#/components/schemas/JobStatusEnum"
         created_at:

@@ -20,6 +20,7 @@ use crate::store::{self, JobKind, JobStore};
 pub struct AppState {
     pub store: JobStore,
     pub workspace: PathBuf,
+    pub binary: String,
     pub tool_config: Arc<ToolConfig>,
 }
 
@@ -36,7 +37,6 @@ pub async fn create_run(
 
     let job = store::JobState::new_run(
         run_id.clone(),
-        req.binary.clone(),
         req.input.clone(),
         timeout_secs,
     );
@@ -47,14 +47,14 @@ pub async fn create_run(
         store.insert(run_id.clone(), job);
     }
 
-    tracing::info!(run_id = %run_id, binary = %req.binary, "accepted run");
+    tracing::info!(run_id = %run_id, input = ?req.input, "accepted run");
 
     // Spawn background execution
     let store = state.store.clone();
     let workspace = state.workspace.clone();
     let config = state.tool_config.clone();
+    let binary = state.binary.clone();
     let id = run_id.clone();
-    let binary = req.binary.clone();
     let input = req.input.clone();
 
     tokio::spawn(async move {
@@ -127,14 +127,13 @@ pub async fn get_run(
     let store = state.store.read().await;
     let job = store.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    let (binary, input) = match &job.kind {
-        JobKind::Run { binary, input, .. } => (binary.clone(), input.clone()),
+    let input = match &job.kind {
+        JobKind::Run { input, .. } => input.clone(),
         _ => return Err(StatusCode::NOT_FOUND),
     };
 
     Ok(Json(RunStatusResponse {
         run_id: job.id.clone(),
-        binary,
         input,
         status: job.status.clone(),
         created_at: job.created_at.clone(),
@@ -158,7 +157,6 @@ pub async fn create_analysis(
 
     let job = store::JobState::new_analysis(
         analysis_id.clone(),
-        req.binary.clone(),
         timeout_secs,
     );
     let created_at = job.created_at.clone();
@@ -168,14 +166,14 @@ pub async fn create_analysis(
         store.insert(analysis_id.clone(), job);
     }
 
-    tracing::info!(analysis_id = %analysis_id, binary = %req.binary, "accepted analysis");
+    tracing::info!(analysis_id = %analysis_id, "accepted analysis");
 
     // Spawn background execution
     let store = state.store.clone();
     let workspace = state.workspace.clone();
     let config = state.tool_config.clone();
+    let binary = state.binary.clone();
     let id = analysis_id.clone();
-    let binary = req.binary.clone();
 
     tokio::spawn(async move {
         // Mark as running
@@ -245,14 +243,13 @@ pub async fn get_analysis(
     let store = state.store.read().await;
     let job = store.get(&analysis_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    let binary = match &job.kind {
-        JobKind::Analysis { binary, .. } => binary.clone(),
+    match &job.kind {
+        JobKind::Analysis { .. } => {}
         _ => return Err(StatusCode::NOT_FOUND),
     };
 
     Ok(Json(AnalysisStatusResponse {
         analysis_id: job.id.clone(),
-        binary,
         status: job.status.clone(),
         created_at: job.created_at.clone(),
         started_at: job.started_at.clone(),

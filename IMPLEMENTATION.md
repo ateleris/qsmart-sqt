@@ -356,11 +356,10 @@ at the bottom of the file. No other file needs to change.
   - Serves as the template users copy when adding their own specs
 
 - [x] **T-034** Implement `Orchestrator` (`src/orchestrator/mod.rs`)
-  - `run(specs, client, config) -> RunResult` — current implementation submits one job
-    for all constraints (single-endpoint design)
-  - **Phase 4 rewrite**: group specs by `(binary, input)` → one `RunRequest` per group;
-    collect unique binaries → one `AnalysisRequest` per binary; submit all in parallel;
-    wait concurrently; route constraint results via metric-name prefix (see §5.4)
+  - `run(specs, client, config) -> RunResult`
+  - Group specs by input → one `RunRequest` per unique input; submit a single
+    `AnalysisRequest` (server knows which binary to analyse); wait concurrently;
+    route constraint results via metric-name prefix (see §5.4)
   - `null` metric value → failing `ConstraintOutcome` (unchanged from current behaviour)
 
 - [x] **T-035** Wire orchestrator into CLI
@@ -373,15 +372,17 @@ at the bottom of the file. No other file needs to change.
 
 #### API and orchestrator (redesign from Phase 3 skeleton)
 
-- [ ] **T-040** Redesign API types for two-endpoint model (`src/api/types.rs`)
+- [x] **T-040** Redesign API types for two-endpoint model (`src/api/types.rs`)
   - Replace `JobRequest`/`TaskSpec`/`JobStatusResponse`/`TaskResult` with:
     `RunRequest`, `RunAccepted`, `RunStatusResponse`, `RunMetrics`,
     `AnalysisRequest`, `AnalysisAccepted`, `AnalysisStatusResponse`, `AnalysisMetrics`
   - `RunMetrics`: all fields `Option<f64>` / `Option<i64>`; null = metric unavailable
   - `AnalysisMetrics`: `sonar.critical_issues`, `sonar.major_issues`,
     `static.warnings`, `binary.size_kb` — all nullable
+  - **Note**: `binary` is not part of any request or response — the server knows its
+    binary at startup via `--binary` flag
 
-- [ ] **T-041** Update `JobApiClient` for two-endpoint model (`src/api/client.rs`)
+- [x] **T-041** Update `JobApiClient` for two-endpoint model (`src/api/client.rs`)
   - `submit_run(&RunRequest) -> Result<String>` (run_id)
   - `get_run_status(run_id) -> Result<RunStatusResponse>`
   - `wait_for_run(run_id) -> Result<RunStatusResponse>`
@@ -389,9 +390,9 @@ at the bottom of the file. No other file needs to change.
   - `get_analysis_status(analysis_id) -> Result<AnalysisStatusResponse>`
   - `wait_for_analysis(analysis_id) -> Result<AnalysisStatusResponse>`
 
-- [ ] **T-042** Rewrite `Orchestrator` for multi-run grouping (`src/orchestrator/mod.rs`)
-  - Group specs by `(binary, input)` → deduplicated `Vec<RunRequest>`
-  - Collect unique binaries → deduplicated `Vec<AnalysisRequest>`
+- [x] **T-042** Rewrite `Orchestrator` for multi-run grouping (`src/orchestrator/mod.rs`)
+  - Group specs by input → deduplicated `Vec<RunRequest>` (one per unique input)
+  - Submit a single `AnalysisRequest` (server knows which binary to analyse)
   - Submit all jobs concurrently (`tokio::join!` or `futures::join_all`)
   - Route `constraint.metric_name` to the correct response via prefix convention:
     `sonar.*`, `static.*`, `binary.*` → `AnalysisMetrics`; everything else → `RunMetrics`

@@ -25,7 +25,6 @@ impl JobStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRequest {
-    pub binary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,7 +33,6 @@ pub struct RunRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisRequest {
-    pub binary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }
@@ -154,7 +152,6 @@ impl AnalysisMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStatusResponse {
     pub run_id: String,
-    pub binary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     pub status: JobStatus,
@@ -172,7 +169,6 @@ pub struct RunStatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisStatusResponse {
     pub analysis_id: String,
-    pub binary: String,
     pub status: JobStatus,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -232,7 +228,6 @@ mod tests {
     fn run_status_response_deserializes() {
         let json = r#"{
             "run_id": "run-abc123",
-            "binary": "/usr/bin/my-app",
             "input": "test_input.bin",
             "status": "complete",
             "created_at": "2026-02-26T10:00:00Z",
@@ -258,7 +253,6 @@ mod tests {
     fn run_metrics_all_null_deserializes() {
         let json = r#"{
             "run_id": "run-xyz",
-            "binary": "/bin/app",
             "status": "running",
             "created_at": "2026-02-26T10:00:00Z",
             "metrics": {}
@@ -310,7 +304,6 @@ mod tests {
     fn analysis_status_response_deserializes() {
         let json = r#"{
             "analysis_id": "analysis-001",
-            "binary": "/usr/bin/my-app",
             "status": "complete",
             "created_at": "2026-02-26T10:00:00Z",
             "metrics": {

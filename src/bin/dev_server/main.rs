@@ -31,6 +31,10 @@ struct Cli {
     #[arg(long, default_value = "/tmp/sqt-dev-server")]
     workspace: PathBuf,
 
+    /// Path to the binary under test (all jobs run against this binary)
+    #[arg(short, long)]
+    binary: String,
+
     /// Docker image for binary execution (required for run jobs)
     #[arg(long)]
     run_image: String,
@@ -97,7 +101,8 @@ async fn main() {
         static_image: cli.static_image.clone(),
     };
 
-    // Log available tools
+    // Log binary and available tools
+    tracing::info!("binary under test: {}", cli.binary);
     tracing::info!("run image: {}", tool_config.run_image);
     if let Some(ref img) = tool_config.valgrind_image {
         tracing::info!("valgrind image: {img}");
@@ -118,6 +123,7 @@ async fn main() {
     let state = handlers::AppState {
         store: store::new_store(),
         workspace: cli.workspace,
+        binary: cli.binary,
         tool_config: std::sync::Arc::new(tool_config),
     };
 
