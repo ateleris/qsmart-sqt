@@ -12,7 +12,7 @@ use sqt::api::types::{
 };
 use uuid::Uuid;
 
-use crate::ToolConfig;
+use crate::config::{BinaryConfig, ToolConfig};
 use crate::store::{self, JobKind, JobStore};
 
 /// Shared application state passed to all handlers.
@@ -20,7 +20,7 @@ use crate::store::{self, JobKind, JobStore};
 pub struct AppState {
     pub store: JobStore,
     pub workspace: PathBuf,
-    pub binary: String,
+    pub binary_config: Arc<BinaryConfig>,
     pub tool_config: Arc<ToolConfig>,
 }
 
@@ -53,7 +53,7 @@ pub async fn create_run(
     let store = state.store.clone();
     let workspace = state.workspace.clone();
     let config = state.tool_config.clone();
-    let binary = state.binary.clone();
+    let binary_config = state.binary_config.clone();
     let id = run_id.clone();
     let input = req.input.clone();
 
@@ -71,11 +71,11 @@ pub async fn create_run(
         let result = tokio::task::spawn_blocking({
             let workspace = workspace.clone();
             let config = config.clone();
-            let binary = binary.clone();
+            let binary_config = binary_config.clone();
             let input = input.clone();
             move || {
                 crate::run_job::execute(
-                    &binary,
+                    &binary_config,
                     input.as_deref(),
                     timeout_secs,
                     &workspace,
@@ -172,7 +172,7 @@ pub async fn create_analysis(
     let store = state.store.clone();
     let workspace = state.workspace.clone();
     let config = state.tool_config.clone();
-    let binary = state.binary.clone();
+    let binary_config = state.binary_config.clone();
     let id = analysis_id.clone();
 
     tokio::spawn(async move {
@@ -189,10 +189,10 @@ pub async fn create_analysis(
         let result = tokio::task::spawn_blocking({
             let workspace = workspace.clone();
             let config = config.clone();
-            let binary = binary.clone();
+            let binary_config = binary_config.clone();
             move || {
                 crate::analysis_job::execute(
-                    &binary,
+                    &binary_config.path,
                     timeout_secs,
                     &workspace,
                     &config,

@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use sqt::api::types::AnalysisMetrics;
 
-use crate::ToolConfig;
+use crate::config::ToolConfig;
 use crate::tools::{binary_size, sonarqube, static_analysis};
 
 /// Execute an analysis job: collect all configured analysis metrics.

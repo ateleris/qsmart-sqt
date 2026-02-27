@@ -39,6 +39,7 @@ pub fn collect(
         ],
         working_dir: Some(binary_dir.display().to_string()),
         timeout,
+        env: vec![],
     };
 
     let output = docker::run_container(&spec).context("coverage: docker execution failed")?;

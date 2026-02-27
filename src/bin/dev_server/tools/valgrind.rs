@@ -3,36 +3,53 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::config::BinaryConfig;
 use crate::docker::{self, DockerRun};
 
 /// Run valgrind memcheck on the binary and return the total number of
 /// leaked bytes.
+///
+/// Respects `BinaryConfig.args` so the binary is invoked the same way as
+/// in a normal run.
 pub fn collect(
     image: &str,
-    binary: &str,
+    binary_config: &BinaryConfig,
     workspace: &Path,
     timeout: Duration,
 ) -> Result<f64> {
+    let binary = &binary_config.path;
     let xml_path = workspace.join("valgrind.xml");
 
     let binary_path = Path::new(binary);
     let binary_dir = binary_path.parent().unwrap_or(Path::new("/"));
 
+    let mut command = vec![
+        "valgrind".to_string(),
+        "--tool=memcheck".to_string(),
+        "--xml=yes".to_string(),
+        format!("--xml-file={}", xml_path.display()),
+        binary.to_string(),
+    ];
+    // Append configured binary arguments
+    command.extend(binary_config.args.iter().cloned());
+
+    // Collect environment variables
+    let env: Vec<(String, String)> = binary_config
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     let spec = DockerRun {
         image: image.to_string(),
-        command: vec![
-            "valgrind".to_string(),
-            "--tool=memcheck".to_string(),
-            format!("--xml=yes"),
-            format!("--xml-file={}", xml_path.display()),
-            binary.to_string(),
-        ],
+        command,
         volumes: vec![
             docker::identity_mount(binary_dir),
             docker::identity_mount(workspace),
         ],
         working_dir: Some(binary_dir.display().to_string()),
         timeout,
+        env,
     };
 
     let _output = docker::run_container(&spec).context("valgrind: docker execution failed")?;

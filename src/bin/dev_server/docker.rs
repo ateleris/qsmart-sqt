@@ -11,6 +11,8 @@ pub struct DockerRun {
     pub volumes: Vec<(PathBuf, String)>,
     pub working_dir: Option<String>,
     pub timeout: Duration,
+    /// Environment variables passed to the container via `-e`.
+    pub env: Vec<(String, String)>,
 }
 
 /// Output captured from a Docker container run.
@@ -35,6 +37,11 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
             host_path.display(),
             container_path
         ));
+    }
+
+    // Environment variables
+    for (key, val) in &spec.env {
+        cmd.arg("-e").arg(format!("{key}={val}"));
     }
 
     // Working directory inside container

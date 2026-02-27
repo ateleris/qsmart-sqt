@@ -6,11 +6,14 @@ use axum::routing::{get, post};
 use clap::Parser;
 
 mod analysis_job;
+mod config;
 mod docker;
 mod handlers;
 mod run_job;
 mod store;
 mod tools;
+
+use config::{ServerConfig, ToolConfig};
 
 #[derive(Parser)]
 #[command(
@@ -19,56 +22,17 @@ mod tools;
     about = "Local job runner for SQT development (executes tools in Docker containers)"
 )]
 struct Cli {
-    /// Port to listen on
+    /// Path to the YAML configuration file
+    #[arg(short, long)]
+    config: PathBuf,
+
+    /// Port to listen on (overrides config)
     #[arg(short, long, default_value = "3000")]
     port: u16,
 
-    /// Host to bind to
+    /// Host to bind to (overrides config)
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-
-    /// Workspace directory for evidence and tool output
-    #[arg(long, default_value = "/tmp/sqt-dev-server")]
-    workspace: PathBuf,
-
-    /// Path to the binary under test (all jobs run against this binary)
-    #[arg(short, long)]
-    binary: String,
-
-    /// Docker image for binary execution (required for run jobs)
-    #[arg(long)]
-    run_image: String,
-
-    /// Docker image with valgrind installed (optional; enables memory.leaks)
-    #[arg(long)]
-    valgrind_image: Option<String>,
-
-    /// Docker image with lcov/gcov installed (optional; enables coverage.line_pct)
-    #[arg(long)]
-    coverage_image: Option<String>,
-
-    /// SonarQube server URL (optional; enables sonar.* metrics)
-    #[arg(long)]
-    sonar_url: Option<String>,
-
-    /// Name of the environment variable holding the SonarQube token
-    #[arg(long, default_value = "SONAR_TOKEN")]
-    sonar_token_env: String,
-
-    /// Docker image with cppcheck/clang-tidy (optional; enables static.warnings)
-    #[arg(long)]
-    static_image: Option<String>,
-}
-
-/// Configuration for which tool images are available.
-#[derive(Clone)]
-pub struct ToolConfig {
-    pub run_image: String,
-    pub valgrind_image: Option<String>,
-    pub coverage_image: Option<String>,
-    pub sonar_url: Option<String>,
-    pub sonar_token: Option<String>,
-    pub static_image: Option<String>,
 }
 
 fn now_iso() -> String {
@@ -86,24 +50,24 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    // Resolve SonarQube token from environment
-    let sonar_token = cli
-        .sonar_url
-        .as_ref()
-        .and_then(|_| std::env::var(&cli.sonar_token_env).ok());
+    let server_config =
+        ServerConfig::load(&cli.config).expect("failed to load configuration file");
 
-    let tool_config = ToolConfig {
-        run_image: cli.run_image.clone(),
-        valgrind_image: cli.valgrind_image.clone(),
-        coverage_image: cli.coverage_image.clone(),
-        sonar_url: cli.sonar_url.clone(),
-        sonar_token,
-        static_image: cli.static_image.clone(),
-    };
+    let tool_config = ToolConfig::from_server_config(&server_config);
 
     // Log binary and available tools
-    tracing::info!("binary under test: {}", cli.binary);
-    tracing::info!("run image: {}", tool_config.run_image);
+    tracing::info!("binary under test: {}", server_config.binary.path);
+    if !server_config.binary.args.is_empty() {
+        tracing::info!("binary args: {:?}", server_config.binary.args);
+    }
+    if !server_config.binary.env.is_empty() {
+        tracing::info!("binary env: {:?}", server_config.binary.env);
+    }
+    tracing::info!("input mode: {:?}", server_config.binary.input_mode);
+
+    if let Some(ref img) = tool_config.run_image {
+        tracing::info!("run image: {img}");
+    }
     if let Some(ref img) = tool_config.valgrind_image {
         tracing::info!("valgrind image: {img}");
     }
@@ -118,12 +82,13 @@ async fn main() {
     }
 
     // Create workspace directory
-    std::fs::create_dir_all(&cli.workspace).expect("failed to create workspace directory");
+    std::fs::create_dir_all(&server_config.workspace)
+        .expect("failed to create workspace directory");
 
     let state = handlers::AppState {
         store: store::new_store(),
-        workspace: cli.workspace,
-        binary: cli.binary,
+        workspace: server_config.workspace.clone(),
+        binary_config: std::sync::Arc::new(server_config.binary),
         tool_config: std::sync::Arc::new(tool_config),
     };
 

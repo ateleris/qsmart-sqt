@@ -1,0 +1,6 @@
+binary:
+  path: target/debug/sqt-test-binary
+
+tools:
+  run:
+    image: sqt-run:latest
