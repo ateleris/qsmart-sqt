@@ -5,7 +5,7 @@ project:
 build_dir: "./build"
 
 api:
-  url: "http://localhost:8080"
+  url: "http://localhost:3000"
   token_env: "SQT_API_TOKEN"
 
 report:
