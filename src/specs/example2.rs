@@ -1,6 +1,6 @@
 use crate::constraint::{Constraint, Op};
 use crate::metrics::Target;
-use crate::specs::TestSpec;
+use crate::specs::{SpecFactory, TestSpec};
 
 pub fn spec() -> TestSpec {
     TestSpec {
@@ -13,4 +13,8 @@ pub fn spec() -> TestSpec {
             Constraint::cpu_max_pct(Op::Lte, 50.0),
         ],
     }
+}
+
+inventory::submit! {
+    SpecFactory { create: spec }
 }

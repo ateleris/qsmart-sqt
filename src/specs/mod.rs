@@ -13,6 +13,16 @@ pub struct TestSpec {
     pub constraints: Vec<Constraint>,
 }
 
+/// A factory that produces a `TestSpec`.
+///
+/// Spec modules register themselves via `inventory::submit!` so that
+/// `all_specs()` discovers them automatically — no manual wiring needed.
+pub struct SpecFactory {
+    pub create: fn() -> TestSpec,
+}
+
+inventory::collect!(SpecFactory);
+
 #[derive(Debug, Clone)]
 pub struct SpecResult {
     pub spec: TestSpec,
@@ -34,8 +44,9 @@ pub struct RunResult {
     pub config_version: String,
 }
 
+/// Collect all registered specs via inventory.
 pub fn all_specs() -> Vec<TestSpec> {
-    vec![example::spec()]
+    inventory::iter::<SpecFactory>.into_iter().map(|f| (f.create)()).collect()
 }
 
 #[cfg(test)]
@@ -80,6 +91,14 @@ mod tests {
     #[test]
     fn all_specs_returns_nonempty_vec() {
         assert!(!all_specs().is_empty());
+    }
+
+    #[test]
+    fn all_specs_discovers_both_examples() {
+        let specs = all_specs();
+        let uids: Vec<&str> = specs.iter().map(|s| s.requirement_uid.as_str()).collect();
+        assert!(uids.contains(&"REQ-EXAMPLE-001"), "missing REQ-EXAMPLE-001");
+        assert!(uids.contains(&"REQ-EXAMPLE-002"), "missing REQ-EXAMPLE-002");
     }
 
     #[test]
