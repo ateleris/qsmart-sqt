@@ -81,6 +81,37 @@ async fn main() {
         tracing::info!("static analysis image: {img}");
     }
 
+    // --- Preflight checks (fail fast) -----------------------------------------
+    tracing::info!("running preflight checks...");
+
+    docker::check_docker().expect("preflight: Docker check failed");
+
+    // Check all configured images exist
+    let images: Vec<(&str, &str)> = [
+        (tool_config.run_image.as_deref(), "run"),
+        (tool_config.valgrind_image.as_deref(), "valgrind"),
+        (tool_config.coverage_image.as_deref(), "coverage"),
+        (tool_config.static_image.as_deref(), "static_analysis"),
+    ]
+    .into_iter()
+    .filter_map(|(img, name)| img.map(|i| (i, name)))
+    .collect();
+
+    for (image, name) in &images {
+        docker::check_image(image)
+            .unwrap_or_else(|e| panic!("preflight: {name} image check failed: {e}"));
+        tracing::info!("{name} image OK: {image}");
+    }
+
+    // Check binary is executable inside the run image
+    if let Some(ref run_image) = tool_config.run_image {
+        docker::check_binary_in_image(run_image, &server_config.binary.path)
+            .expect("preflight: binary check failed");
+        tracing::info!("binary OK: {} (in {})", server_config.binary.path, run_image);
+    }
+
+    tracing::info!("preflight checks passed");
+
     // Create workspace directory
     std::fs::create_dir_all(&server_config.workspace)
         .expect("failed to create workspace directory");

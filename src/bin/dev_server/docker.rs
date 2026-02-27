@@ -124,3 +124,79 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
 pub fn identity_mount(path: &Path) -> (PathBuf, String) {
     (path.to_path_buf(), path.display().to_string())
 }
+
+/// Check that Docker is available and responding.
+pub fn check_docker() -> Result<()> {
+    let output = Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .context("failed to run `docker info` — is Docker installed?")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Docker is not available: {}", stderr.trim());
+    }
+
+    let version = String::from_utf8_lossy(&output.stdout);
+    tracing::info!("Docker server version: {}", version.trim());
+    Ok(())
+}
+
+/// Check that a Docker image exists locally.
+pub fn check_image(image: &str) -> Result<()> {
+    let output = Command::new("docker")
+        .args(["image", "inspect", image])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .context("failed to run `docker image inspect`")?;
+
+    if !output.status.success() {
+        bail!("Docker image '{image}' not found locally — build or pull it first");
+    }
+    Ok(())
+}
+
+/// Check that a binary exists on the host and is executable inside the given
+/// Docker image.
+///
+/// The binary must exist on the host filesystem — this is the binary under test,
+/// not a system utility. Its parent directory is mounted into the container at
+/// the same path, then `test -x` verifies it's executable inside the container.
+pub fn check_binary_in_image(image: &str, binary: &str) -> Result<()> {
+    let binary_path = Path::new(binary);
+
+    if !binary_path.exists() {
+        bail!(
+            "binary '{binary}' does not exist on the host \
+             — check the 'binary.path' in your config"
+        );
+    }
+
+    let binary_dir = binary_path.parent().unwrap_or(Path::new("/"));
+    let volume_mount = format!("{}:{}", binary_dir.display(), binary_dir.display());
+
+    tracing::info!(
+        "preflight binary check: docker run --rm -v {} {} test -x {}",
+        volume_mount, image, binary
+    );
+
+    let output = Command::new("docker")
+        .args(["run", "--rm"])
+        .arg("-v")
+        .arg(&volume_mount)
+        .arg(image)
+        .args(["test", "-x", binary])
+        .output()
+        .context("failed to run binary check in container")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "binary '{binary}' is not executable inside image '{image}' \
+             — check that the file has execute permissions. \
+             stderr: {}", stderr.trim()
+        );
+    }
+    Ok(())
+}
