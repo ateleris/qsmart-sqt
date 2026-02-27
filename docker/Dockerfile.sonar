@@ -1,0 +1,6 @@
+FROM sonarsource/sonar-scanner-cli:latest
+
+# The sonar-scanner-cli image provides the sonar-scanner tool.
+# SonarQube analysis is triggered via HTTP API, so this image is
+# only needed if you want to run sonar-scanner inside a container.
+ENTRYPOINT []

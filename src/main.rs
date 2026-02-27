@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod api;
+use sqt::api;
+
 mod config;
 mod constraint;
 mod metrics;
