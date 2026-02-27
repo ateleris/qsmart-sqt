@@ -21,21 +21,26 @@ pub fn execute(
     let mut metrics = AnalysisMetrics::default();
 
     // Always collect binary size (no Docker needed)
+    tracing::info!(binary = %binary, "collecting binary size");
     match binary_size::collect(binary) {
-        Ok(size_kb) => metrics.binary_size_kb = Some(size_kb),
+        Ok(size_kb) => {
+            tracing::info!(size_kb, "binary_size complete");
+            metrics.binary_size_kb = Some(size_kb);
+        }
         Err(e) => tracing::warn!("binary_size failed: {e:#}"),
     }
 
     // Optional: SonarQube issues
     if let (Some(url), Some(token)) = (&config.sonar_url, &config.sonar_token) {
-        // Use binary filename as the SonarQube project key
         let project_key = Path::new(binary)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(binary);
 
+        tracing::info!(url = %url, project_key = %project_key, "querying sonarqube");
         match sonarqube::collect(url, token, project_key) {
             Ok((critical, major)) => {
+                tracing::info!(critical, major, "sonarqube complete");
                 metrics.sonar_critical_issues = Some(critical);
                 metrics.sonar_major_issues = Some(major);
             }
@@ -45,8 +50,12 @@ pub fn execute(
 
     // Optional: static analysis warnings
     if let Some(ref image) = config.static_image {
+        tracing::info!(image = %image, "running static analysis");
         match static_analysis::collect(image, binary, workspace, timeout) {
-            Ok(warnings) => metrics.static_warnings = Some(warnings),
+            Ok(warnings) => {
+                tracing::info!(warnings, "static_analysis complete");
+                metrics.static_warnings = Some(warnings);
+            }
             Err(e) => tracing::warn!("static analysis failed: {e:#}"),
         }
     }

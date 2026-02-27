@@ -47,7 +47,12 @@ pub async fn create_run(
         store.insert(run_id.clone(), job);
     }
 
-    tracing::info!(run_id = %run_id, input = ?req.input, "accepted run");
+    tracing::info!(
+        run_id = %run_id,
+        input = ?req.input,
+        timeout_secs,
+        "POST /api/v1/runs — accepted run job"
+    );
 
     // Spawn background execution
     let store = state.store.clone();
@@ -66,6 +71,7 @@ pub async fn create_run(
                 job.started_at = Some(crate::now_iso());
             }
         }
+        tracing::info!(run_id = %id, "run job started");
 
         // Execute in blocking thread pool
         let result = tokio::task::spawn_blocking({
@@ -92,14 +98,26 @@ pub async fn create_run(
             match result {
                 Ok(Ok(metrics)) => {
                     job.status = JobStatus::Complete;
+                    tracing::info!(
+                        run_id = %id,
+                        return_code = ?metrics.return_code,
+                        time_ms = ?metrics.time_execution,
+                        peak_rss_kb = ?metrics.memory_peak_rss,
+                        cpu_pct = ?metrics.cpu_max_pct,
+                        leaks = ?metrics.memory_leaks,
+                        coverage = ?metrics.coverage_line_pct,
+                        "run job complete"
+                    );
                     job.run_metrics = Some(metrics);
                 }
                 Ok(Err(e)) => {
                     job.status = JobStatus::Failed;
+                    tracing::error!(run_id = %id, error = %e, "run job failed");
                     job.error = Some(format!("{e:#}"));
                 }
                 Err(e) => {
                     job.status = JobStatus::Failed;
+                    tracing::error!(run_id = %id, error = %e, "run job panicked");
                     job.error = Some(format!("task panicked: {e}"));
                 }
             }
@@ -131,6 +149,12 @@ pub async fn get_run(
         JobKind::Run { input, .. } => input.clone(),
         _ => return Err(StatusCode::NOT_FOUND),
     };
+
+    tracing::debug!(
+        run_id = %run_id,
+        status = ?job.status,
+        "GET /api/v1/runs/{run_id}"
+    );
 
     Ok(Json(RunStatusResponse {
         run_id: job.id.clone(),
@@ -166,7 +190,11 @@ pub async fn create_analysis(
         store.insert(analysis_id.clone(), job);
     }
 
-    tracing::info!(analysis_id = %analysis_id, "accepted analysis");
+    tracing::info!(
+        analysis_id = %analysis_id,
+        timeout_secs,
+        "POST /api/v1/analysis — accepted analysis job"
+    );
 
     // Spawn background execution
     let store = state.store.clone();
@@ -184,6 +212,7 @@ pub async fn create_analysis(
                 job.started_at = Some(crate::now_iso());
             }
         }
+        tracing::info!(analysis_id = %id, "analysis job started");
 
         // Execute in blocking thread pool
         let result = tokio::task::spawn_blocking({
@@ -208,14 +237,24 @@ pub async fn create_analysis(
             match result {
                 Ok(Ok(metrics)) => {
                     job.status = JobStatus::Complete;
+                    tracing::info!(
+                        analysis_id = %id,
+                        binary_size_kb = ?metrics.binary_size_kb,
+                        sonar_critical = ?metrics.sonar_critical_issues,
+                        sonar_major = ?metrics.sonar_major_issues,
+                        static_warnings = ?metrics.static_warnings,
+                        "analysis job complete"
+                    );
                     job.analysis_metrics = Some(metrics);
                 }
                 Ok(Err(e)) => {
                     job.status = JobStatus::Failed;
+                    tracing::error!(analysis_id = %id, error = %e, "analysis job failed");
                     job.error = Some(format!("{e:#}"));
                 }
                 Err(e) => {
                     job.status = JobStatus::Failed;
+                    tracing::error!(analysis_id = %id, error = %e, "analysis job panicked");
                     job.error = Some(format!("task panicked: {e}"));
                 }
             }
@@ -247,6 +286,12 @@ pub async fn get_analysis(
         JobKind::Analysis { .. } => {}
         _ => return Err(StatusCode::NOT_FOUND),
     };
+
+    tracing::debug!(
+        analysis_id = %analysis_id,
+        status = ?job.status,
+        "GET /api/v1/analysis/{analysis_id}"
+    );
 
     Ok(Json(AnalysisStatusResponse {
         analysis_id: job.id.clone(),

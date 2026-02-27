@@ -5,34 +5,14 @@ use anyhow::Result;
 use crate::api::types::{AnalysisRequest, RunRequest, RunStatusResponse};
 use crate::api::ApiClient;
 use crate::config::SqtConfig;
-use crate::constraint::evaluator::evaluate;
 use crate::constraint::ConstraintOutcome;
-use crate::metrics::{MetricValue, Target};
+use crate::constraint::evaluator::evaluate;
 use crate::specs::{RunResult, SpecResult, TestSpec};
-
-/// Metric name prefixes that belong to analysis jobs (binary-level, not per-run).
-const ANALYSIS_PREFIXES: &[&str] = &["sonar.", "static.", "binary."];
-
-/// Return `true` if `name` should be routed to an analysis job rather than a run job.
-fn is_analysis_metric(name: &str) -> bool {
-    ANALYSIS_PREFIXES.iter().any(|p| name.starts_with(p))
-}
-
-/// Return the unit string for a metric, matching `Value::unit()`.
-fn metric_unit(name: &str) -> &'static str {
-    match name {
-        "time.execution" => "ms",
-        "memory.peak_rss" | "memory.avg_rss" | "binary.size_kb" => "KB",
-        "cpu.max_pct" | "cpu.avg_pct" | "coverage.line_pct" => "%",
-        "memory.leaks" => "bytes",
-        _ => "",
-    }
-}
 
 /// Build the grouping key for a target: the input path.
 ///
 /// The server knows its own binary, so grouping is by input only.
-fn run_key(target: &Target) -> Option<String> {
+fn run_key(target: &crate::metrics::Target) -> Option<String> {
     target.input.as_ref().map(|p| p.to_string_lossy().into_owned())
 }
 
@@ -118,17 +98,16 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
                 .constraints
                 .iter()
                 .map(|constraint| {
-                    let name = &constraint.metric_name;
-                    let maybe_value = if is_analysis_metric(name) {
+                    let name = constraint.metric_name();
+                    let maybe_value = if constraint.is_analysis() {
                         analysis_response.metrics.get(name)
                     } else {
                         run_responses.get(&input).and_then(|r| r.metrics.get(name))
                     };
                     match maybe_value {
                         Some(value) => {
-                            let metric = MetricValue::new(value, metric_unit(name));
-                            let mut outcome = evaluate(&metric, constraint);
-                            if is_analysis_metric(name) {
+                            let mut outcome = evaluate(value, constraint);
+                            if constraint.is_analysis() {
                                 outcome.evidence.insert("analysis_id".into(), analysis_id.clone());
                             } else if let Some(id) = run_ids.get(&input) {
                                 outcome.evidence.insert("run_id".into(), id.clone());
@@ -165,14 +144,12 @@ mod tests {
     use std::time::Duration;
 
     use crate::api::types::{AnalysisMetrics, RunMetrics};
-    use crate::constraint::{Constraint, Op, Value};
+    use crate::constraint::{Constraint, Op};
     use crate::constraint::evaluator::evaluate;
-    use crate::metrics::{MetricValue, Platform, Target};
+    use crate::metrics::{Platform, Target};
     use crate::specs::TestSpec;
 
-    use super::{
-        build_run_request, failing_outcome, is_analysis_metric, metric_unit, run_key,
-    };
+    use super::{build_run_request, failing_outcome, run_key};
 
     fn make_target(binary: &str, input: Option<&str>, timeout_secs: u64) -> Target {
         Target {
@@ -192,37 +169,23 @@ mod tests {
         }
     }
 
-    // --- is_analysis_metric ---
+    // --- constraint routing ---
 
     #[test]
-    fn is_analysis_metric_routing() {
-        assert!(is_analysis_metric("sonar.critical_issues"));
-        assert!(is_analysis_metric("sonar.major_issues"));
-        assert!(is_analysis_metric("static.warnings"));
-        assert!(is_analysis_metric("binary.size_kb"));
-        assert!(!is_analysis_metric("return_code"));
-        assert!(!is_analysis_metric("time.execution"));
-        assert!(!is_analysis_metric("memory.peak_rss"));
-        assert!(!is_analysis_metric("memory.leaks"));
-        assert!(!is_analysis_metric("coverage.line_pct"));
+    fn analysis_constraints_are_analysis() {
+        assert!(Constraint::sonar_critical_issues(Op::Eq, 0).is_analysis());
+        assert!(Constraint::sonar_major_issues(Op::Eq, 0).is_analysis());
+        assert!(Constraint::static_warnings(Op::Lte, 5).is_analysis());
+        assert!(Constraint::binary_size_kb(Op::Lte, 1024.0).is_analysis());
     }
 
-    // --- metric_unit ---
-
     #[test]
-    fn metric_unit_matches_known_metrics() {
-        assert_eq!(metric_unit("return_code"), "");
-        assert_eq!(metric_unit("time.execution"), "ms");
-        assert_eq!(metric_unit("memory.peak_rss"), "KB");
-        assert_eq!(metric_unit("memory.avg_rss"), "KB");
-        assert_eq!(metric_unit("binary.size_kb"), "KB");
-        assert_eq!(metric_unit("cpu.max_pct"), "%");
-        assert_eq!(metric_unit("cpu.avg_pct"), "%");
-        assert_eq!(metric_unit("coverage.line_pct"), "%");
-        assert_eq!(metric_unit("memory.leaks"), "bytes");
-        assert_eq!(metric_unit("sonar.critical_issues"), "");
-        assert_eq!(metric_unit("ml.accuracy"), "");
-        assert_eq!(metric_unit("unknown_metric"), "");
+    fn run_constraints_are_not_analysis() {
+        assert!(!Constraint::return_code(Op::Eq, 0).is_analysis());
+        assert!(!Constraint::execution_time(Op::Lte, 100.0).is_analysis());
+        assert!(!Constraint::memory_peak_rss(Op::Lte, 4096.0).is_analysis());
+        assert!(!Constraint::memory_leaks(Op::Eq, 0.0).is_analysis());
+        assert!(!Constraint::coverage_line_pct(Op::Gte, 80.0).is_analysis());
     }
 
     // --- RunMetrics.get ---
@@ -273,18 +236,16 @@ mod tests {
 
     #[test]
     fn present_metric_maps_to_passing_outcome() {
-        let constraint = Constraint::new("time.execution", Op::Lte, Value::ms(100.0));
-        let metric = MetricValue::new(87.3, metric_unit("time.execution"));
-        let outcome = evaluate(&metric, &constraint);
+        let constraint = Constraint::execution_time(Op::Lte, 100.0);
+        let outcome = evaluate(87.3, &constraint);
         assert!(outcome.passed);
         assert!(outcome.message.contains("PASS"));
     }
 
     #[test]
     fn present_metric_maps_to_failing_outcome() {
-        let constraint = Constraint::new("time.execution", Op::Lte, Value::ms(100.0));
-        let metric = MetricValue::new(150.0, metric_unit("time.execution"));
-        let outcome = evaluate(&metric, &constraint);
+        let constraint = Constraint::execution_time(Op::Lte, 100.0);
+        let outcome = evaluate(150.0, &constraint);
         assert!(!outcome.passed);
         assert!(outcome.message.contains("FAIL"));
     }

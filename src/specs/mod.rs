@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod example;
+mod example2;
 
 use crate::constraint::{Constraint, ConstraintOutcome};
 use crate::metrics::Target;
@@ -40,7 +41,7 @@ pub fn all_specs() -> Vec<TestSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraint::{Constraint, ConstraintOutcome, Op, Value};
+    use crate::constraint::{Constraint, ConstraintOutcome, Op};
 
     fn passing_outcome() -> ConstraintOutcome {
         ConstraintOutcome {
@@ -65,7 +66,7 @@ mod tests {
     fn make_spec() -> TestSpec {
         TestSpec {
             requirement_uid: "REQ-001".to_string(),
-            constraints: vec![Constraint::new("cpu", Op::Lte, Value::pct(80.0))],
+            constraints: vec![Constraint::cpu_max_pct(Op::Lte, 80.0)],
             ..Default::default()
         }
     }

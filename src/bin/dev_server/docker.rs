@@ -57,9 +57,11 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
         cmd.arg(arg);
     }
 
-    tracing::debug!(
+    tracing::info!(
         image = %spec.image,
         cmd = ?spec.command,
+        env = ?spec.env,
+        volumes = ?spec.volumes.iter().map(|(h, c)| format!("{}:{}", h.display(), c)).collect::<Vec<_>>(),
         "starting docker container"
     );
 
@@ -69,7 +71,19 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
         .context("failed to execute docker command — is Docker installed and running?")?;
     let wall_time = start.elapsed();
 
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout_text = String::from_utf8_lossy(&output.stdout);
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+
     if wall_time > spec.timeout {
+        tracing::error!(
+            image = %spec.image,
+            exit_code,
+            wall_ms = wall_time.as_millis() as u64,
+            stdout = %stdout_text,
+            stderr = %stderr_text,
+            "docker container exceeded timeout"
+        );
         bail!(
             "docker container exceeded timeout ({:.1}s > {:.1}s)",
             wall_time.as_secs_f64(),
@@ -77,12 +91,25 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
         );
     }
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    tracing::debug!(
-        exit_code,
-        wall_secs = wall_time.as_secs_f64(),
-        "docker container finished"
-    );
+    if !output.status.success() {
+        tracing::warn!(
+            image = %spec.image,
+            exit_code,
+            wall_ms = wall_time.as_millis() as u64,
+            stdout = %stdout_text,
+            stderr = %stderr_text,
+            "docker container exited with non-zero status"
+        );
+    } else {
+        tracing::info!(
+            image = %spec.image,
+            exit_code,
+            wall_ms = wall_time.as_millis() as u64,
+            stdout = %stdout_text,
+            stderr = %stderr_text,
+            "docker container finished"
+        );
+    }
 
     Ok(DockerOutput {
         exit_code,

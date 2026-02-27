@@ -139,11 +139,32 @@ fn default_workspace() -> PathBuf {
 
 impl ServerConfig {
     /// Load configuration from a YAML file.
+    ///
+    /// Relative paths in `binary.path` and `workspace` are resolved against
+    /// the current working directory.
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file: {}", path.display()))?;
-        let config: Self = serde_yaml::from_str(&contents)
+        let mut config: Self = serde_yaml::from_str(&contents)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
+
+        // Resolve binary path to absolute (Docker requires absolute paths for
+        // volume mounts and working directories).
+        let binary_path = PathBuf::from(&config.binary.path);
+        if binary_path.is_relative() {
+            let abs = std::env::current_dir()
+                .context("failed to determine current directory")?
+                .join(&binary_path);
+            config.binary.path = abs.display().to_string();
+        }
+
+        // Resolve workspace to absolute as well.
+        if config.workspace.is_relative() {
+            config.workspace = std::env::current_dir()
+                .context("failed to determine current directory")?
+                .join(&config.workspace);
+        }
+
         Ok(config)
     }
 }

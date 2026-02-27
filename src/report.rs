@@ -80,12 +80,12 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
         .iter()
         .zip(sr.outcomes.iter())
         .map(|(constraint, outcome)| OutcomeReport {
-            metric: constraint.metric_name.clone(),
-            operator: constraint.op.to_string(),
+            metric: constraint.metric_name().to_owned(),
+            operator: constraint.op().to_string(),
             passed: outcome.passed,
             actual: outcome.actual,
             expected: outcome.expected,
-            unit: constraint.value.unit().to_owned(),
+            unit: constraint.unit().to_owned(),
             message: outcome.message.clone(),
             evidence: outcome.evidence.clone(),
         })
@@ -144,7 +144,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::constraint::{Constraint, ConstraintOutcome, Op, Value};
+    use crate::constraint::{Constraint, ConstraintOutcome, Op};
     use crate::metrics::{Platform, Target};
     use crate::specs::{RunResult, SpecResult, TestSpec};
 
@@ -162,7 +162,7 @@ mod tests {
         TestSpec {
             requirement_uid: uid.to_string(),
             target: make_target(binary),
-            constraints: vec![Constraint::new("return_code", Op::Eq, Value::int(0))],
+            constraints: vec![Constraint::return_code(Op::Eq, 0)],
         }
     }
 

@@ -7,8 +7,11 @@ use sqt::api::types::RunMetrics;
 use crate::config::{BinaryConfig, InputMode};
 use crate::docker::{self, DockerRun};
 
-/// Run the binary inside a Docker container using `/usr/bin/time -v` to
-/// collect execution metrics: return code, wall time, peak/avg RSS, CPU%.
+/// Run the binary inside a Docker container and collect execution metrics.
+///
+/// If GNU time (`/usr/bin/time`) is available in the container, it is used to
+/// collect peak RSS and CPU%.  Otherwise, those metrics are returned as `None`
+/// and only return code and wall time (measured on the host side) are reported.
 ///
 /// Respects `BinaryConfig` for extra arguments, environment variables, and
 /// input delivery mode.
@@ -21,11 +24,16 @@ pub fn collect(
 ) -> Result<RunMetrics> {
     let binary = &binary_config.path;
 
-    // Build the command that will be wrapped by /usr/bin/time.
-    // We always go through `sh -c` so we can handle stdin redirection and
-    // env vars uniformly.
+    // Build the invocation fragment (binary + args + input handling).
     let binary_with_args = build_binary_invocation(binary_config, input);
-    let shell_cmd = format!("/usr/bin/time -v {binary_with_args} 2>&1");
+
+    // Use GNU time if available, otherwise fall back to plain execution.
+    // The shell snippet checks for /usr/bin/time at runtime so we work with
+    // any container image.
+    let shell_cmd = format!(
+        "if [ -x /usr/bin/time ]; then /usr/bin/time -v {binary_with_args} 2>&1; \
+         else {binary_with_args}; fi"
+    );
     let command = vec!["sh".to_string(), "-c".to_string(), shell_cmd];
 
     let binary_path = Path::new(binary);
@@ -69,12 +77,19 @@ pub fn collect(
 
     let output = docker::run_container(&spec).context("run_binary: docker execution failed")?;
 
-    // When using sh -c with 2>&1, time output goes to stdout
+    // When GNU time is present, its output ends up in stdout via 2>&1.
+    // When it's absent, stdout is just the binary's own output.
     let combined = String::from_utf8_lossy(&output.stdout);
 
-    let time_execution = output.wall_time.as_secs_f64() * 1000.0; // ms
     let memory_peak_rss = parse_time_field(&combined, "Maximum resident set size (kbytes):");
     let cpu_pct = parse_time_field(&combined, "Percent of CPU this job got:");
+
+    if memory_peak_rss.is_none() {
+        tracing::info!("/usr/bin/time not found in container — peak RSS and CPU% unavailable");
+    }
+
+    // Wall time is always measured on the host side, independent of GNU time.
+    let time_execution = output.wall_time.as_secs_f64() * 1000.0; // ms
 
     Ok(RunMetrics {
         return_code: Some(i64::from(output.exit_code)),
