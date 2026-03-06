@@ -319,26 +319,25 @@ at the bottom of the file. No other file needs to change.
 
 ### Phase 3 — API Client, Specs, and Orchestrator
 
-> **Note**: T-030 through T-035 below were implemented against the old single-job
-> design. The API types and orchestrator will be updated in Phase 4 to match the
-> two-endpoint design (`/runs` + `/analysis`) documented in `job-api.openapi.yaml`
-> v2.0.0. The Phase 3 code provides a complete working skeleton; the redesign is
-> incremental.
+> **Note**: T-030 through T-035 were originally implemented against an old single-job
+> design, then updated in Phase 4 for a two-endpoint (`/runs` + `/analysis`) design.
+> **Phase 4 is being reverted** — see below. The Phase 3 code provides a working
+> skeleton that Phase 4 will rebuild on top of.
 
 - [x] **T-030** Define API types (`src/api/types.rs`)
   - ~~`JobRequest`, `TaskSpec`, `JobAccepted`, `JobStatusResponse`, `TaskResult`~~
-    **→ Phase 4 will replace with** `RunRequest`, `RunAccepted`, `RunStatusResponse`,
-    `RunMetrics`, `AnalysisRequest`, `AnalysisAccepted`, `AnalysisStatusResponse`,
-    `AnalysisMetrics`
-  - `JobStatus`, `TaskStatus`, `ErrorResponse`, `ApiError` — remain valid
+    **→ Phase 4 will replace with** `JobRequest`, `JobAccepted`, `JobStatusResponse`,
+    `JobMetrics`, `HardwareInfo`, `JobOutput`
+  - `JobStatus`, `ErrorResponse`, `ApiError` — remain valid
   - All fields `Deserialize` + `Serialize`; `Option` fields use
     `#[serde(skip_serializing_if = "Option::is_none")]`
 
 - [x] **T-031** Implement `JobApiClient` (`src/api/client.rs`)
   - `new(base_url, token)` — creates `reqwest` async client with optional Bearer header
   - ~~`submit_job`, `get_status`, `wait_for_completion`~~ **→ Phase 4 will replace with**
-    `submit_run`, `get_run_status`, `wait_for_run`,
-    `submit_analysis`, `get_analysis_status`, `wait_for_analysis`
+    `submit_job(&JobRequest) -> Result<String>` (job_id),
+    `get_job_status(job_id) -> Result<JobStatusResponse>`,
+    `wait_for_job(job_id) -> Result<JobStatusResponse>`
   - Exponential backoff: 1 s initial, ×2 per poll, 30 s cap — unchanged
 
 - [x] **T-032** Define `all_specs()` convention (`src/specs/mod.rs`)
@@ -348,19 +347,19 @@ at the bottom of the file. No other file needs to change.
     new spec requires two manual steps: `mod my_spec;` in `specs/mod.rs` and a call to
     `my_spec::spec()` inside `all_specs()`. This is intentional — specs are project-
     specific configuration, not reusable plugins.
-  - Each `TestSpec` carries its own `Target` (binary + input) — the orchestrator uses
-    this as the grouping key for run deduplication
+  - Each `TestSpec` carries its own workload type + input — the orchestrator uses
+    `(workload, input)` as the deduplication key when grouping specs into jobs
 
 - [x] **T-033** Write first example spec (`src/specs/example.rs`)
-  - `REQ-EXAMPLE-001`: `return_code == 0` and `time.execution <= 100ms`
+  - `REQ-EXAMPLE-001`: `return_code == 0` and `time.avg_ms <= 100ms`
   - Serves as the template users copy when adding their own specs
 
 - [x] **T-034** Implement `Orchestrator` (`src/orchestrator/mod.rs`)
   - `run(specs, client, config) -> RunResult`
-  - Group specs by input → one `RunRequest` per unique input; submit a single
-    `AnalysisRequest` (server knows which binary to analyse); wait concurrently;
-    route constraint results via metric-name prefix (see §5.4)
-  - `null` metric value → failing `ConstraintOutcome` (unchanged from current behaviour)
+  - Group specs by `(workload, input)` → deduplicated `Vec<JobRequest>` (one per unique pair)
+  - Submit all jobs concurrently (`tokio::join!` or `futures::join_all`); wait concurrently
+  - Map `constraint.metric_name` → nullable field on `JobMetrics`; null → failing `ConstraintOutcome`
+  - Assemble `RunResult` with one `SpecResult` per spec
 
 - [x] **T-035** Wire orchestrator into CLI
   - `sqt run`: load config → `all_specs()` → `JobApiClient::new` → `orchestrator::run`
@@ -368,43 +367,62 @@ at the bottom of the file. No other file needs to change.
 
 ---
 
-### Phase 4 — API Redesign, Orchestrator Rewrite, Evidence and Reporting
+### Phase 4 — API Redesign (Single-Endpoint), Orchestrator Rewrite, Evidence and Reporting
 
-#### API and orchestrator (redesign from Phase 3 skeleton)
+> **Context**: The two-endpoint design implemented in the original Phase 4
+> (`/api/v1/runs` + `/api/v1/analysis`) is being replaced by the single-endpoint
+> design (`/api/v1/jobs`) documented in `job-api.openapi.yaml` v2.0.0. The key
+> problems with the two-endpoint design were:
+> - Implicit metric-routing by name prefix (`sonar.*` → analysis, else → run)
+>   was fragile and silently wrong on typos.
+> - Static analysis was a separate lifecycle that complicated the orchestrator.
+> - No support for workload types, measurement modes, instrumentation, or output transfer.
+>
+> The new design folds everything into one job. The orchestrator becomes simpler:
+> one job per unique `(workload, input)` pair; all metrics in one flat response.
 
-- [x] **T-040** Redesign API types for two-endpoint model (`src/api/types.rs`)
-  - Replace `JobRequest`/`TaskSpec`/`JobStatusResponse`/`TaskResult` with:
-    `RunRequest`, `RunAccepted`, `RunStatusResponse`, `RunMetrics`,
-    `AnalysisRequest`, `AnalysisAccepted`, `AnalysisStatusResponse`, `AnalysisMetrics`
-  - `RunMetrics`: all fields `Option<f64>` / `Option<i64>`; null = metric unavailable
-  - `AnalysisMetrics`: `sonar.critical_issues`, `sonar.major_issues`,
-    `static.warnings`, `binary.size_kb` — all nullable
-  - **Note**: `binary` is not part of any request or response — the server knows its
-    binary at startup via `--binary` flag
+#### API and orchestrator (redesign)
 
-- [x] **T-041** Update `JobApiClient` for two-endpoint model (`src/api/client.rs`)
-  - `submit_run(&RunRequest) -> Result<String>` (run_id)
-  - `get_run_status(run_id) -> Result<RunStatusResponse>`
-  - `wait_for_run(run_id) -> Result<RunStatusResponse>`
-  - `submit_analysis(&AnalysisRequest) -> Result<String>` (analysis_id)
-  - `get_analysis_status(analysis_id) -> Result<AnalysisStatusResponse>`
-  - `wait_for_analysis(analysis_id) -> Result<AnalysisStatusResponse>`
+- [ ] **T-040** Redesign API types for single-endpoint model (`src/api/types.rs`)
+  - Replace `RunRequest`/`RunAccepted`/`RunStatusResponse`/`RunMetrics`/
+    `AnalysisRequest`/`AnalysisAccepted`/`AnalysisStatusResponse`/`AnalysisMetrics`
+    with the new unified types:
+    - `WorkloadType` — enum: `ObjectDetection | ImageClassification | PixelSegmentation | Classification | Regression | TimeSeriesForecasting`
+    - `Instrumentation` — enum: `None | Asan | Valgrind | Gprof`
+    - `MeasurementMode` — enum: `Latency | Throughput`
+    - `JobInput` — enum over input variants: `Images(Vec<Bytes>)`, `DatasetRef(String)`, `Tabular(Vec<Vec<f64>>)`, `TimeSeries(Vec<Vec<f64>>)`
+    - `JobRequest` — `model`, `input`, `repetitions`, `instrumentation`, `mode`, `timeout_secs`
+    - `JobAccepted` — `job_id`, `status`, `created_at`
+    - `JobStatusResponse` — `job_id`, `model`, `mode`, `repetitions`, `status`, timestamps, `hardware`, `metrics`, `output`
+    - `HardwareInfo` — `type`, `model`, `cores`, `memory_total_kb`, `accelerator_model`
+    - `JobMetrics` — 20 nullable fields (see `job-api.openapi.yaml` §JobMetrics)
+    - `JobOutput` — `type`, `result_consistent`, `sample_output`, `all_outputs`
+  - All fields `Deserialize` + `Serialize`; `Option` fields use
+    `#[serde(skip_serializing_if = "Option::is_none")]`
 
-- [x] **T-042** Rewrite `Orchestrator` for multi-run grouping (`src/orchestrator/mod.rs`)
-  - Group specs by input → deduplicated `Vec<RunRequest>` (one per unique input)
-  - Submit a single `AnalysisRequest` (server knows which binary to analyse)
-  - Submit all jobs concurrently (`tokio::join!` or `futures::join_all`)
-  - Route `constraint.metric_name` to the correct response via prefix convention:
-    `sonar.*`, `static.*`, `binary.*` → `AnalysisMetrics`; everything else → `RunMetrics`
-  - Map nullable metric field → `MetricValue` (null → `ConstraintOutcome { passed: false }`)
+- [ ] **T-041** Update `JobApiClient` for single-endpoint model (`src/api/client.rs`)
+  - `submit_job(&JobRequest) -> Result<String>` (job_id)
+  - `get_job_status(job_id) -> Result<JobStatusResponse>`
+  - `wait_for_job(job_id) -> Result<JobStatusResponse>`
+  - Remove `submit_run`, `get_run_status`, `wait_for_run`,
+    `submit_analysis`, `get_analysis_status`, `wait_for_analysis`
+  - Exponential backoff unchanged (1 s, ×2, 30 s cap)
+
+- [ ] **T-042** Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
+  - Group specs by `(workload_type, input_key)` → deduplicated `Vec<JobRequest>`
+  - No metric routing by prefix — all constraints reference fields of `JobMetrics` directly
+  - Submit all jobs concurrently; `tokio::join_all` on futures
+  - Map nullable `JobMetrics` field → `MetricValue` (null → `ConstraintOutcome { passed: false }`)
+  - After job completes: if `output.all_outputs` is non-null, pass to accuracy evaluator
+    (client-side computation of accuracy/F1/IoU/L2 against reference labels from spec)
   - Assemble `RunResult` with one `SpecResult` per spec
 
 #### Evidence and reporting
 
 - [ ] **T-050** Implement `EvidenceStore`
   - Writes all evidence files to a timestamped output directory
-  - `store(run_id, label, content)` → writes file, returns path
-  - Evidence content sourced from `TaskResult.evidence` map in job response
+  - `store(job_id, label, content)` → writes file, returns path
+  - Evidence content sourced from `JobOutput` and `JobMetrics` in job response
   - `manifest() -> Vec<EvidenceEntry>` for inclusion in reports
 
 - [ ] **T-051** Implement JSON report (`src/report/json.rs`)
@@ -420,6 +438,18 @@ at the bottom of the file. No other file needs to change.
   - Maps each requirement UID → verification status + evidence file paths
   - Written to `traceability.json` and `traceability.txt`
   - Basis for the future PDF QDP report
+
+- [ ] **T-054** Implement client-side accuracy evaluator (`src/accuracy/mod.rs`)
+  - Called after a completed job when `output.all_outputs` is non-null
+  - Compares outputs against reference labels attached to the `TestSpec`
+  - Computes configurable metrics per workload type:
+    - `image_classification`, `classification`: accuracy, F1, precision, recall
+    - `object_detection`: mAP, IoU@50, IoU@75
+    - `regression`: MSE, MAE, R²
+    - `time_series_forecasting`: MSE, MAE, MAPE
+  - Returns a `Vec<MetricValue>` that feeds into `ConstraintEvaluator` like any other metric
+  - Reference labels are attached to `TestSpec` as an optional `reference: Vec<serde_json::Value>`
+    field; if absent, accuracy constraints for that spec are skipped with a warning
 
 ---
 
@@ -466,13 +496,14 @@ Phase 3 (new):
   T-031 + T-033     ──► T-034 (orchestrator) ──► T-035 (CLI wiring)
   T-035 ◄── T-002, T-003, T-013
 
-Phase 4 (API redesign):
+Phase 4 (API redesign — single endpoint):
   T-040 (types) ──► T-041 (client) ──► T-042 (orchestrator rewrite)
   T-042 ◄── T-032, T-035
 
-Phase 4 (reporting):
+Phase 4 (reporting + accuracy):
   T-050 ──► T-051 ──► T-052 ──► T-053
   T-050 ◄── T-042
+  T-054 (accuracy evaluator) ◄── T-042
 
 Phase 5: T-060 ──► T-061 ──► T-062 ──► T-063
   T-061 ◄── T-034
@@ -583,20 +614,16 @@ building the server binary.
 
 ---
 
-### [OPEN] Metric routing uses name-prefix convention — implicit coupling *(Medium — T-042)*
+### [RESOLVED] Metric routing uses name-prefix convention — implicit coupling *(was Medium)*
 
-The orchestrator routes `constraint.metric_name` to either `RunMetrics` or
-`AnalysisMetrics` based on a name-prefix convention (`sonar.*`, `static.*`,
-`binary.*` → analysis; everything else → run). This coupling is implicit — a
-constraint referencing `sonar.critical_issues` will silently receive `null` if
-the analysis job was not submitted, or if the metric name is misspelled.
+The two-endpoint design required routing `constraint.metric_name` to either
+`RunMetrics` or `AnalysisMetrics` based on a name-prefix convention. This was
+fragile and implicitly coupled.
 
-Mitigation options for T-042:
-- Validate all metric names in `all_specs()` against a known-good registry at startup
-- Or: define two explicit constraint kinds in `TestSpec` (`run_constraints` vs
-  `analysis_constraints`) — more verbose but removes all ambiguity
-
-Decision deferred to T-042; the prefix convention is sufficient for Phase 3.
+Resolved in Phase 4 redesign (AD-013): the single-endpoint design puts all metrics
+in one flat `JobMetrics` struct. Constraints reference fields directly by name;
+there is no routing logic. Metric name mismatches surface as `null` (failed
+constraint) with a clear warning in the terminal summary.
 
 ---
 

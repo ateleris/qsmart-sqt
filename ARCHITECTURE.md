@@ -62,7 +62,7 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 │  │  Parser            │────────▶│  (API Client + Polling)  │            │
 │  │                    │         │                          │            │
 │  │  • YAML/JSON       │         │  • Group specs by target │            │
-│  │  • Strictdoc       │         │  • Submit run + analysis │            │
+│  │  • Strictdoc       │         │  • Submit jobs in parallel│            │
 │  │  • Validation      │         │  • Poll all until done   │            │
 │  └────────────────────┘         └────────────┬─────────────┘            │
 │                                              │                          │
@@ -799,143 +799,221 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-#### Design principles
+#### Design Principles
 
-The server is configured at startup with the path to the **binary under test**.
-Clients do not specify a binary in their requests — all jobs implicitly run against
-the server's configured binary.
+The server is configured at startup with the path to the **binary under test** and the
+hardware target. Clients do not specify a binary in their requests — all jobs implicitly
+run against the server's configured binary.
 
-Two job types reflect a fundamental split in the measurement lifecycle:
+A single job type covers all qualification activities: execution runs, instrumented
+runs (valgrind/asan/gprof), coverage collection, and static analysis. The client
+specifies what workload to run and how; the server returns everything it can measure.
 
-| Type | Endpoint | Triggered by | Metrics |
+### 5.2 Predefined Workload Types
+
+The set of workload types is defined in SQT Generic and known to both sides of the
+API. The server maps each workload type to the appropriate binary invocation,
+input handling, and output interpretation.
+
+| Workload | Domain | Typical Input | Typical Output |
 |---|---|---|---|
-| **Execution run** | `POST /api/v1/runs` | Each unique `input` | Runtime: return code, timing, memory, CPU, leaks, coverage, ML accuracy |
-| **Binary analysis** | `POST /api/v1/analysis` | Once per qualification session | Static: Sonar issues, static warnings, binary size |
+| `object_detection` | Computer vision | Images | Bounding boxes + class labels |
+| `image_classification` | Computer vision | Images | Class label + confidence score |
+| `pixel_segmentation` | Computer vision | Images | Per-pixel class mask (large output) |
+| `classification` | Tabular ML | Feature vectors | Class label |
+| `regression` | Tabular ML | Feature vectors | Scalar prediction |
+| `time_series_forecasting` | Sequential ML | Time series sequences | Forecast sequence |
 
-The client does **not** enumerate which metrics it wants. The server returns everything
-it can measure in a **fixed schema**; fields that are unavailable are `null`. A `null`
-field means "tool not available or not configured", not infrastructure failure.
+**Default session**: when no specific workload is requested, SQT Generic submits jobs for
+all supported workload types in parallel (one job per type). All jobs execute concurrently;
+total wall-clock time is bounded by the slowest job.
 
-### 5.2 API Endpoints
+### 5.3 Measurement Modes
 
-All four endpoints follow the same asynchronous pattern: submit → receive a resource ID
-(202 Accepted) → poll until `status` is terminal. Results are embedded directly in the
-GET response; there is no separate `/results` endpoint.
+Each job runs in one of two modes, set by the `mode` field:
 
-#### 5.2.1 Submit Execution Run
+| Mode | Behaviour | Populated metrics |
+|---|---|---|
+| `latency` (default) | Each inference measured independently | `time.avg_ms`, `time.latency_p50/p95/p99_ms` |
+| `throughput` | Backend maximises pipeline utilisation | `time.throughput_fps` |
 
-**Endpoint**: `POST /api/v1/runs`
+### 5.4 Instrumentation Options
+
+| Value | Tool | Effect |
+|---|---|---|
+| `none` (default) | — | No overhead; use for benchmarks and accuracy runs |
+| `asan` | AddressSanitizer | Memory error detection (buffer overflows, UAF) |
+| `valgrind` | Valgrind memcheck | Leak detection; populates `memory.leaks_bytes` |
+| `gprof` | GNU profiler | Call-graph profiling; does not affect memory metrics |
+
+Only one instrumentation option may be active per job. Timing metrics reflect
+instrumented execution when active and should not be compared to bare baselines.
+
+### 5.5 API Endpoints
+
+Two endpoints; both follow the same asynchronous pattern:
+submit → receive a job ID (202 Accepted) → poll until `status` is terminal.
+Results are embedded directly in the GET response; there is no separate `/results` endpoint.
+
+#### 5.5.1 Submit Job
+
+**Endpoint**: `POST /api/v1/jobs`
 
 **Request Body**:
 ```json
 {
-  "input": "datasets/reference.bin",
-  "timeout_secs": 60
+  "model": "image_classification",
+  "input": { "type": "images", "images": ["<base64-image>", "..."] },
+  "repetitions": 10,
+  "warmup_repetitions": 3,
+  "instrumentation": "none",
+  "mode": "latency",
+  "timeout_secs": 60,
+  "tags": { "requirement_uid": "REQ-ML-L-003", "git_sha": "a1b2c3d" }
 }
 ```
 
+For large image batches (hundreds or thousands of images), the request body will be
+proportionally large. The server's HTTP frontend must be configured to accept it
+(e.g. `client_max_body_size 2g` in nginx). Alternatively, reference a server-side
+pre-loaded dataset via `input.type = "dataset_ref"` with a server-assigned identifier.
+
 **Response** (202 Accepted):
 ```json
-{ "run_id": "run-abc123", "status": "accepted", "created_at": "2026-02-26T10:00:00Z" }
+{ "job_id": "job-abc123", "status": "accepted", "created_at": "2026-03-06T10:00:00Z" }
 ```
 
-#### 5.2.2 Get Execution Run Status
+#### 5.5.2 Get Job Status
 
-**Endpoint**: `GET /api/v1/runs/{run_id}`
+**Endpoint**: `GET /api/v1/jobs/{job_id}`
 
-**Response** (terminal — run complete):
+**Response** (terminal — job complete):
 ```json
 {
-  "run_id": "run-abc123",
-  "input": "datasets/reference.bin",
+  "job_id": "job-abc123",
+  "model": "image_classification",
+  "mode": "latency",
+  "repetitions": 10,
   "status": "complete",
-  "created_at": "2026-02-26T10:00:00Z",
-  "started_at": "2026-02-26T10:00:01Z",
-  "completed_at": "2026-02-26T10:00:03Z",
+  "created_at": "2026-03-06T10:00:00Z",
+  "started_at": "2026-03-06T10:00:01Z",
+  "completed_at": "2026-03-06T10:00:05Z",
+  "hardware": {
+    "type": "cpu",
+    "model": "GR740 Leon4",
+    "cores": 4,
+    "memory_total_kb": 131072,
+    "accelerator_model": null,
+    "clock_mhz": 250.0,
+    "os": "RTEMS 6"
+  },
   "metrics": {
-    "return_code":      0,
-    "time.execution":   87.3,
-    "memory.peak_rss":  4096.0,
-    "memory.avg_rss":   3200.0,
-    "cpu.max_pct":      94.1,
-    "cpu.avg_pct":      71.3,
-    "memory.leaks":     0.0,
-    "coverage.line_pct": 87.2,
-    "ml.accuracy":      0.983,
-    "ml.f1_score":      null,
-    "ml.recall":        null,
-    "ml.precision":     null
+    "return_code":               0,
+    "time.startup_ms":           312.5,
+    "time.first_inference_ms":   145.2,
+    "time.avg_ms":               87.3,
+    "time.latency_p50_ms":       85.1,
+    "time.latency_p95_ms":       99.2,
+    "time.latency_p99_ms":       103.4,
+    "time.throughput_fps":       null,
+    "memory.avg_rss_kb":         3200.0,
+    "memory.peak_rss_kb":        4096.0,
+    "memory.stack_kb":           48.0,
+    "memory.heap_allocations":   0,
+    "memory.leaks_bytes":        null,
+    "cpu.avg_normalized_pct":    24.3,
+    "power.avg_watts":           4.2,
+    "power.peak_watts":          5.8,
+    "hardware.temperature_celsius": 52.3,
+    "coverage.line_pct":         87.2,
+    "coverage.branch_pct":       72.1,
+    "coverage.function_pct":     95.0,
+    "coverage.lines_covered":    1234,
+    "coverage.lines_total":      1416,
+    "static.warnings":           1,
+    "static.critical_issues":    0,
+    "static.major_issues":       3,
+    "binary.size_kb":            412.0
+  },
+  "output": {
+    "type": "classification_labels",
+    "result_consistent": true,
+    "outputs": [
+      { "label": "spacecraft", "confidence": 0.983 },
+      { "label": "solar_panel", "confidence": 0.971 }
+    ],
+    "outputs_checksum": "a3f1c2d4e5b6..."
   }
 }
 ```
 
-#### 5.2.3 Submit Binary Analysis
-
-**Endpoint**: `POST /api/v1/analysis`
-
-**Request Body**:
-```json
-{ "timeout_secs": 300 }
-```
-
-**Response** (202 Accepted):
-```json
-{ "analysis_id": "analysis-def456", "status": "accepted", "created_at": "2026-02-26T10:00:00Z" }
-```
-
-#### 5.2.4 Get Binary Analysis Status
-
-**Endpoint**: `GET /api/v1/analysis/{analysis_id}`
-
-**Response** (terminal — analysis complete):
-```json
-{
-  "analysis_id": "analysis-def456",
-  "status": "complete",
-  "created_at": "2026-02-26T10:00:00Z",
-  "started_at": "2026-02-26T10:00:01Z",
-  "completed_at": "2026-02-26T10:00:05Z",
-  "metrics": {
-    "sonar.critical_issues": 0,
-    "sonar.major_issues":    3,
-    "static.warnings":       1,
-    "binary.size_kb":        412.0
-  }
-}
-```
-
-**Status values** (both job types): `accepted` | `running` | `complete` | `failed`
+**Status values**: `accepted` | `running` | `complete` | `failed`
 
 **Terminal states**: `complete` and `failed`. SQT stops polling when the job reaches a
 terminal state. A `complete` job may have `null` metric fields — those indicate
 unavailable tools, not infrastructure failure. A `failed` status means the job could not
-run at all (binary not found, server error, etc.).
+run at all; the `error` field provides a description.
 
-### 5.3 Error Handling
+### 5.6 Output Handling and Accuracy Metrics
+
+The server returns model outputs directly in the job response. `output.outputs`
+always contains **one entry per input item** — never one per repetition.
+Repetitions exist for statistical measurement only.
+
+For all workload types (including `pixel_segmentation`), the server executes all
+`repetitions` and transfers the output batch once. `result_consistent` records
+whether every repetition produced bit-identical results:
+
+```
+output.result_consistent = true   → all N repetitions agreed
+output.result_consistent = false  → non-determinism detected (possible hardware fault)
+```
+
+SQT Generic computes accuracy metrics (accuracy, F1, IoU, L2, etc.) client-side by
+comparing `output.outputs` against reference labels attached to the spec. An
+`outputs_checksum` (SHA-256 of the outputs array) enables cross-session
+reproducibility verification without re-transferring the data.
+
+### 5.7 CPU Utilisation Normalisation
+
+**Decision**: normalise server-side (see AD-013).
+
+`cpu.avg_normalized_pct` is computed by the server as:
+
+```
+cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count × 100) × 100
+```
+
+- 100 % means all available compute was fully saturated throughout the run.
+- This formula is unambiguous regardless of hardware type (CPU, GPU, FPGA, NPU).
+- The `hardware` descriptor in the response provides `cores` and `type` for users
+  who need to reconstruct the per-core percentage.
+
+### 5.8 Error Handling
 
 **Standard Error Response**:
 ```json
 {
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "Invalid target platform: gr740-rtems6",
-    "details": "Supported platforms: gr740-rtems6, rv32imac-baremetal",
-    "timestamp": "2026-02-13T14:30:00Z"
+    "message": "unknown model type: 'depth_estimation'",
+    "details": "Supported types: object_detection, image_classification, ...",
+    "timestamp": "2026-03-06T10:00:00Z"
   }
 }
 ```
 
 **Error Codes**:
-- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown task name)
+- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown workload type)
 - `NOT_FOUND`: Job not found
 - `TIMEOUT`: Operation exceeded timeout
 - `UNAUTHORIZED`: Missing or invalid Bearer token
 - `INTERNAL_ERROR`: Internal server error
 
-### 5.4 Polling Strategy
+### 5.9 Polling Strategy
 
-SQT Generic implements exponential backoff for all polling (runs and analyses).
-Results are embedded in the GET response — no separate fetch is needed:
+SQT Generic implements exponential backoff for all polling. Results are embedded
+in the GET response — no separate fetch is needed:
 
 ```
 initial delay: 1 s
@@ -943,24 +1021,9 @@ backoff factor: ×2 per poll
 maximum delay: 30 s
 ```
 
-The orchestrator submits all run jobs and the analysis job(s) in parallel, then
-awaits each concurrently. Total wall-clock time is bounded by the slowest job,
+All jobs for a qualification session are submitted in parallel; the orchestrator
+awaits them concurrently. Total wall-clock time is bounded by the slowest job,
 not the sum of all jobs.
-
-#### Metric routing
-
-When evaluating constraints, the orchestrator routes each `constraint.metric_name`
-to the correct job type using a prefix convention:
-
-| Metric name prefix | Source job type |
-|---|---|
-| `sonar.*` | Binary analysis |
-| `static.*` | Binary analysis |
-| `binary.*` | Binary analysis |
-| Everything else | Execution run |
-
-A metric that is `null` in the response is treated as a **failed constraint** by
-the evaluator — identical to a task failing in the old design.
 
 ---
 
@@ -1856,6 +1919,11 @@ examples/plugins/                 # Plugin authoring examples
 | **AD-010** | Both PDF and HTML reports | ECSS compliance + developer UX | Only PDF (not dev-friendly) | ✅ Accepted |
 | **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
 | **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
+| **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted — routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
+| **AD-014** | Predefined workload types in SQT Generic | Workloads (object_detection, image_classification, etc.) are a closed, known set; both client and server reason over the same enum; no open-ended task dispatch needed | Open task-name dispatch (server accepts arbitrary task strings — fragile, hard to validate) | ✅ Accepted |
+| **AD-015** | CPU utilisation normalised server-side | Server knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (server would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
+| **AD-016** | ML accuracy metrics computed client-side | Server returns raw outputs; SQT Generic computes accuracy/F1/IoU/L2 etc. against reference labels; keeps server hardware-agnostic and reference-data-free | Server computes accuracy (requires server-side reference dataset per workload — complex, leaks qualification logic into the ML-L Specific component) | ✅ Accepted |
+| **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all workload types including segmentation masks. | Split `sample_output` / `all_outputs` per workload type (added complexity, inconsistent semantics) | ✅ Accepted |
 
 ### Trade-offs
 

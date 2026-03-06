@@ -3,51 +3,70 @@ openapi: "3.1.0"
 info:
   title: SQT Job API
   description: |
-    Generic REST API for submitting qualification jobs and polling their status.
-    Implemented by the ML-L Specific server (Klepsydra) and by the local
-    development API server (SQT Generic local-dev binary).
+    Generic REST API for submitting AI model qualification jobs and polling
+    their results. Implemented by the ML-L Specific server (Klepsydra) and
+    by the local development API server (SQT Generic local-dev binary).
 
-    ## Two-Endpoint Design
+    ## Single-Endpoint Design
 
-    The API exposes two distinct job types, reflecting a fundamental split in
-    the measurement lifecycle:
+    All qualification work — execution, instrumented runs, static analysis,
+    and coverage — is submitted through a single job endpoint. The server is
+    configured at startup with the binary under test and the hardware target.
+    Clients supply:
 
-    ### Execution runs — `POST /api/v1/runs`
+    - **Which workload** to run (`model` field — one of the predefined workload types)
+    - **What input** to feed it (workload-specific: images, tabular data, time series,
+      or a server-side dataset reference)
+    - **How many times** to repeat (`repetitions`)
+    - **What instrumentation** to attach (`instrumentation`: none / asan / valgrind / gprof)
+    - **Which measurement mode** to use (`mode`: latency or throughput)
 
-    One run per unique `input`. Executes the server's configured binary with the
-    specified input and returns a **fixed-schema** set of runtime metrics: return
-    code, execution time, memory usage (peak and average RSS), CPU usage (max and
-    average), memory leaks (Valgrind), line coverage (lcov), and — for ML
-    inference binaries — accuracy, F1 score, recall, and precision.
+    The server returns everything it can measure in a fixed schema; fields that
+    are unavailable are `null`. SQT Generic treats a null metric as a failed
+    constraint when a spec references it.
 
-    The client does **not** enumerate which metrics it wants. The server
-    returns everything it can measure; fields that are unavailable (tool not
-    installed, binary not instrumented, no ground truth configured) are `null`.
+    ## Predefined Workload Types
 
-    ### Binary analysis — `POST /api/v1/analysis`
+    | Workload | Typical Input | Typical Output |
+    |---|---|---|
+    | `object_detection` | Images | Bounding boxes + labels |
+    | `image_classification` | Images | Class labels + confidence scores |
+    | `pixel_segmentation` | Images | Per-pixel class masks (large) |
+    | `classification` | Tabular / feature vectors | Class labels |
+    | `regression` | Tabular / feature vectors | Scalar predictions |
+    | `time_series_forecasting` | Time series sequences | Forecast sequences |
 
-    One analysis per qualification session. Input-independent. Returns static
-    and structural metrics: Sonar issue counts, static analyser warnings, and
-    binary size.
+    Large outputs (e.g. segmentation masks) are handled specially: only one
+    sample run output is transferred. For all other workloads, all run outputs
+    are transferred so that SQT Generic can compute accuracy metrics
+    (accuracy, IoU, F1, L2, etc.) client-side.
 
-    ## Polling pattern (both endpoints)
+    ## Measurement Modes
 
-    Both job types follow the same two-step asynchronous pattern:
-    1. Submit → receive a resource ID (202 Accepted)
-    2. Poll `GET` until `status` is `complete` or `failed`
+    - **`latency`** (default): each inference is timed individually.
+      The response includes p50 / p95 / p99 latency percentiles.
+    - **`throughput`**: the backend batches repetitions to maximise pipeline
+      utilisation. The response includes throughput in items per second.
 
-    SQT Generic uses exponential backoff when polling (initial 1 s, max 30 s).
+    ## Polling Pattern
 
-    Results are included directly in the GET response — there is no separate
-    `/results` endpoint.
+    1. Submit → receive a job ID (202 Accepted)
+    2. Poll `GET /api/v1/jobs/{job_id}` until `status` is `complete` or `failed`
 
-    ## Metric availability
+    SQT Generic uses exponential backoff when polling (initial 1 s, ×2 per
+    poll, 30 s cap). Results are included directly in the GET response.
 
-    A metric field being `null` in the response is *not* a failure — it means
-    the server could not or did not measure it (missing tool, uninstrumented
-    binary, no ground truth configured server-side). SQT Generic treats a null
-    metric as a failed constraint when a spec references it.
-  version: "1.0.0"
+    ## CPU Utilisation Normalisation
+
+    `cpu.avg_normalized_pct` is always normalised server-side:
+
+        cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count × 100) × 100
+
+    100 % means all available compute was fully saturated. This is unambiguous
+    regardless of whether the target is a CPU, GPU, or FPGA. The `hardware`
+    descriptor in the response provides the raw core count and hardware type
+    for users who want to reconstruct per-core figures.
+  version: "2.0.0"
   contact:
     name: Ateleris
 
@@ -59,49 +78,85 @@ security:
   - bearerAuth: []
 
 tags:
-  - name: Runs
-    description: Per-input execution jobs
-  - name: Analysis
-    description: Static analysis jobs
+  - name: Jobs
+    description: AI model qualification jobs
 
 paths:
 
   # ---------------------------------------------------------------------------
-  # Execution runs
+  # Job submission
   # ---------------------------------------------------------------------------
 
-  /api/v1/runs:
+  /api/v1/jobs:
     post:
-      operationId: submitRun
-      summary: Submit an execution run
+      operationId: submitJob
+      summary: Submit a qualification job
       description: |
-        Executes the server's configured binary with `input` and collects all
-        available runtime metrics. The server determines which metrics to
-        collect; the client does not supply a task list.
+        Submits a qualification job for the server's configured binary.
+        The client specifies the workload type, input data, repetition count,
+        instrumentation mode, and measurement mode.
 
-        Submit once per unique `input`. Results from a single run are shared
-        across all test specifications that reference the same input.
-      tags: [Runs]
+        All workloads run in parallel when multiple jobs are submitted
+        concurrently. The server returns a job ID for polling.
+
+        Static analysis (sonar, binary size, static warnings) is performed
+        once per session and included in the first `complete` response.
+        Subsequent jobs in the same session reuse the cached analysis result.
+      tags: [Jobs]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RunRequest"
-            example:
-              input: "datasets/reference.bin"
-              timeout_secs: 60
+              $ref: "#/components/schemas/JobRequest"
+            examples:
+              image_classification_latency:
+                summary: Image classification, 10 repetitions, latency mode
+                value:
+                  model: image_classification
+                  input:
+                    type: images
+                    images:
+                      - "<base64-encoded-image>"
+                  repetitions: 10
+                  instrumentation: none
+                  mode: latency
+                  timeout_secs: 60
+              object_detection_valgrind:
+                summary: Object detection with Valgrind, dataset reference
+                value:
+                  model: object_detection
+                  input:
+                    type: dataset_ref
+                    dataset_ref: "datasets/coco_val2017_sample"
+                  repetitions: 5
+                  instrumentation: valgrind
+                  mode: latency
+                  timeout_secs: 300
+              regression_throughput:
+                summary: Regression model, throughput mode
+                value:
+                  model: regression
+                  input:
+                    type: tabular
+                    data:
+                      - [1.0, 2.3, 0.7]
+                      - [4.1, 0.9, 3.2]
+                  repetitions: 100
+                  instrumentation: none
+                  mode: throughput
+                  timeout_secs: 120
       responses:
         "202":
-          description: Run accepted and queued
+          description: Job accepted and queued
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RunAccepted"
+                $ref: "#/components/schemas/JobAccepted"
               example:
-                run_id: "run-abc123"
+                job_id: "job-abc123"
                 status: "accepted"
-                created_at: "2026-02-26T10:00:00Z"
+                created_at: "2026-03-06T10:00:00Z"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -109,132 +164,122 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /api/v1/runs/{run_id}:
+  /api/v1/jobs/{job_id}:
     get:
-      operationId: getRunStatus
-      summary: Get execution run status and metrics
+      operationId: getJobStatus
+      summary: Get job status, metrics, and output
       description: |
-        Returns the current status and all available runtime metrics for the
-        run. Metrics are populated as they become available — a field may be
-        non-null while `status` is still `running`.
+        Returns the current status, all available metrics, hardware descriptor,
+        and model output for the job.
 
-        Poll with exponential backoff until `status` is `complete` or
-        `failed`. A `complete` status means the binary ran to completion; some
-        metric fields may still be `null` if the corresponding tool was
-        unavailable.
+        Poll with exponential backoff until `status` is `complete` or `failed`.
+
+        A `complete` status means the binary ran to completion for all
+        repetitions; individual metric fields may still be `null` if the
+        corresponding tool was unavailable or not configured.
 
         A `failed` status indicates an infrastructure-level failure (e.g. the
-        binary could not be launched).
-      tags: [Runs]
+        binary could not be launched, or the requested dataset was not found).
+        The `error` field provides a human-readable description.
+      tags: [Jobs]
       parameters:
-        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/JobId"
       responses:
         "200":
-          description: Run status and available metrics
+          description: Job status, metrics, and output
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RunStatusResponse"
-              example:
-                run_id: "run-abc123"
-                input: "datasets/reference.bin"
-                status: "complete"
-                created_at: "2026-02-26T10:00:00Z"
-                started_at: "2026-02-26T10:00:01Z"
-                completed_at: "2026-02-26T10:00:03Z"
-                metrics:
-                  return_code: 0
-                  time.execution: 87.3
-                  memory.peak_rss: 4096.0
-                  memory.avg_rss: 3200.0
-                  cpu.max_pct: 94.1
-                  cpu.avg_pct: 71.3
-                  memory.leaks: 0.0
-                  coverage.line_pct: 87.2
-                  ml.accuracy: 0.983
-                  ml.f1_score: null
-                  ml.recall: null
-                  ml.precision: null
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
-  # ---------------------------------------------------------------------------
-  # Binary analysis
-  # ---------------------------------------------------------------------------
-
-  /api/v1/analysis:
-    post:
-      operationId: submitAnalysis
-      summary: Submit a binary analysis
-      description: |
-        Runs input-independent static and structural analysis on the server's
-        configured binary. Call once per qualification session — the server
-        knows which binary to analyse.
-
-        Covers: Sonar quality gate, static analyser warnings, binary size.
-        ML-L Specific servers may add hardware-specific metrics (e.g. worst-
-        case execution time bounds, stack depth analysis).
-      tags: [Analysis]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AnalysisRequest"
-            example:
-              timeout_secs: 300
-      responses:
-        "202":
-          description: Analysis accepted and queued
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AnalysisAccepted"
-              example:
-                analysis_id: "analysis-def456"
-                status: "accepted"
-                created_at: "2026-02-26T10:00:00Z"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "500":
-          $ref: "#/components/responses/InternalError"
-
-  /api/v1/analysis/{analysis_id}:
-    get:
-      operationId: getAnalysisStatus
-      summary: Get binary analysis status and metrics
-      description: |
-        Returns the current status and all available static analysis metrics.
-
-        Poll with exponential backoff until `status` is `complete` or
-        `failed`. Terminal state semantics are identical to runs.
-      tags: [Analysis]
-      parameters:
-        - $ref: "#/components/parameters/AnalysisId"
-      responses:
-        "200":
-          description: Analysis status and available metrics
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AnalysisStatusResponse"
-              example:
-                analysis_id: "analysis-def456"
-                status: "complete"
-                created_at: "2026-02-26T10:00:00Z"
-                started_at: "2026-02-26T10:00:01Z"
-                completed_at: "2026-02-26T10:00:05Z"
-                metrics:
-                  sonar.critical_issues: 0
-                  sonar.major_issues: 3
-                  static.warnings: 1
-                  binary.size_kb: 412.0
+                $ref: "#/components/schemas/JobStatusResponse"
+              examples:
+                image_classification_complete:
+                  summary: Image classification job — complete
+                  value:
+                    job_id: "job-abc123"
+                    model: "image_classification"
+                    mode: "latency"
+                    repetitions: 10
+                    status: "complete"
+                    created_at: "2026-03-06T10:00:00Z"
+                    started_at: "2026-03-06T10:00:01Z"
+                    completed_at: "2026-03-06T10:00:05Z"
+                    hardware:
+                      type: "cpu"
+                      model: "GR740 Leon4"
+                      cores: 4
+                      memory_total_kb: 131072
+                      accelerator_model: null
+                    metrics:
+                      return_code: 0
+                      time.avg_ms: 87.3
+                      time.latency_p50_ms: 85.1
+                      time.latency_p95_ms: 99.2
+                      time.latency_p99_ms: 103.4
+                      time.throughput_fps: null
+                      memory.avg_rss_kb: 3200.0
+                      memory.peak_rss_kb: 4096.0
+                      memory.leaks_bytes: 0
+                      cpu.avg_normalized_pct: 24.3
+                      coverage.line_pct: 87.2
+                      coverage.branch_pct: 72.1
+                      coverage.function_pct: 95.0
+                      coverage.lines_covered: 1234
+                      coverage.lines_total: 1416
+                      static.warnings: 1
+                      static.critical_issues: 0
+                      static.major_issues: 3
+                      binary.size_kb: 412.0
+                    output:
+                      type: "classification_labels"
+                      result_consistent: true
+                      outputs:
+                        - {label: "spacecraft", confidence: 0.983}
+                        - {label: "solar_panel", confidence: 0.971}
+                      outputs_checksum: "a3f1c2d4e5b6..."
+                pixel_segmentation_complete:
+                  summary: Pixel segmentation — large output, only sample transferred
+                  value:
+                    job_id: "job-def456"
+                    model: "pixel_segmentation"
+                    mode: "latency"
+                    repetitions: 5
+                    status: "complete"
+                    created_at: "2026-03-06T10:01:00Z"
+                    started_at: "2026-03-06T10:01:01Z"
+                    completed_at: "2026-03-06T10:01:30Z"
+                    hardware:
+                      type: "gpu"
+                      model: "NVIDIA Jetson Xavier"
+                      cores: 512
+                      memory_total_kb: 16777216
+                      accelerator_model: "Volta GPU"
+                    metrics:
+                      return_code: 0
+                      time.avg_ms: 14200.0
+                      time.latency_p50_ms: 14100.0
+                      time.latency_p95_ms: 14800.0
+                      time.latency_p99_ms: 15200.0
+                      time.throughput_fps: null
+                      memory.avg_rss_kb: 524288.0
+                      memory.peak_rss_kb: 589824.0
+                      memory.leaks_bytes: 0
+                      cpu.avg_normalized_pct: 12.5
+                      coverage.line_pct: null
+                      coverage.branch_pct: null
+                      coverage.function_pct: null
+                      coverage.lines_covered: null
+                      coverage.lines_total: null
+                      static.warnings: null
+                      static.critical_issues: null
+                      static.major_issues: null
+                      binary.size_kb: 8192.0
+                    output:
+                      type: "segmentation_masks"
+                      result_consistent: true
+                      outputs:
+                        - "<base64-encoded-PNG-mask-image-1>"
+                        - "<base64-encoded-PNG-mask-image-2>"
+                      outputs_checksum: "b7e2a1f3c9d0..."
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -259,23 +304,15 @@ components:
         read from the environment variable named in `config.api.token_env`.
 
   parameters:
-    RunId:
-      name: run_id
+    JobId:
+      name: job_id
       in: path
       required: true
-      description: Unique run identifier as returned by POST /api/v1/runs.
+      description: Unique job identifier as returned by POST /api/v1/jobs.
       schema:
         type: string
-        example: "run-abc123"
+        example: "job-abc123"
 
-    AnalysisId:
-      name: analysis_id
-      in: path
-      required: true
-      description: Unique analysis identifier as returned by POST /api/v1/analysis.
-      schema:
-        type: string
-        example: "analysis-def456"
 
   responses:
     BadRequest:
@@ -287,8 +324,8 @@ components:
           example:
             error:
               code: "VALIDATION_ERROR"
-              message: "invalid timeout_secs value"
-              timestamp: "2026-02-26T10:00:00Z"
+              message: "unknown model type: 'depth_estimation'"
+              timestamp: "2026-03-06T10:00:00Z"
 
     Unauthorized:
       description: Missing or invalid authentication token
@@ -300,7 +337,7 @@ components:
             error:
               code: "UNAUTHORIZED"
               message: "Invalid or missing Bearer token"
-              timestamp: "2026-02-26T10:00:00Z"
+              timestamp: "2026-03-06T10:00:00Z"
 
     NotFound:
       description: Resource not found
@@ -311,8 +348,8 @@ components:
           example:
             error:
               code: "NOT_FOUND"
-              message: "Run not found: run-abc123"
-              timestamp: "2026-02-26T10:00:00Z"
+              message: "Job not found: job-abc123"
+              timestamp: "2026-03-06T10:00:00Z"
 
     InternalError:
       description: Internal server error
@@ -324,39 +361,293 @@ components:
             error:
               code: "INTERNAL_ERROR"
               message: "Unexpected failure during metric collection"
-              timestamp: "2026-02-26T10:00:00Z"
+              timestamp: "2026-03-06T10:00:00Z"
 
   schemas:
 
     # -------------------------------------------------------------------------
-    # Run — request and response
+    # Enumerations
     # -------------------------------------------------------------------------
 
-    RunRequest:
+    WorkloadType:
+      type: string
+      description: |
+        The type of AI workload to run. Determines how the server interprets
+        the `input` field and what kind of output it produces.
+
+        | Value | Domain | Typical input | Typical output |
+        |---|---|---|---|
+        | `object_detection` | Computer vision | Images | Bounding boxes + class labels |
+        | `image_classification` | Computer vision | Images | Class label + confidence |
+        | `pixel_segmentation` | Computer vision | Images | Per-pixel mask (large) |
+        | `classification` | Tabular / ML | Feature vectors | Class label |
+        | `regression` | Tabular / ML | Feature vectors | Scalar value |
+        | `time_series_forecasting` | Sequential | Time series | Forecast sequence |
+      enum:
+        - object_detection
+        - image_classification
+        - pixel_segmentation
+        - classification
+        - regression
+        - time_series_forecasting
+
+    Instrumentation:
+      type: string
+      description: |
+        Instrumentation framework to attach to the inference binary for this
+        run. Only one may be selected per job. `none` is the default.
+
+        - `none`: No instrumentation. Lowest overhead; used for accuracy and
+          throughput/latency benchmarks.
+        - `asan`: AddressSanitizer. Detects memory errors (buffer overflows,
+          use-after-free). Disables `memory.leaks_bytes` (incompatible with
+          Valgrind).
+        - `valgrind`: Valgrind memcheck. Reports `memory.leaks_bytes`. Higher
+          overhead than ASan; more complete leak analysis.
+        - `gprof`: GNU profiler. Generates a flat call-graph profile; does not
+          affect memory metrics.
+
+        When instrumentation is active, timing and throughput metrics reflect
+        instrumented (slower) execution and should not be compared to
+        un-instrumented baselines.
+      enum:
+        - none
+        - asan
+        - valgrind
+        - gprof
+      default: none
+
+    MeasurementMode:
+      type: string
+      description: |
+        Controls how the server schedules `repetitions` and which timing
+        metrics are populated.
+
+        - **`latency`** (default): each inference call is measured
+          independently. Populates `time.avg_ms`, `time.latency_p50_ms`,
+          `time.latency_p95_ms`, `time.latency_p99_ms`. Leaves
+          `time.throughput_fps` null.
+        - **`throughput`**: the server maximises pipeline utilisation
+          (batching, prefetching, parallelism as appropriate for the hardware).
+          Populates `time.throughput_fps`. Latency percentile fields reflect
+          end-to-end pipeline time and are less meaningful for per-item
+          comparisons.
+      enum:
+        - latency
+        - throughput
+      default: latency
+
+    OutputType:
+      type: string
+      description: |
+        The semantic type of the model's output, determined by the workload.
+        One output entry is returned per input item regardless of output type.
+
+        | Output type | Typical workload | Per-entry schema |
+        |---|---|---|
+        | `classification_labels` | image_classification, classification | `{label, confidence}` |
+        | `bounding_boxes` | object_detection | array of `{label, confidence, x, y, w, h}` |
+        | `segmentation_masks` | pixel_segmentation | base64-encoded PNG |
+        | `regression_values` | regression | number |
+        | `timeseries_predictions` | time_series_forecasting | array of numbers |
+        | `text` | Any text-output workload | string |
+      enum:
+        - classification_labels
+        - bounding_boxes
+        - segmentation_masks
+        - regression_values
+        - timeseries_predictions
+        - text
+
+    # -------------------------------------------------------------------------
+    # Job input (workload-specific, discriminated by `type`)
+    # -------------------------------------------------------------------------
+
+    JobInput:
+      description: |
+        Workload-specific input data. The `type` field selects the schema
+        variant. Use `dataset_ref` when the dataset is pre-loaded server-side
+        (preferred for large datasets or repeated use across jobs).
+      oneOf:
+        - $ref: "#/components/schemas/ImageInput"
+        - $ref: "#/components/schemas/DatasetRefInput"
+        - $ref: "#/components/schemas/TabularInput"
+        - $ref: "#/components/schemas/TimeSeriesInput"
+      discriminator:
+        propertyName: type
+        mapping:
+          images: "#/components/schemas/ImageInput"
+          dataset_ref: "#/components/schemas/DatasetRefInput"
+          tabular: "#/components/schemas/TabularInput"
+          timeseries: "#/components/schemas/TimeSeriesInput"
+
+    ImageInput:
       type: object
+      required: [type, images]
       properties:
-        input:
+        type:
+          type: string
+          enum: [images]
+        images:
+          type: array
+          minItems: 1
+          description: |
+            List of images to run inference on, base64-encoded. Each image
+            is one inference call. For `pixel_segmentation`, the response
+            returns only one sample mask — all images are still executed
+            for consistency checking and metric collection.
+
+            For large batches (hundreds or thousands of images), the request
+            body will be correspondingly large. Ensure the server's HTTP
+            frontend (nginx, caddy, etc.) is configured to accept the required
+            body size (e.g. `client_max_body_size 2g` in nginx).
+          items:
+            type: string
+            format: byte
+            description: Base64-encoded image (PNG or JPEG).
+
+    DatasetRefInput:
+      type: object
+      required: [type, dataset_ref]
+      properties:
+        type:
+          type: string
+          enum: [dataset_ref]
+        dataset_ref:
           type: string
           description: |
-            Path to the input file fed to the binary on stdin or as a
-            positional argument (server-side convention). Optional — omit
-            for binaries that take no input.
-          example: "datasets/reference.bin"
+            Server-side identifier for a pre-loaded dataset. The server
+            resolves this to the appropriate input files for the configured
+            workload type. Format is server-defined (path, UUID, or name).
+          example: "datasets/coco_val2017_sample"
+
+    TabularInput:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [tabular]
+        data:
+          type: array
+          description: |
+            Inline tabular data. Each element is one inference call (a row
+            of feature values). Mutually exclusive with `dataset_ref`.
+          items:
+            type: array
+            items:
+              type: number
+        dataset_ref:
+          type: string
+          description: Server-side dataset reference. Mutually exclusive with `data`.
+          example: "datasets/iris_test"
+
+    TimeSeriesInput:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [timeseries]
+        series:
+          type: array
+          description: |
+            Inline time series sequences. Each element is one input sequence
+            (array of timestep values). Mutually exclusive with `dataset_ref`.
+          items:
+            type: array
+            items:
+              type: number
+        dataset_ref:
+          type: string
+          description: Server-side dataset reference. Mutually exclusive with `series`.
+          example: "datasets/ecg_test_sequences"
+
+    # -------------------------------------------------------------------------
+    # Job request
+    # -------------------------------------------------------------------------
+
+    JobRequest:
+      type: object
+      required: [model]
+      properties:
+        model:
+          $ref: "#/components/schemas/WorkloadType"
+        input:
+          $ref: "#/components/schemas/JobInput"
+          description: |
+            Workload input. Optional when the server has a default dataset
+            configured for the given workload type. Required otherwise.
+        repetitions:
+          type: integer
+          minimum: 1
+          default: 1
+          description: |
+            Number of times to run the inference binary. All repetitions
+            use the same input. Used for timing statistics and consistency
+            checking. The server collects metrics across all repetitions.
+          example: 10
+        instrumentation:
+          $ref: "#/components/schemas/Instrumentation"
+        mode:
+          $ref: "#/components/schemas/MeasurementMode"
+        warmup_repetitions:
+          type: integer
+          minimum: 0
+          default: 0
+          description: |
+            Number of inference calls to perform before measurement begins.
+            Warmup runs are not counted toward `repetitions` and their
+            timing/memory results are discarded. Use this to amortise JIT
+            compilation, cache population, and lazy runtime initialisation.
+            Results from warmed and cold runs are NOT comparable; document
+            which mode a spec uses.
+          example: 3
+        batch_size:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            Number of inference calls to group into one forward pass. Only
+            meaningful in `throughput` mode — in `latency` mode the server
+            ignores this field and uses a batch size of 1. When null, the
+            server chooses the optimal batch size for the hardware.
+          example: 8
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Arbitrary key-value metadata attached to this job. Echoed back
+            in the `JobStatusResponse`. Useful for correlating jobs with CI
+            runs, git commits, requirement UIDs, etc. Keys and values must
+            be non-empty strings; maximum 32 pairs.
+          example:
+            requirement_uid: "REQ-ML-L-003"
+            git_sha: "a1b2c3d"
+            ci_run_id: "12345"
         timeout_secs:
           type: integer
           minimum: 1
           default: 60
-          description: Maximum execution time in seconds.
+          description: |
+            Maximum wall-clock time in seconds for the entire job (all
+            repetitions + warmup combined). The server aborts and returns
+            `failed` if this is exceeded.
           example: 60
 
-    RunAccepted:
+    # -------------------------------------------------------------------------
+    # Job response
+    # -------------------------------------------------------------------------
+
+    JobAccepted:
       type: object
-      required: [run_id, status, created_at]
+      required: [job_id, status, created_at]
       properties:
-        run_id:
+        job_id:
           type: string
-          description: Unique run identifier for subsequent polling.
-          example: "run-abc123"
+          description: Unique job identifier for subsequent polling.
+          example: "job-abc123"
         status:
           type: string
           enum: [accepted]
@@ -364,19 +655,23 @@ components:
         created_at:
           type: string
           format: date-time
-          example: "2026-02-26T10:00:00Z"
+          example: "2026-03-06T10:00:00Z"
 
-    RunStatusResponse:
+    JobStatusResponse:
       type: object
-      required: [run_id, status, created_at, metrics]
+      required: [job_id, model, mode, repetitions, status, created_at]
       properties:
-        run_id:
+        job_id:
           type: string
-          example: "run-abc123"
-        input:
-          type: string
-          description: Input file path, if one was supplied.
-          example: "datasets/reference.bin"
+          example: "job-abc123"
+        model:
+          $ref: "#/components/schemas/WorkloadType"
+        mode:
+          $ref: "#/components/schemas/MeasurementMode"
+        repetitions:
+          type: integer
+          description: Number of repetitions requested.
+          example: 10
         status:
           $ref: "#/components/schemas/JobStatusEnum"
         created_at:
@@ -389,190 +684,398 @@ components:
         completed_at:
           type: string
           format: date-time
-          description: When execution finished. Present only when terminal.
+          description: When all repetitions finished. Present only in terminal states.
         error:
           type: string
           description: Infrastructure-level error. Present only when `status == "failed"`.
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Key-value metadata as supplied in the request. Echoed back
+            unchanged for correlation with CI systems and requirement trackers.
+          example:
+            requirement_uid: "REQ-ML-L-003"
+            git_sha: "a1b2c3d"
+        hardware:
+          $ref: "#/components/schemas/HardwareInfo"
+          description: |
+            Descriptor for the hardware that executed the job. Populated
+            once execution starts; null while still queued.
         metrics:
-          $ref: "#/components/schemas/RunMetrics"
+          $ref: "#/components/schemas/JobMetrics"
+          description: |
+            Aggregated metrics across all repetitions. Fields are populated
+            as they become available. All fields are null while the job is
+            running (unless a metric is collected incrementally).
+        output:
+          $ref: "#/components/schemas/JobOutput"
+          description: |
+            Model outputs from the repetitions. Null while the job is running.
+            Populated (possibly partially) in the terminal response.
 
-    RunMetrics:
+    # -------------------------------------------------------------------------
+    # Hardware descriptor
+    # -------------------------------------------------------------------------
+
+    HardwareInfo:
       type: object
       description: |
-        Fixed-schema runtime metrics for a single execution run.
-        All fields are always present in a terminal response. `null` means the
-        metric was not available for this run (tool not installed, binary not
-        instrumented, no ground truth configured server-side, etc.).
+        Description of the hardware that executed the job. Populated by the
+        server based on its configured target. Provides context for interpreting
+        normalised metrics such as `cpu.avg_normalized_pct`.
+      required: [type]
       properties:
-        return_code:
+        type:
+          type: string
+          enum: [cpu, gpu, fpga, npu, other]
+          description: Primary compute element type.
+          example: "cpu"
+        model:
+          type: string
+          description: Human-readable hardware model name.
+          example: "GR740 Leon4"
+        cores:
           type: integer
           nullable: true
-          description: Process exit code. 0 = success.
-          example: 0
-        time.execution:
-          type: number
-          format: double
+          description: |
+            Number of compute units (CPU cores, GPU CUDA cores, FPGA logic
+            blocks, etc.). Used to interpret `cpu.avg_normalized_pct`.
+          example: 4
+        memory_total_kb:
+          type: integer
           nullable: true
-          description: Wall-clock execution time in milliseconds.
-          example: 87.3
-        memory.peak_rss:
-          type: number
-          format: double
+          description: Total available memory in kilobytes.
+          example: 131072
+        accelerator_model:
+          type: string
           nullable: true
-          description: Peak resident set size in kilobytes (via `/usr/bin/time`).
-          example: 4096.0
-        memory.avg_rss:
-          type: number
-          format: double
-          nullable: true
-          description: Average resident set size in kilobytes.
-          example: 3200.0
-        cpu.max_pct:
-          type: number
-          format: double
-          nullable: true
-          description: Peak CPU usage as a percentage (0–100).
-          example: 94.1
-        cpu.avg_pct:
-          type: number
-          format: double
-          nullable: true
-          description: Average CPU usage as a percentage (0–100).
-          example: 71.3
-        memory.leaks:
+          description: |
+            Name of an attached accelerator (e.g. "Myriad X", "Volta GPU").
+            Null when the primary compute element handles inference directly.
+          example: null
+        clock_mhz:
           type: number
           format: double
           nullable: true
           description: |
-            Total bytes leaked according to Valgrind memcheck. 0 = no leaks.
-            `null` = Valgrind not available or not run.
-          example: 0.0
+            Primary compute element clock speed in MHz. Essential context for
+            interpreting timing metrics (e.g. GR740 Leon4 @ 250 MHz).
+            Null if the server cannot determine clock speed.
+          example: 250.0
+        os:
+          type: string
+          nullable: true
+          description: |
+            Operating system or runtime environment on the target.
+            Examples: `"RTEMS 6"`, `"Linux 6.8"`, `"baremetal"`, `"FreeRTOS 11"`.
+            Null if not determinable.
+          example: "RTEMS 6"
+
+    # -------------------------------------------------------------------------
+    # Metrics (aggregated across all repetitions)
+    # -------------------------------------------------------------------------
+
+    JobMetrics:
+      type: object
+      description: |
+        Fixed-schema metrics aggregated across all repetitions.
+        All fields are always present in a terminal response. `null` means the
+        metric was not available for this job (tool not installed or not
+        configured, binary not instrumented, etc.).
+
+        Timing fields depend on `mode`:
+        - In `latency` mode: `time.avg_ms` and latency percentiles are populated;
+          `time.throughput_fps` is null.
+        - In `throughput` mode: `time.throughput_fps` is populated; latency
+          percentiles reflect pipeline end-to-end time.
+
+        `cpu.avg_normalized_pct` is normalised server-side:
+          value = (average CPU across all cores) / (core_count × 100) × 100
+        100 % = all available compute saturated.
+        See `hardware.cores` for the raw core count.
+      properties:
+        return_code:
+          type: integer
+          nullable: true
+          description: |
+            Process exit code of the last repetition. 0 = success.
+            Non-zero does not automatically fail the job — the constraint
+            evaluator checks this separately.
+          example: 0
+
+        time.avg_ms:
+          type: number
+          format: double
+          nullable: true
+          description: Average wall-clock execution time per repetition, in milliseconds.
+          example: 87.3
+
+        time.latency_p50_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            50th percentile (median) latency across repetitions, in milliseconds.
+            Null in `throughput` mode or when `repetitions < 2`.
+          example: 85.1
+
+        time.latency_p95_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            95th percentile latency across repetitions, in milliseconds.
+            Null in `throughput` mode or when `repetitions < 20`.
+          example: 99.2
+
+        time.latency_p99_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            99th percentile latency across repetitions, in milliseconds.
+            Null in `throughput` mode or when `repetitions < 100`.
+          example: 103.4
+
+        time.throughput_fps:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Throughput in inferences per second. Populated in `throughput`
+            mode only. Null in `latency` mode.
+          example: null
+
+        memory.avg_rss_kb:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Average resident set size across repetitions, in kilobytes.
+          example: 3200.0
+
+        memory.peak_rss_kb:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Peak resident set size observed across all repetitions, in kilobytes.
+          example: 4096.0
+
+        memory.leaks_bytes:
+          type: integer
+          nullable: true
+          description: |
+            Total bytes leaked according to Valgrind memcheck or ASan.
+            0 = no leaks detected.
+            Null if `instrumentation` is `none` or `gprof`.
+          example: 0
+
+        cpu.avg_normalized_pct:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Average CPU utilisation normalised to total available compute.
+            Formula: (avg CPU used across all cores) / (core_count × 100) × 100
+            100 % = all cores fully saturated throughout the run.
+            See `hardware.cores` for the raw core count.
+            Null if the target hardware does not expose CPU counters.
+          example: 24.3
+
         coverage.line_pct:
           type: number
           format: double
           nullable: true
           description: |
-            Line coverage percentage (0–100). Requires a binary instrumented
-            with `--coverage` (gcov). `null` = lcov not available or binary
-            not instrumented.
+            Line coverage percentage (0–100). Requires the binary to be
+            compiled with coverage instrumentation (gcov/llvm-cov).
+            Null if the binary is not instrumented.
           example: 87.2
-        ml.accuracy:
+
+        coverage.branch_pct:
           type: number
           format: double
           nullable: true
-          description: |
-            Model accuracy (0.0–1.0). `null` if the binary is not an ML
-            inference binary or if no ground truth is configured server-side.
-          example: 0.983
-        ml.f1_score:
+          description: Branch coverage percentage (0–100). Null if not instrumented.
+          example: 72.1
+
+        coverage.function_pct:
           type: number
           format: double
           nullable: true
-          description: F1 score (0.0–1.0). `null` if not available.
-          example: null
-        ml.recall:
-          type: number
-          format: double
-          nullable: true
-          description: Recall (0.0–1.0). `null` if not available.
-          example: null
-        ml.precision:
-          type: number
-          format: double
-          nullable: true
-          description: Precision (0.0–1.0). `null` if not available.
-          example: null
+          description: Function coverage percentage (0–100). Null if not instrumented.
+          example: 95.0
 
-    # -------------------------------------------------------------------------
-    # Analysis — request and response
-    # -------------------------------------------------------------------------
-
-    AnalysisRequest:
-      type: object
-      properties:
-        timeout_secs:
-          type: integer
-          minimum: 1
-          default: 300
-          description: Maximum analysis time in seconds. Defaults to 5 minutes.
-          example: 300
-
-    AnalysisAccepted:
-      type: object
-      required: [analysis_id, status, created_at]
-      properties:
-        analysis_id:
-          type: string
-          description: Unique analysis identifier for subsequent polling.
-          example: "analysis-def456"
-        status:
-          type: string
-          enum: [accepted]
-        created_at:
-          type: string
-          format: date-time
-          example: "2026-02-26T10:00:00Z"
-
-    AnalysisStatusResponse:
-      type: object
-      required: [analysis_id, status, created_at, metrics]
-      properties:
-        analysis_id:
-          type: string
-          example: "analysis-def456"
-        status:
-          $ref: "#/components/schemas/JobStatusEnum"
-        created_at:
-          type: string
-          format: date-time
-        started_at:
-          type: string
-          format: date-time
-          description: When analysis started. Absent if still queued.
-        completed_at:
-          type: string
-          format: date-time
-          description: When analysis finished. Present only when terminal.
-        error:
-          type: string
-          description: Infrastructure-level error. Present only when `status == "failed"`.
-        metrics:
-          $ref: "#/components/schemas/AnalysisMetrics"
-
-    AnalysisMetrics:
-      type: object
-      description: |
-        Fixed-schema static and structural metrics for a binary.
-        All fields are always present in a terminal response. `null` means the
-        metric was not available (tool not configured, SonarQube unreachable, etc.).
-      properties:
-        sonar.critical_issues:
+        coverage.lines_covered:
           type: integer
           nullable: true
-          description: |
-            Count of CRITICAL-severity SonarQube issues. `null` if SonarQube
-            is not configured or unreachable.
-          example: 0
-        sonar.major_issues:
+          description: Absolute number of source lines executed. Null if not instrumented.
+          example: 1234
+
+        coverage.lines_total:
           type: integer
           nullable: true
-          description: |
-            Count of MAJOR-severity SonarQube issues. `null` if SonarQube
-            is not configured or unreachable.
-          example: 3
+          description: Total number of instrumented source lines. Null if not instrumented.
+          example: 1416
+
         static.warnings:
           type: integer
           nullable: true
           description: |
             Total warnings from static analysers (cppcheck, clang-tidy, etc.).
-            `null` if no static analyser is configured.
+            Collected once per session; null if no static analyser is configured.
           example: 1
+
+        static.critical_issues:
+          type: integer
+          nullable: true
+          description: |
+            Count of CRITICAL-severity SonarQube issues.
+            Null if SonarQube is not configured or unreachable.
+          example: 0
+
+        static.major_issues:
+          type: integer
+          nullable: true
+          description: |
+            Count of MAJOR-severity SonarQube issues.
+            Null if SonarQube is not configured or unreachable.
+          example: 3
+
         binary.size_kb:
           type: number
           format: double
           nullable: true
           description: Binary size on disk in kilobytes.
           example: 412.0
+
+        time.startup_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Time from process start to first inference call, in milliseconds.
+            Captures model loading, runtime initialisation, and memory
+            allocation. Measured once (not averaged across repetitions).
+            Null if the server cannot isolate startup from inference time.
+          example: 312.5
+
+        time.first_inference_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Wall-clock time of the very first inference call (cold path),
+            in milliseconds. Differs from `time.avg_ms` when JIT compilation
+            or lazy initialisation is involved. Null if not separately
+            measurable (e.g. when `warmup_repetitions > 0` hides the cold path).
+          example: 145.2
+
+        memory.stack_kb:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Peak stack usage in kilobytes. Critical for RTEMS/baremetal targets
+            with fixed stack allocations. Null if the platform does not expose
+            stack instrumentation.
+          example: 48.0
+
+        memory.heap_allocations:
+          type: integer
+          nullable: true
+          description: |
+            Total number of heap allocation calls (malloc/new) across all
+            repetitions. Safety-critical and real-time code often requires
+            zero dynamic allocation after initialisation. Null if not
+            instrumented.
+          example: 0
+
+        power.avg_watts:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Average power draw during inference, in watts. Null if the
+            target hardware does not expose power monitoring.
+          example: 4.2
+
+        power.peak_watts:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Peak power draw observed across all repetitions, in watts.
+            Null if the target hardware does not expose power monitoring.
+          example: 5.8
+
+        hardware.temperature_celsius:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Average die/board temperature during the run, in degrees Celsius.
+            Null if the target does not expose temperature sensors.
+          example: 52.3
+
+    # -------------------------------------------------------------------------
+    # Model output
+    # -------------------------------------------------------------------------
+
+    JobOutput:
+      type: object
+      required: [type, result_consistent]
+      description: |
+        Model outputs from the qualification run.
+
+        `outputs` always contains **one result per input item** in the batch —
+        never one result per repetition. Repetitions exist for statistical
+        measurement only; they do not produce additional output entries.
+
+        For all workload types (including `pixel_segmentation`), the server
+        executes all `repetitions` but transfers the output batch only once.
+        `result_consistent` records whether every repetition produced
+        bit-identical results.
+
+        SQT Generic uses `outputs` to compute accuracy metrics (accuracy, F1,
+        IoU, L2, etc.) client-side against reference labels attached to the spec.
+
+        Output schema per entry depends on `type`:
+        - `classification_labels`: `{label: string, confidence: number}`
+        - `bounding_boxes`: array of `{label, confidence, x, y, w, h}`
+        - `segmentation_masks`: base64-encoded PNG mask
+        - `regression_values`: number
+        - `timeseries_predictions`: array of numbers
+        - `text`: string
+      properties:
+        type:
+          $ref: "#/components/schemas/OutputType"
+        result_consistent:
+          type: boolean
+          description: |
+            True if all repetitions produced bit-identical outputs.
+            False if any repetition differed (which may indicate
+            non-determinism, numeric instability, or hardware faults).
+          example: true
+        outputs:
+          type: array
+          nullable: true
+          description: |
+            One output entry per input item. Null while the job is still
+            running. Each entry's schema depends on `type` (see above).
+          items: {}
+        outputs_checksum:
+          type: string
+          nullable: true
+          description: |
+            SHA-256 hex digest of the `outputs` array (computed over its
+            canonical JSON representation). Enables reproducibility
+            verification across sessions without re-transferring outputs.
+            Null while the job is running.
+          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
     # -------------------------------------------------------------------------
     # Shared
@@ -583,13 +1086,15 @@ components:
       enum: [accepted, running, complete, failed]
       description: |
         - `accepted`: Job received and queued, not yet started
-        - `running`: Job is executing
-        - `complete`: Job finished; metric fields reflect final measured values
-        - `failed`: Infrastructure-level failure; the job could not run
+        - `running`: Job is executing (repetitions in progress)
+        - `complete`: All repetitions finished; metric and output fields
+          reflect final values. Individual metric fields may still be `null`
+          if the corresponding tool was unavailable.
+        - `failed`: Infrastructure-level failure; the job could not run.
+          The `error` field contains a description.
 
         Terminal states: `complete` and `failed`. Clients MUST stop polling
-        when the status is terminal. A `complete` job may have `null` metric
-        fields — those indicate unavailable tools, not infrastructure failure.
+        when the status is terminal.
 
     # -------------------------------------------------------------------------
     # Error
@@ -610,6 +1115,7 @@ components:
                 - NOT_FOUND
                 - TIMEOUT
                 - UNAUTHORIZED
+                - PAYLOAD_TOO_LARGE
                 - INTERNAL_ERROR
               description: Machine-readable error code.
             message:
