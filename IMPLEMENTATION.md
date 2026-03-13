@@ -16,7 +16,7 @@ SQT Generic. It deliberately narrows the scope compared to ARCHITECTURE.md:
 - **The plugin system is compile-time only.** There is no dynamic loading, no external
   process protocol, and no Python SDK. Users add a Rust file to the correct module,
   implement one trait, add one `mod` declaration, and recompile. The registry is
-  populated automatically via the `inventory` crate — no central registration file.
+  populated automatically via the `inventory` crate - no central registration file.
 - **The focus is on getting a runnable qualification loop.** The binary should be able to
   run a set of metric collectors against a target binary, evaluate constraints, and
   produce a basic report.
@@ -27,7 +27,7 @@ SQT Generic. It deliberately narrows the scope compared to ARCHITECTURE.md:
 
 Instead of a dynamic plugin protocol, metrics are plain Rust types that implement a
 shared trait. The registry is built automatically at link time using the
-[`inventory`](https://crates.io/crates/inventory) crate — each collector file
+[`inventory`](https://crates.io/crates/inventory) crate - each collector file
 self-registers with a single macro call. Adding a new metric means:
 
 1. Create `src/metrics/builtin/my_metric.rs` (or `src/metrics/custom/my_metric.rs`)
@@ -89,7 +89,7 @@ impl MetricCollector for ReturnCodeCollector {
     }
 }
 
-// This is all that's needed — no registry.rs edit required
+// This is all that's needed - no registry.rs edit required
 inventory::submit! {
     CollectorFactory { name: "return_code", create: || Box::new(ReturnCodeCollector) }
 }
@@ -135,7 +135,7 @@ pub fn spec() -> TestSpec {
 ```
 
 All specs in `src/specs/` are collected at compile time via a central `all_specs()`
-function — no discovery magic needed.
+function - no discovery magic needed.
 
 ---
 
@@ -158,7 +158,7 @@ ats-sqt/
     │
     ├── metrics/
     │   ├── mod.rs              ← MetricCollector trait, Target, MetricValue, CollectorFactory
-    │   ├── registry.rs         ← build_registry() via inventory::iter — never edit this
+    │   ├── registry.rs         ← build_registry() via inventory::iter - never edit this
     │   ├── builtin/
     │   │   ├── mod.rs
     │   │   ├── return_code.rs
@@ -171,7 +171,7 @@ ats-sqt/
     │       └── mod.rs          ← user-defined collectors go here
     │
     ├── specs/
-    │   ├── mod.rs              ← all_specs() — returns Vec<TestSpec>
+    │   ├── mod.rs              ← all_specs() - returns Vec<TestSpec>
     │   └── (user writes one file per requirement here)
     │
     ├── constraint/
@@ -182,7 +182,7 @@ ats-sqt/
     │   └── mod.rs              ← run all specs, collect results
     │
     ├── api/
-    │   ├── mod.rs              ← JobApiClient — REST client for job-api.openapi.yaml
+    │   ├── mod.rs              ← JobApiClient - REST client for job-api.openapi.yaml
     │   ├── client.rs
     │   └── types.rs            ← JobRequest, JobStatus, TaskResult, …
     │
@@ -203,7 +203,7 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ---
 
-### Phase 0 — Project Scaffold
+### Phase 0 - Project Scaffold
 
 - [x] **T-001** Initialize Cargo workspace
   - Add dependencies: `clap`, `serde`, `serde_yaml`, `anyhow`, `thiserror`, `tokio`,
@@ -225,23 +225,23 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ---
 
-### Phase 1 — Core Type System
+### Phase 1 - Core Type System
 
 - [x] **T-010** Define `Target`, `Platform`, `MetricValue`, `MetricCollector` trait
   - `Platform`: `enum Platform { Local, Remote(String) }`
   - `Target`: binary path, `Platform`, optional input, working dir, `timeout: Duration`
-    — implement `Default` manually with `timeout: Duration::from_secs(30)` so that
+    - implement `Default` manually with `timeout: Duration::from_secs(30)` so that
     `..Default::default()` in test specs doesn't produce a zero timeout
   - `MetricValue`: `f64` value, unit string, evidence map
   - `MetricCollector`: `name() -> &str`, `collect(target, config) -> Result<MetricValue>`
-  - No implementations yet — types and trait only
+  - No implementations yet - types and trait only
 
 - [x] **T-011** Define `Constraint`, `Op`, `Value` types
   - `Op`: `Lte | Gte | Lt | Gt | Eq | Ne`
   - `Value`: typed wrapper (milliseconds, kilobytes, percent, integer, boolean)
     supporting unit-aware comparisons (e.g., `512KB` vs `524288` bytes)
   - `Constraint`: metric name + op + value + `config: serde_yaml::Value` (defaults to
-    `serde_yaml::Value::Null` if not set — this is what the orchestrator passes to
+    `serde_yaml::Value::Null` if not set - this is what the orchestrator passes to
     `collect()` for that collector)
 
 - [x] **T-012** Implement `ConstraintEvaluator`
@@ -256,22 +256,22 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 ---
 
-### Phase 2 — Metric Registry and Built-in Collectors
+### Phase 2 - Metric Registry and Built-in Collectors
 
 > **Architecture note**: These collectors execute tools locally (valgrind, lcov, etc.).
-> In the primary (API-first) architecture, they run **server-side** — either in the
+> In the primary (API-first) architecture, they run **server-side** - either in the
 > ML-L Specific server (Klepsydra) or in a local dev API server. The code remains in
 > this crate as reference implementations and will be exposed via the local dev server
 > binary in a future phase. The orchestrator (Phase 3) never calls collectors directly.
 
 - [x] **T-020** Implement `MetricRegistry` and `build_registry()`
   - ~~Declare `CollectorFactory` struct and `inventory::collect!(CollectorFactory)`~~ **Done in
-    T-010** — `CollectorFactory` and `inventory::collect!` already live in `src/metrics/mod.rs`
+    T-010** - `CollectorFactory` and `inventory::collect!` already live in `src/metrics/mod.rs`
   - Remaining scope: `MetricRegistry` and `build_registry()` only
   - `MetricRegistry`: `HashMap<String, Box<dyn MetricCollector>>` with `register_boxed()`,
     `get(name)`, and panic-on-duplicate-name in debug builds
   - `build_registry()` in `src/metrics/registry.rs`: iterates `inventory::iter::<CollectorFactory>`
-    and registers each one — this function never needs to be touched again
+    and registers each one - this function never needs to be touched again
   - **Note**: in `build_registry()`, add `debug_assert_eq!((factory.create)().name(),
     factory.name)` for each factory to enforce that the instance `name()` and the registration
     key match
@@ -317,37 +317,37 @@ at the bottom of the file. No other file needs to change.
 
 ---
 
-### Phase 3 — API Client, Specs, and Orchestrator
+### Phase 3 - API Client, Specs, and Orchestrator
 
 > **Note**: T-030 through T-035 were originally implemented against an old single-job
 > design, then updated in Phase 4 for a two-endpoint (`/runs` + `/analysis`) design.
-> **Phase 4 is being reverted** — see below. The Phase 3 code provides a working
+> **Phase 4 is being reverted** - see below. The Phase 3 code provides a working
 > skeleton that Phase 4 will rebuild on top of.
 
 - [x] **T-030** Define API types (`src/api/types.rs`)
   - ~~`JobRequest`, `TaskSpec`, `JobAccepted`, `JobStatusResponse`, `TaskResult`~~
     **→ Phase 4 will replace with** `JobRequest`, `JobAccepted`, `JobStatusResponse`,
     `JobMetrics`, `HardwareInfo`, `JobOutput`
-  - `JobStatus`, `ErrorResponse`, `ApiError` — remain valid
+  - `JobStatus`, `ErrorResponse`, `ApiError` - remain valid
   - All fields `Deserialize` + `Serialize`; `Option` fields use
     `#[serde(skip_serializing_if = "Option::is_none")]`
 
 - [x] **T-031** Implement `JobApiClient` (`src/api/client.rs`)
-  - `new(base_url, token)` — creates `reqwest` async client with optional Bearer header
+  - `new(base_url, token)` - creates `reqwest` async client with optional Bearer header
   - ~~`submit_job`, `get_status`, `wait_for_completion`~~ **→ Phase 4 will replace with**
     `submit_job(&JobRequest) -> Result<String>` (job_id),
     `get_job_status(job_id) -> Result<JobStatusResponse>`,
     `wait_for_job(job_id) -> Result<JobStatusResponse>`
-  - Exponential backoff: 1 s initial, ×2 per poll, 30 s cap — unchanged
+  - Exponential backoff: 1 s initial, ×2 per poll, 30 s cap - unchanged
 
 - [x] **T-032** Define `all_specs()` convention (`src/specs/mod.rs`)
   - `src/specs/mod.rs` exports `pub fn all_specs() -> Vec<TestSpec>`
   - Each spec file in `src/specs/` adds its specs to the vec
   - **Note**: unlike metrics, specs are NOT auto-discovered via `inventory`. Adding a
     new spec requires two manual steps: `mod my_spec;` in `specs/mod.rs` and a call to
-    `my_spec::spec()` inside `all_specs()`. This is intentional — specs are project-
+    `my_spec::spec()` inside `all_specs()`. This is intentional - specs are project-
     specific configuration, not reusable plugins.
-  - Each `TestSpec` carries its own workload type + input — the orchestrator uses
+  - Each `TestSpec` carries its own workload type + input - the orchestrator uses
     `(workload, input)` as the deduplication key when grouping specs into jobs
 
 - [x] **T-033** Write first example spec (`src/specs/example.rs`)
@@ -367,7 +367,7 @@ at the bottom of the file. No other file needs to change.
 
 ---
 
-### Phase 4 — API Redesign (Single-Endpoint), Orchestrator Rewrite, Evidence and Reporting
+### Phase 4 - API Redesign (Single-Endpoint), Orchestrator Rewrite, Evidence and Reporting
 
 > **Context**: The two-endpoint design implemented in the original Phase 4
 > (`/api/v1/runs` + `/api/v1/analysis`) is being replaced by the single-endpoint
@@ -387,16 +387,16 @@ at the bottom of the file. No other file needs to change.
   - Replace `RunRequest`/`RunAccepted`/`RunStatusResponse`/`RunMetrics`/
     `AnalysisRequest`/`AnalysisAccepted`/`AnalysisStatusResponse`/`AnalysisMetrics`
     with the new unified types:
-    - `WorkloadType` — enum: `ObjectDetection | ImageClassification | PixelSegmentation | Classification | Regression | TimeSeriesForecasting`
-    - `Instrumentation` — enum: `None | Asan | Valgrind | Gprof`
-    - `MeasurementMode` — enum: `Latency | Throughput`
-    - `JobInput` — enum over input variants: `Images(Vec<Bytes>)`, `DatasetRef(String)`, `Tabular(Vec<Vec<f64>>)`, `TimeSeries(Vec<Vec<f64>>)`
-    - `JobRequest` — `model`, `input`, `repetitions`, `instrumentation`, `mode`, `timeout_secs`
-    - `JobAccepted` — `job_id`, `status`, `created_at`
-    - `JobStatusResponse` — `job_id`, `model`, `mode`, `repetitions`, `status`, timestamps, `hardware`, `metrics`, `output`
-    - `HardwareInfo` — `type`, `model`, `cores`, `memory_total_kb`, `accelerator_model`
-    - `JobMetrics` — 20 nullable fields (see `job-api.openapi.yaml` §JobMetrics)
-    - `JobOutput` — `type`, `result_consistent`, `sample_output`, `all_outputs`
+    - `WorkloadType` - enum: `ObjectDetection | ImageClassification | PixelSegmentation | Classification | Regression | TimeSeriesForecasting`
+    - `Instrumentation` - enum: `None | Asan | Valgrind | Gprof`
+    - `MeasurementMode` - enum: `Latency | Throughput`
+    - `JobInput` - enum over input variants: `Images(Vec<Bytes>)`, `DatasetRef(String)`, `Tabular(Vec<Vec<f64>>)`, `TimeSeries(Vec<Vec<f64>>)`
+    - `JobRequest` - `model`, `input`, `repetitions`, `instrumentation`, `mode`, `timeout_secs`
+    - `JobAccepted` - `job_id`, `status`, `created_at`
+    - `JobStatusResponse` - `job_id`, `model`, `mode`, `repetitions`, `status`, timestamps, `hardware`, `metrics`, `output`
+    - `HardwareInfo` - `type`, `model`, `cores`, `memory_total_kb`, `accelerator_model`
+    - `JobMetrics` - 20 nullable fields (see `job-api.openapi.yaml` §JobMetrics)
+    - `JobOutput` - `type`, `result_consistent`, `sample_output`, `all_outputs`
   - All fields `Deserialize` + `Serialize`; `Option` fields use
     `#[serde(skip_serializing_if = "Option::is_none")]`
 
@@ -410,7 +410,7 @@ at the bottom of the file. No other file needs to change.
 
 - [ ] **T-042** Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
   - Group specs by `(workload_type, input_key)` → deduplicated `Vec<JobRequest>`
-  - No metric routing by prefix — all constraints reference fields of `JobMetrics` directly
+  - No metric routing by prefix - all constraints reference fields of `JobMetrics` directly
   - Submit all jobs concurrently; `tokio::join_all` on futures
   - Map nullable `JobMetrics` field → `MetricValue` (null → `ConstraintOutcome { passed: false }`)
   - After job completes: if `output.all_outputs` is non-null, pass to accuracy evaluator
@@ -453,7 +453,7 @@ at the bottom of the file. No other file needs to change.
 
 ---
 
-### Phase 5 — Polish and CI Integration
+### Phase 5 - Polish and CI Integration
 
 - [ ] **T-060** Structured logging
   - Replace `println!` with `tracing` spans and events throughout
@@ -496,7 +496,7 @@ Phase 3 (new):
   T-031 + T-033     ──► T-034 (orchestrator) ──► T-035 (CLI wiring)
   T-035 ◄── T-002, T-003, T-013
 
-Phase 4 (API redesign — single endpoint):
+Phase 4 (API redesign - single endpoint):
   T-040 (types) ──► T-041 (client) ──► T-042 (orchestrator rewrite)
   T-042 ◄── T-032, T-035
 
@@ -515,7 +515,7 @@ Phase 5: T-060 ──► T-061 ──► T-062 ──► T-063
 
 | Feature | When |
 |---|---|
-| StrictDoc parsing | Phase 2 of the project — will generate Rust specs automatically |
+| StrictDoc parsing | Phase 2 of the project - will generate Rust specs automatically |
 | Dynamic plugin loading (external process) | After compile-time approach is validated |
 | PDF QDP report generation | After traceability matrix is stable |
 | Full SonarQube quality-gate integration | After basic collectors are working |
@@ -542,7 +542,7 @@ constraints now fails, as expected in a qualification context.
 ### [RESOLVED] `serde_yaml 0.9` deprecated *(was Medium)*
 
 The original `serde_yaml` crate was abandoned by its author in 2024. Migrated to
-`serde-yaml-ng` (the community-maintained fork) via Cargo alias — all source code unchanged:
+`serde-yaml-ng` (the community-maintained fork) via Cargo alias - all source code unchanged:
 
 ```toml
 serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
@@ -559,7 +559,7 @@ than the constraint expects (e.g., collector returns `"bytes"` but constraint us
 
 ---
 
-### [RESOLVED] `MetricCollector::name()` vs `CollectorFactory::name` — unenforceable contract *(was Medium)*
+### [RESOLVED] `MetricCollector::name()` vs `CollectorFactory::name` - unenforceable contract *(was Medium)*
 
 `build_registry()` now calls `debug_assert_eq!(instance.name(), factory.name, ...)` for
 every factory. Diverging names panic immediately in debug builds. The trait return type
@@ -568,7 +568,7 @@ constants.
 
 ---
 
-### [OPEN] `Target::default().binary` is an empty path *(Medium — T-032)*
+### [OPEN] `Target::default().binary` is an empty path *(Medium - T-032)*
 
 `Target::default()` sets `binary: PathBuf::new()`. Any spec that uses `..Default::default()`
 without overriding `binary` will fail at runtime with a cryptic OS error when the orchestrator
@@ -577,7 +577,7 @@ return a clear error before attempting execution.
 
 ---
 
-### [OPEN] No `Serialize` on report types *(Low — T-051)*
+### [OPEN] No `Serialize` on report types *(Low - T-051)*
 
 `RunResult`, `SpecResult`, `ConstraintOutcome`, and `TestSpec` derive `Debug` and `Clone`
 but not `Serialize`. T-051 needs to serialize the full `RunResult` to JSON. Adding
@@ -586,7 +586,7 @@ early (e.g., how `serde_yaml::Value` round-trips through `serde_json`).
 
 ---
 
-### [OPEN] `timestamp: String` in `RunResult` — no datetime crate *(Low — T-051)*
+### [OPEN] `timestamp: String` in `RunResult` - no datetime crate *(Low - T-051)*
 
 Generating an ISO 8601 timestamp from `std::time::SystemTime` without a crate requires
 manual date arithmetic (leap years, month lengths). Add `jiff` or `chrono` to `Cargo.toml`
@@ -595,7 +595,7 @@ hand-rolled formatter.
 
 ---
 
-### [OPEN] `serde_yaml::Value` embedded in the `MetricCollector` trait *(Low — Phase 5)*
+### [OPEN] `serde_yaml::Value` embedded in the `MetricCollector` trait *(Low - Phase 5)*
 
 `fn collect(&self, target: &Target, config: &serde_yaml::Value)` couples the core trait
 interface to the YAML library. If the config serialization layer changes, the trait signature
@@ -604,17 +604,17 @@ Phase 5.
 
 ---
 
-### [OPEN] `MetricCollector` trait signature couples to local execution *(Medium — T-063)*
+### [OPEN] `MetricCollector` trait signature couples to local execution *(Medium - T-063)*
 
 `MetricCollector::collect(&self, target: &Target, config: &serde_yaml::Value)` assumes
 the collector has local access to spawn processes. In the API-first architecture, the
-orchestrator never calls collectors directly — it submits jobs and maps results. The
+orchestrator never calls collectors directly - it submits jobs and maps results. The
 trait remains valid for the local dev API server (T-063). Revisit the interface when
 building the server binary.
 
 ---
 
-### [RESOLVED] Metric routing uses name-prefix convention — implicit coupling *(was Medium)*
+### [RESOLVED] Metric routing uses name-prefix convention - implicit coupling *(was Medium)*
 
 The two-endpoint design required routing `constraint.metric_name` to either
 `RunMetrics` or `AnalysisMetrics` based on a name-prefix convention. This was
@@ -627,10 +627,10 @@ constraint) with a clear warning in the terminal summary.
 
 ---
 
-### [OPEN] `Platform` enum no longer used by orchestrator *(Low — T-034)*
+### [OPEN] `Platform` enum no longer used by orchestrator *(Low - T-034)*
 
 `Platform::Local/Remote` was designed for direct collector dispatch. The orchestrator
-now always talks to an API URL (from `config.api.url`) — no platform selection needed.
+now always talks to an API URL (from `config.api.url`) - no platform selection needed.
 `Platform` remains used by local collectors internally for the `bail!` guard. Consider
 removing `Platform` from `Target` when the orchestrator is wired up in T-034.
 

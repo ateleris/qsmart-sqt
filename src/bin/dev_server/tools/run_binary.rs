@@ -85,7 +85,7 @@ pub fn collect(
     let cpu_pct = parse_time_field(&combined, "Percent of CPU this job got:");
 
     if memory_peak_rss.is_none() {
-        tracing::info!("/usr/bin/time not found in container — peak RSS and CPU% unavailable");
+        tracing::info!("/usr/bin/time not found in container - peak RSS and CPU% unavailable");
     }
 
     // Wall time is always measured on the host side, independent of GNU time.
@@ -97,7 +97,7 @@ pub fn collect(
         memory_peak_rss,
         memory_avg_rss: None, // GNU time doesn't provide avg RSS
         cpu_max_pct: cpu_pct,
-        cpu_avg_pct: cpu_pct, // single sample — max == avg
+        cpu_avg_pct: cpu_pct, // single sample - max == avg
         memory_leaks: None,
         coverage_line_pct: None,
         ml_accuracy: None,
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn invocation_env_with_input() {
         let config = make_config("./app", &[], InputMode::Env("INPUT_FILE".into()));
-        // Env mode doesn't modify the command — it's handled via Docker -e
+        // Env mode doesn't modify the command - it's handled via Docker -e
         assert_eq!(
             build_binary_invocation(&config, Some("/data/input.bin")),
             "./app"

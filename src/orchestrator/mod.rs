@@ -41,7 +41,7 @@ fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
 /// analysis job for the server's configured binary, waits for all results,
 /// then evaluates each spec's constraints.
 ///
-/// The server knows which binary to test — the client does not send it.
+/// The server knows which binary to test - the client does not send it.
 ///
 /// # Errors
 ///

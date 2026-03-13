@@ -279,7 +279,7 @@ integration_tests:
       test_dir: "./tests/integration/regression"
       timeout: 900
 
-# Hardware Testing (via Job API — see job-api.openapi.yaml)
+# Hardware Testing (via Job API - see job-api.openapi.yaml)
 hardware_tests:
   enabled: true
   rest_api:
@@ -320,7 +320,7 @@ hardware_tests:
       description: "QEMU ARM Cortex-A"
       command: "qemu-system-arm -M virt"
 
-# Performance Benchmarking (via Job API — see job-api.openapi.yaml)
+# Performance Benchmarking (via Job API - see job-api.openapi.yaml)
 performance_tests:
   enabled: true
   rest_api_endpoint: "http://localhost:8080"
@@ -644,7 +644,7 @@ Generate comprehensive traceability matrix:
 
 ### 4.5 Declarative Test Specifications
 
-Rather than mapping requirements to hand-written test code for every case, SQT Generic supports a **declarative test specification** approach: testable traits (metrics/properties) are defined as built-in or plugin-provided capabilities, and requirements directly specify which constraints must hold — no boilerplate test code required.
+Rather than mapping requirements to hand-written test code for every case, SQT Generic supports a **declarative test specification** approach: testable traits (metrics/properties) are defined as built-in or plugin-provided capabilities, and requirements directly specify which constraints must hold - no boilerplate test code required.
 
 #### 4.5.1 Concept
 
@@ -776,7 +776,7 @@ for spec in &specs {
 }
 ```
 
-The orchestrator never calls metric collectors directly — all tool execution happens server-side. The `MetricCollector` trait (and Phase 2 built-in collectors) remains valid as the implementation layer for the local dev API server. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
+The orchestrator never calls metric collectors directly - all tool execution happens server-side. The `MetricCollector` trait (and Phase 2 built-in collectors) remains valid as the implementation layer for the local dev API server. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
 
 ---
 
@@ -785,7 +785,7 @@ The orchestrator never calls metric collectors directly — all tool execution h
 ### 5.1 API Contract (OpenAPI Specification)
 
 The full interface contract is defined in **`job-api.openapi.yaml`** at the root of the
-repository. The spec is generic — it is implemented both by the ML-L Specific server
+repository. The spec is generic - it is implemented both by the ML-L Specific server
 (Klepsydra) and by the local development API server binary.
 
 #### Base URL
@@ -802,7 +802,7 @@ Content-Type: application/json
 #### Design Principles
 
 The server is configured at startup with the path to the **binary under test** and the
-hardware target. Clients do not specify a binary in their requests — all jobs implicitly
+hardware target. Clients do not specify a binary in their requests - all jobs implicitly
 run against the server's configured binary.
 
 A single job type covers all qualification activities: execution runs, instrumented
@@ -841,7 +841,7 @@ Each job runs in one of two modes, set by the `mode` field:
 
 | Value | Tool | Effect |
 |---|---|---|
-| `none` (default) | — | No overhead; use for benchmarks and accuracy runs |
+| `none` (default) | - | No overhead; use for benchmarks and accuracy runs |
 | `asan` | AddressSanitizer | Memory error detection (buffer overflows, UAF) |
 | `valgrind` | Valgrind memcheck | Leak detection; populates `memory.leaks_bytes` |
 | `gprof` | GNU profiler | Call-graph profiling; does not affect memory metrics |
@@ -887,7 +887,7 @@ pre-loaded dataset via `input.type = "dataset_ref"` with a server-assigned ident
 
 **Endpoint**: `GET /api/v1/jobs/{job_id}`
 
-**Response** (terminal — job complete):
+**Response** (terminal - job complete):
 ```json
 {
   "job_id": "job-abc123",
@@ -950,14 +950,14 @@ pre-loaded dataset via `input.type = "dataset_ref"` with a server-assigned ident
 **Status values**: `accepted` | `running` | `complete` | `failed`
 
 **Terminal states**: `complete` and `failed`. SQT stops polling when the job reaches a
-terminal state. A `complete` job may have `null` metric fields — those indicate
+terminal state. A `complete` job may have `null` metric fields - those indicate
 unavailable tools, not infrastructure failure. A `failed` status means the job could not
 run at all; the `error` field provides a description.
 
 ### 5.6 Output Handling and Accuracy Metrics
 
 The server returns model outputs directly in the job response. `output.outputs`
-always contains **one entry per input item** — never one per repetition.
+always contains **one entry per input item** - never one per repetition.
 Repetitions exist for statistical measurement only.
 
 For all workload types (including `pixel_segmentation`), the server executes all
@@ -1013,7 +1013,7 @@ cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count × 10
 ### 5.9 Polling Strategy
 
 SQT Generic implements exponential backoff for all polling. Results are embedded
-in the GET response — no separate fetch is needed:
+in the GET response - no separate fetch is needed:
 
 ```
 initial delay: 1 s
@@ -1336,7 +1336,7 @@ emulation:
 For **space-specific hardware** (GR740, GR765, LEON), delegate to ML-L Specific:
 
 ```yaml
-# Hardware via Job API (Klepsydra responsibility — see job-api.openapi.yaml)
+# Hardware via Job API (Klepsydra responsibility - see job-api.openapi.yaml)
 hardware_tests:
   rest_api_endpoint: "http://localhost:8080"
 
@@ -1431,7 +1431,7 @@ A single qualification session may test the binary with multiple inputs
 (e.g. `reference.bin`, `edge_case.bin`, `stress.bin`). Each input produces one
 execution run. Each requirement's `TestSpec` references the input relevant to it.
 The orchestrator groups specs by input, submits one run job per unique input, and
-fans results back to each spec. The server knows which binary to test — it is
+fans results back to each spec. The server knows which binary to test - it is
 configured at startup, not sent per request.
 
 The report table shows one row per requirement, citing its evidence source:
@@ -1443,7 +1443,7 @@ REQ-ML-L-003  PASS  peak_rss=3.9MB ✓                 [ml_l_inference + referen
 REQ-STATIC-001 PASS sonar.critical=0 ✓               [ml_l_inference, static analysis]
 ```
 
-The run is evidence *for* the requirement — not the unit of reporting. Multiple
+The run is evidence *for* the requirement - not the unit of reporting. Multiple
 requirements can share the same run without re-executing the binary.
 
 ### 9.3 Report Content Structure
@@ -1597,11 +1597,11 @@ SQT Generic ships with a set of built-in metric collectors (Section 4.5.3). When
 | Embedded scripting (Rhai/Lua) | ❌ | Limited capability for real measurement work |
 | **Compile-time Rust (`inventory` crate)** | ✅ | Zero runtime overhead; full Rust type safety; no central registration file; trivial to add, trivial to test |
 
-The intended extensibility model is: **clone the repository, add a Rust file, compile**. SQT Generic is a qualification tool used by small, technically capable teams. Requiring a recompile is not a constraint — it is a feature, because it means every deployment is a single, auditable, statically-linked binary with a fixed set of collectors.
+The intended extensibility model is: **clone the repository, add a Rust file, compile**. SQT Generic is a qualification tool used by small, technically capable teams. Requiring a recompile is not a constraint - it is a feature, because it means every deployment is a single, auditable, statically-linked binary with a fixed set of collectors.
 
 ### 10.1 The `MetricCollector` Trait
 
-Every collector — built-in or user-added — implements the same trait:
+Every collector - built-in or user-added - implements the same trait:
 
 ```rust
 // src/metrics/mod.rs
@@ -1625,7 +1625,7 @@ pub trait MetricCollector: Send + Sync {
 
 ### 10.2 Auto-Registration via `inventory`
 
-The [`inventory`](https://crates.io/crates/inventory) crate uses linker sections to collect distributed static items at link time. Each collector file self-registers by calling one macro — no central list is ever maintained.
+The [`inventory`](https://crates.io/crates/inventory) crate uses linker sections to collect distributed static items at link time. Each collector file self-registers by calling one macro - no central list is ever maintained.
 
 **Declaration (once, in `src/metrics/mod.rs`):**
 
@@ -1657,7 +1657,7 @@ inventory::submit! {
 }
 ```
 
-**Registry construction (in `src/metrics/registry.rs` — never edited):**
+**Registry construction (in `src/metrics/registry.rs` - never edited):**
 
 ```rust
 pub fn build_registry() -> MetricRegistry {
@@ -1690,7 +1690,7 @@ src/
 ├── metrics/
 │   ├── mod.rs              ← MetricCollector trait, Target, MetricValue,
 │   │                         CollectorFactory + inventory::collect!
-│   ├── registry.rs         ← build_registry() — never edit this file
+│   ├── registry.rs         ← build_registry() - never edit this file
 │   ├── builtin/
 │   │   ├── mod.rs
 │   │   ├── return_code.rs
@@ -1919,10 +1919,10 @@ examples/plugins/                 # Plugin authoring examples
 | **AD-010** | Both PDF and HTML reports | ECSS compliance + developer UX | Only PDF (not dev-friendly) | ✅ Accepted |
 | **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
 | **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
-| **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted — routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
-| **AD-014** | Predefined workload types in SQT Generic | Workloads (object_detection, image_classification, etc.) are a closed, known set; both client and server reason over the same enum; no open-ended task dispatch needed | Open task-name dispatch (server accepts arbitrary task strings — fragile, hard to validate) | ✅ Accepted |
+| **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
+| **AD-014** | Predefined workload types in SQT Generic | Workloads (object_detection, image_classification, etc.) are a closed, known set; both client and server reason over the same enum; no open-ended task dispatch needed | Open task-name dispatch (server accepts arbitrary task strings - fragile, hard to validate) | ✅ Accepted |
 | **AD-015** | CPU utilisation normalised server-side | Server knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (server would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
-| **AD-016** | ML accuracy metrics computed client-side | Server returns raw outputs; SQT Generic computes accuracy/F1/IoU/L2 etc. against reference labels; keeps server hardware-agnostic and reference-data-free | Server computes accuracy (requires server-side reference dataset per workload — complex, leaks qualification logic into the ML-L Specific component) | ✅ Accepted |
+| **AD-016** | ML accuracy metrics computed client-side | Server returns raw outputs; SQT Generic computes accuracy/F1/IoU/L2 etc. against reference labels; keeps server hardware-agnostic and reference-data-free | Server computes accuracy (requires server-side reference dataset per workload - complex, leaks qualification logic into the ML-L Specific component) | ✅ Accepted |
 | **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all workload types including segmentation masks. | Split `sample_output` / `all_outputs` per workload type (added complexity, inconsistent semantics) | ✅ Accepted |
 
 ### Trade-offs

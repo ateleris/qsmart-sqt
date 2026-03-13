@@ -51,7 +51,7 @@ pub async fn create_run(
         run_id = %run_id,
         input = ?req.input,
         timeout_secs,
-        "POST /api/v1/runs — accepted run job"
+        "POST /api/v1/runs - accepted run job"
     );
 
     // Spawn background execution
@@ -193,7 +193,7 @@ pub async fn create_analysis(
     tracing::info!(
         analysis_id = %analysis_id,
         timeout_secs,
-        "POST /api/v1/analysis — accepted analysis job"
+        "POST /api/v1/analysis - accepted analysis job"
     );
 
     // Spawn background execution

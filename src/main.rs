@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
 
             let specs = specs::all_specs();
             if specs.is_empty() {
-                tracing::warn!("No specs defined — nothing to run");
+                tracing::warn!("No specs defined - nothing to run");
                 return Ok(());
             }
 

@@ -16,7 +16,7 @@ pub struct TestSpec {
 /// A factory that produces a `TestSpec`.
 ///
 /// Spec modules register themselves via `inventory::submit!` so that
-/// `all_specs()` discovers them automatically — no manual wiring needed.
+/// `all_specs()` discovers them automatically - no manual wiring needed.
 pub struct SpecFactory {
     pub create: fn() -> TestSpec,
 }

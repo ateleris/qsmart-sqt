@@ -68,7 +68,7 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
     let start = Instant::now();
     let output = cmd
         .output()
-        .context("failed to execute docker command — is Docker installed and running?")?;
+        .context("failed to execute docker command - is Docker installed and running?")?;
     let wall_time = start.elapsed();
 
     let exit_code = output.status.code().unwrap_or(-1);
@@ -130,7 +130,7 @@ pub fn check_docker() -> Result<()> {
     let output = Command::new("docker")
         .args(["info", "--format", "{{.ServerVersion}}"])
         .output()
-        .context("failed to run `docker info` — is Docker installed?")?;
+        .context("failed to run `docker info` - is Docker installed?")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -152,7 +152,7 @@ pub fn check_image(image: &str) -> Result<()> {
         .context("failed to run `docker image inspect`")?;
 
     if !output.status.success() {
-        bail!("Docker image '{image}' not found locally — build or pull it first");
+        bail!("Docker image '{image}' not found locally - build or pull it first");
     }
     Ok(())
 }
@@ -160,7 +160,7 @@ pub fn check_image(image: &str) -> Result<()> {
 /// Check that a binary exists on the host and is executable inside the given
 /// Docker image.
 ///
-/// The binary must exist on the host filesystem — this is the binary under test,
+/// The binary must exist on the host filesystem - this is the binary under test,
 /// not a system utility. Its parent directory is mounted into the container at
 /// the same path, then `test -x` verifies it's executable inside the container.
 pub fn check_binary_in_image(image: &str, binary: &str) -> Result<()> {
@@ -169,7 +169,7 @@ pub fn check_binary_in_image(image: &str, binary: &str) -> Result<()> {
     if !binary_path.exists() {
         bail!(
             "binary '{binary}' does not exist on the host \
-             — check the 'binary.path' in your config"
+             - check the 'binary.path' in your config"
         );
     }
 
@@ -194,7 +194,7 @@ pub fn check_binary_in_image(image: &str, binary: &str) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
             "binary '{binary}' is not executable inside image '{image}' \
-             — check that the file has execute permissions. \
+             - check that the file has execute permissions. \
              stderr: {}", stderr.trim()
         );
     }

@@ -60,7 +60,7 @@ impl SqtConfig {
         if let Some(env) = &self.api.token_env {
             tracing::info!("API token env: {env}");
         } else {
-            tracing::info!("API token env: (none — unauthenticated)");
+            tracing::info!("API token env: (none - unauthenticated)");
         }
         tracing::info!("Report output dir: {}", self.report.output_dir.display());
     }

@@ -61,7 +61,7 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                bail!("API error {status}: {} — {}", err.error.code, err.error.message);
+                bail!("API error {status}: {} - {}", err.error.code, err.error.message);
             }
             bail!("API returned {status}: {body}");
         }
@@ -89,7 +89,7 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                bail!("API error {status}: {} — {}", err.error.code, err.error.message);
+                bail!("API error {status}: {} - {}", err.error.code, err.error.message);
             }
             bail!("API returned {status}: {body}");
         }
@@ -146,7 +146,7 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                bail!("API error {status}: {} — {}", err.error.code, err.error.message);
+                bail!("API error {status}: {} - {}", err.error.code, err.error.message);
             }
             bail!("API returned {status}: {body}");
         }
@@ -174,7 +174,7 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                bail!("API error {status}: {} — {}", err.error.code, err.error.message);
+                bail!("API error {status}: {} - {}", err.error.code, err.error.message);
             }
             bail!("API returned {status}: {body}");
         }

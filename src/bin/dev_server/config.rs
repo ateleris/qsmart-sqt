@@ -171,7 +171,7 @@ impl ServerConfig {
 
 /// Flattened tool configuration used by job executors.
 ///
-/// Built from `ServerConfig` at startup — this is the internal representation
+/// Built from `ServerConfig` at startup - this is the internal representation
 /// that `run_job` and `analysis_job` consume.
 #[derive(Clone)]
 pub struct ToolConfig {
