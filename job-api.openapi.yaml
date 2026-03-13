@@ -3,22 +3,19 @@ openapi: "3.1.0"
 info:
   title: SQT Job API
   description: |
-    Generic REST API for submitting AI model qualification jobs and polling
-    their results. Implemented by the ML-L Specific server (Klepsydra) and
-    by the local development API server (SQT Generic local-dev binary).
+    Generic REST API for submitting AI model qualification jobs and polling their results.
 
     ## Single-Endpoint Design
 
-    All qualification work — execution, instrumented runs, static analysis,
-    and coverage — is submitted through a single job endpoint. The server is
-    configured at startup with the binary under test and the hardware target.
+    All qualification work - execution, instrumented runs, static analysis,
+    and coverage - is submitted through a single job endpoint.
     Clients supply:
 
     - **Which workload** to run (`model` field - one of the predefined workload types)
     - **What input** to feed it (workload-specific: images, tabular data, time series,
       or a server-side dataset reference)
     - **How many times** to repeat (`repetitions`)
-    - **What instrumentation** to attach (`instrumentation`: none / asan / valgrind / gprof)
+    - **What instrumentation** to attach (`instrumentation`: none / asan / valgrind / gprof / to be refined)
     - **Which measurement mode** to use (`mode`: latency or throughput)
 
     The server returns everything it can measure in a fixed schema; fields that
@@ -53,20 +50,20 @@ info:
     1. Submit → receive a job ID (202 Accepted)
     2. Poll `GET /api/v1/jobs/{job_id}` until `status` is `complete` or `failed`
 
-    SQT Generic uses exponential backoff when polling (initial 1 s, ×2 per
+    SQT Generic uses exponential backoff when polling (initial 1 s, x2 per
     poll, 30 s cap). Results are included directly in the GET response.
 
     ## CPU Utilisation Normalisation
 
     `cpu.avg_normalized_pct` is always normalised server-side:
 
-        cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count × 100) × 100
+        cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100) * 100
 
-    100 % means all available compute was fully saturated. This is unambiguous
+    100% means all available compute was fully saturated. This is unambiguous
     regardless of whether the target is a CPU, GPU, or FPGA. The `hardware`
     descriptor in the response provides the raw core count and hardware type
     for users who want to reconstruct per-core figures.
-  version: "2.0.0"
+  version: "1.0.0"
   contact:
     name: Ateleris
 
@@ -96,8 +93,7 @@ paths:
         The client specifies the workload type, input data, repetition count,
         instrumentation mode, and measurement mode.
 
-        All workloads run in parallel when multiple jobs are submitted
-        concurrently. The server returns a job ID for polling.
+        The server returns a job ID for polling.
 
         Static analysis (sonar, binary size, static warnings) is performed
         once per session and included in the first `complete` response.
@@ -299,9 +295,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Bearer token for the job API server. Pass via the
-        `Authorization: Bearer <token>` header. In SQT Generic the token is
-        read from the environment variable named in `config.api.token_env`.
+        Bearer token for the job API server. Pass via the `Authorization: Bearer <token>` header.
 
   parameters:
     JobId:
@@ -499,7 +493,7 @@ components:
 
             For large batches (hundreds or thousands of images), the request
             body will be correspondingly large. Ensure the server's HTTP
-            frontend (nginx, caddy, etc.) is configured to accept the required
+            frontend is configured to accept the required
             body size (e.g. `client_max_body_size 2g` in nginx).
           items:
             type: string
@@ -609,8 +603,8 @@ components:
           nullable: true
           description: |
             Number of inference calls to group into one forward pass. Only
-            meaningful in `throughput` mode - in `latency` mode the server
-            ignores this field and uses a batch size of 1. When null, the
+            meaningful in `throughput` mode - in `latency` mode the server shall
+            ignore this field and use a batch size of 1. When null, the
             server chooses the optimal batch size for the hardware.
           example: 8
         tags:
@@ -621,7 +615,7 @@ components:
             Arbitrary key-value metadata attached to this job. Echoed back
             in the `JobStatusResponse`. Useful for correlating jobs with CI
             runs, git commits, requirement UIDs, etc. Keys and values must
-            be non-empty strings; maximum 32 pairs.
+            be non-empty strings
           example:
             requirement_uid: "REQ-ML-L-003"
             git_sha: "a1b2c3d"
@@ -629,11 +623,11 @@ components:
         timeout_secs:
           type: integer
           minimum: 1
-          default: 60
           description: |
             Maximum wall-clock time in seconds for the entire job (all
             repetitions + warmup combined). The server aborts and returns
-            `failed` if this is exceeded.
+            `failed` if this is exceeded. Default values are chosen by the
+            server based on the workflow to run.
           example: 60
 
     # -------------------------------------------------------------------------
@@ -792,7 +786,7 @@ components:
           percentiles reflect pipeline end-to-end time.
 
         `cpu.avg_normalized_pct` is normalised server-side:
-          value = (average CPU across all cores) / (core_count × 100) × 100
+          value = (average CPU across all cores) / (core_count * 100) * 100
         100 % = all available compute saturated.
         See `hardware.cores` for the raw core count.
       properties:
@@ -879,7 +873,7 @@ components:
           nullable: true
           description: |
             Average CPU utilisation normalised to total available compute.
-            Formula: (avg CPU used across all cores) / (core_count × 100) × 100
+            Formula: (avg CPU used across all cores) / (core_count * 100) * 100
             100 % = all cores fully saturated throughout the run.
             See `hardware.cores` for the raw core count.
             Null if the target hardware does not expose CPU counters.
@@ -1093,7 +1087,7 @@ components:
         - `failed`: Infrastructure-level failure; the job could not run.
           The `error` field contains a description.
 
-        Terminal states: `complete` and `failed`. Clients MUST stop polling
+        Terminal states: `complete` and `failed`. Clients shall stop polling
         when the status is terminal.
 
     # -------------------------------------------------------------------------
