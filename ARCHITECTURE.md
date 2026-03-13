@@ -981,7 +981,7 @@ reproducibility verification without re-transferring the data.
 `cpu.avg_normalized_pct` is computed by the server as:
 
 ```
-cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count × 100) × 100
+cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100) * 100
 ```
 
 - 100 % means all available compute was fully saturated throughout the run.
@@ -1017,7 +1017,7 @@ in the GET response - no separate fetch is needed:
 
 ```
 initial delay: 1 s
-backoff factor: ×2 per poll
+backoff factor: x2 per poll
 maximum delay: 30 s
 ```
 

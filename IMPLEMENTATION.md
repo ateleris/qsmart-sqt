@@ -338,7 +338,7 @@ at the bottom of the file. No other file needs to change.
     `submit_job(&JobRequest) -> Result<String>` (job_id),
     `get_job_status(job_id) -> Result<JobStatusResponse>`,
     `wait_for_job(job_id) -> Result<JobStatusResponse>`
-  - Exponential backoff: 1 s initial, ×2 per poll, 30 s cap - unchanged
+  - Exponential backoff: 1 s initial, x2 per poll, 30 s cap - unchanged
 
 - [x] **T-032** Define `all_specs()` convention (`src/specs/mod.rs`)
   - `src/specs/mod.rs` exports `pub fn all_specs() -> Vec<TestSpec>`
@@ -406,7 +406,7 @@ at the bottom of the file. No other file needs to change.
   - `wait_for_job(job_id) -> Result<JobStatusResponse>`
   - Remove `submit_run`, `get_run_status`, `wait_for_run`,
     `submit_analysis`, `get_analysis_status`, `wait_for_analysis`
-  - Exponential backoff unchanged (1 s, ×2, 30 s cap)
+  - Exponential backoff unchanged (1 s, x2, 30 s cap)
 
 - [ ] **T-042** Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
   - Group specs by `(workload_type, input_key)` → deduplicated `Vec<JobRequest>`
