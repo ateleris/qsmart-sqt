@@ -91,9 +91,10 @@ paths:
       operationId: submitJob
       summary: Submit a qualification job
       description: |
-        Submits a qualification job for the server's configured binary.
-        The client specifies the workload type, input data, repetition count,
-        instrumentation mode, and measurement mode.
+        Submits a qualification job. The client provides the AI model bundle
+        (ONNX model + pre/post-processing code) as a base64-encoded ZIP in
+        `model_zip`, along with the workload type, input data, repetition
+        count, instrumentation mode, and measurement mode.
 
         The server returns a job ID for polling.
 

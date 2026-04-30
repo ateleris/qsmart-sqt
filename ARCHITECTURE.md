@@ -863,9 +863,9 @@ Content-Type: application/json
 
 #### Design Principles
 
-The server is configured at startup with the path to the **binary under test** and the
-hardware target. Clients do not specify a binary in their requests - all jobs implicitly
-run against the server's configured binary.
+The server is configured at startup with the hardware target and inference engine.
+The **model** (AI model + pre/post-processing code) is supplied by the client as a
+base64-encoded ZIP in the `model_zip` field of each job request.
 
 A single job type covers all qualification activities: execution runs, instrumented
 runs (valgrind/asan/gprof), coverage collection, and static analysis. The client
@@ -1547,8 +1547,9 @@ A single qualification session may test the binary with multiple inputs
 (e.g. `reference.bin`, `edge_case.bin`, `stress.bin`). Each input produces one
 execution run. Each requirement's `TestSpec` references the input relevant to it.
 The orchestrator groups specs by input, submits one run job per unique input, and
-fans results back to each spec. The server knows which binary to test - it is
-configured at startup, not sent per request.
+fans results back to each spec. The model bundle (ONNX model + pre/post-processing code) is sent by the client
+as `model_zip` in each job request; the server uses its configured inference
+engine and hardware target to execute it.
 
 The report table shows one row per requirement, citing its evidence source:
 
