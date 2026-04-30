@@ -617,7 +617,7 @@ mod tests {
             "metrics": {}
         }"#;
         let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
-        assert!(resp.status.is_terminal());
+        assert_eq!(resp.status, JobStatus::Failed);
         assert_eq!(
             resp.error.as_deref(),
             Some("binary not found: /opt/model.onnx")

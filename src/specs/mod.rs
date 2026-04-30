@@ -124,39 +124,17 @@ mod tests {
     }
 
     #[test]
-    fn test_spec_default_workload_type_is_image_classification() {
-        // WorkloadType::default() = ImageClassification, so specs that omit
-        // workload_type have a well-defined value, not a zero/garbage enum.
-        use crate::api::types::WorkloadType;
-        let spec = TestSpec::default();
-        assert_eq!(spec.workload_type, WorkloadType::ImageClassification);
-    }
-
-    #[test]
-    fn discovered_specs_carry_workload_type() {
-        // Each spec registered via inventory::submit! must have a workload_type
-        // set. The orchestrator uses it as the group key — an unset (defaulted)
-        // workload_type means the spec silently ends up in the ImageClassification
-        // group, which may produce misleading results.
+    fn discovered_specs_carry_image_classification_workload_type() {
+        // Both example specs must explicitly declare ImageClassification.
+        // If workload_type were left defaulted they'd silently use the default
+        // value; this test pins the explicit choice so a future change is noticed.
         use crate::api::types::WorkloadType;
         let specs = all_specs();
-        assert!(!specs.is_empty());
-        for spec in &specs {
-            // Confirm the workload type is explicitly set to a known value
-            // (the example specs both use ImageClassification).
-            assert!(
-                matches!(
-                    spec.workload_type,
-                    WorkloadType::ObjectDetection
-                        | WorkloadType::ImageClassification
-                        | WorkloadType::PixelSegmentation
-                        | WorkloadType::Classification
-                        | WorkloadType::Regression
-                        | WorkloadType::TimeSeriesForecasting
-                ),
-                "spec {} has an unrecognized workload_type variant",
-                spec.requirement_uid
-            );
-        }
+        let uid_001 = specs.iter().find(|s| s.requirement_uid == "REQ-EXAMPLE-001");
+        let uid_002 = specs.iter().find(|s| s.requirement_uid == "REQ-EXAMPLE-002");
+        assert!(uid_001.is_some(), "REQ-EXAMPLE-001 must be registered");
+        assert!(uid_002.is_some(), "REQ-EXAMPLE-002 must be registered");
+        assert_eq!(uid_001.unwrap().workload_type, WorkloadType::ImageClassification);
+        assert_eq!(uid_002.unwrap().workload_type, WorkloadType::ImageClassification);
     }
 }
