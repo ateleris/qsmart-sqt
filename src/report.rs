@@ -74,6 +74,11 @@ impl Report {
 }
 
 fn spec_report(sr: &SpecResult) -> SpecReport {
+    debug_assert_eq!(
+        sr.spec.constraints.len(),
+        sr.outcomes.len(),
+        "constraint and outcome counts must match — orchestrator bug"
+    );
     let outcomes = sr
         .spec
         .constraints
@@ -129,6 +134,9 @@ pub fn print_terminal(report: &Report) {
 ///
 /// Returns an error if the file cannot be created or serialization fails.
 pub fn write_json(report: &Report, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = std::fs::File::create(path)?;
     serde_json::to_writer_pretty(file, report)?;
     Ok(())
@@ -240,6 +248,16 @@ mod tests {
         assert_eq!(parsed["summary"]["passed"], 1);
         assert_eq!(parsed["config_version"], "1.0.0");
         assert_eq!(parsed["results"][0]["requirement_uid"], "REQ-001");
+    }
+
+    #[test]
+    fn write_json_creates_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/subdir/report.json");
+        let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
+        let report = Report::from_run_result(&run_result);
+        write_json(&report, &path).expect("write_json must create parent dirs");
+        assert!(path.exists(), "report file must be created");
     }
 
     #[test]

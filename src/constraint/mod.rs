@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fmt;
 
 pub use evaluator::ConstraintOutcome;
@@ -220,6 +218,21 @@ impl Constraint {
         }
     }
 
+    /// Returns `false` for metrics computed client-side (T-054).
+    ///
+    /// Client-side metrics (`ml.*`) are derived from `output.all_outputs` after the
+    /// job completes and are not present in `JobMetrics`. Until T-054 is implemented
+    /// these constraints always produce a failing outcome.
+    pub fn is_server_side(&self) -> bool {
+        !matches!(
+            self,
+            Self::MlAccuracy { .. }
+                | Self::MlF1Score { .. }
+                | Self::MlRecall { .. }
+                | Self::MlPrecision { .. }
+        )
+    }
+
     /// Display unit for the metric value.
     pub fn unit(&self) -> &'static str {
         match self {
@@ -383,6 +396,33 @@ mod tests {
         assert_eq!(Constraint::ml_f1_score(Op::Gte, 0.9).unit(), "");
         assert_eq!(Constraint::ml_recall(Op::Gte, 0.9).unit(), "");
         assert_eq!(Constraint::ml_precision(Op::Gte, 0.9).unit(), "");
+    }
+
+    #[test]
+    fn ml_constraints_are_not_server_side() {
+        // T-054: ml.* metrics are computed client-side — the orchestrator must not
+        // look them up in JobMetrics or it will always get "metric unavailable".
+        assert!(!Constraint::ml_accuracy(Op::Gte, 0.9).is_server_side());
+        assert!(!Constraint::ml_f1_score(Op::Gte, 0.9).is_server_side());
+        assert!(!Constraint::ml_recall(Op::Gte, 0.9).is_server_side());
+        assert!(!Constraint::ml_precision(Op::Gte, 0.9).is_server_side());
+    }
+
+    #[test]
+    fn all_non_ml_constraints_are_server_side() {
+        let server_side = vec![
+            Constraint::return_code(Op::Eq, 0),
+            Constraint::execution_time(Op::Lte, 100.0),
+            Constraint::memory_peak_rss(Op::Lte, 4096.0),
+            Constraint::memory_leaks(Op::Eq, 0.0),
+            Constraint::cpu_avg_normalized_pct(Op::Lte, 80.0),
+            Constraint::coverage_line_pct(Op::Gte, 80.0),
+            Constraint::static_critical_issues(Op::Eq, 0),
+            Constraint::binary_size_kb(Op::Lte, 1024.0),
+        ];
+        for c in &server_side {
+            assert!(c.is_server_side(), "{} should be server-side", c.metric_name());
+        }
     }
 
     #[test]

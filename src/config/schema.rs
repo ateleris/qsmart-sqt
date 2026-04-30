@@ -45,7 +45,8 @@ impl SqtConfig {
         if self.project.version.is_empty() {
             bail!("project.version must not be empty");
         }
-        if !self.api.url.starts_with("http://") && !self.api.url.starts_with("https://") {
+        let url_lower = self.api.url.to_ascii_lowercase();
+        if !url_lower.starts_with("http://") && !url_lower.starts_with("https://") {
             bail!("api.url must start with http:// or https://");
         }
         if self.build_dir.is_relative() {
@@ -54,10 +55,10 @@ impl SqtConfig {
         if self.report.output_dir.is_relative() {
             self.report.output_dir = config_dir.join(&self.report.output_dir);
         }
-        if let Some(ref mut p) = self.model_zip_path {
-            if p.is_relative() {
-                *p = config_dir.join(&*p);
-            }
+        if let Some(ref mut p) = self.model_zip_path
+            && p.is_relative()
+        {
+            *p = config_dir.join(&*p);
         }
         Ok(())
     }
@@ -253,6 +254,25 @@ report:
         )
         .unwrap();
         assert!(cfg.model_zip_path.is_none());
+    }
+
+    #[test]
+    fn url_scheme_check_is_case_insensitive() {
+        // RFC 3986: URI schemes are case-insensitive. HTTPS:// must not be
+        // rejected as an unsupported scheme.
+        let cfg = load(
+            r#"
+project:
+  name: "Test"
+  version: "1.0.0"
+build_dir: "./build"
+api:
+  url: "HTTPS://example.com"
+report:
+  output_dir: "./reports"
+"#,
+        );
+        assert!(cfg.is_ok(), "uppercase scheme must be accepted");
     }
 
     #[test]

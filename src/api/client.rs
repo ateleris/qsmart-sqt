@@ -1,9 +1,9 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
-use super::types::{ErrorResponse, JobAccepted, JobRequest, JobStatusResponse};
+use super::types::{ErrorResponse, JobAccepted, JobRequest, JobStatus, JobStatusResponse};
 
 pub struct ApiClient {
     client: reqwest::Client,
@@ -81,19 +81,38 @@ impl ApiClient {
         response.json().await.context("Failed to parse JobStatusResponse")
     }
 
-    /// Poll until the job reaches a terminal state (`complete` or `failed`).
+    /// Poll until the job reaches `complete`, or fail fast on any terminal error.
     ///
-    /// Uses exponential backoff: 1 s initial, x2 per poll, 30 s cap.
-    pub async fn wait_for_job(&self, job_id: &str) -> Result<JobStatusResponse> {
+    /// Uses exponential backoff: 1 s initial, ×2 per poll, 30 s cap.
+    /// Bails immediately when the server reports `failed`, embedding the
+    /// server-side error field. Bails with a timeout error after `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a poll request fails, the job transitions to `failed`,
+    /// or `timeout` is exceeded before the job completes.
+    pub async fn wait_for_job(&self, job_id: &str, timeout: Duration) -> Result<JobStatusResponse> {
         const MAX_DELAY: Duration = Duration::from_secs(30);
+        let deadline = Instant::now() + timeout;
         let mut delay = Duration::from_secs(1);
 
         loop {
-            let status = self.get_job_status(job_id).await?;
-            tracing::debug!(job_id, status = ?status.status, "polled job status");
+            let resp = self.get_job_status(job_id).await?;
+            tracing::debug!(job_id, status = ?resp.status, "polled job status");
 
-            if status.status.is_terminal() {
-                return Ok(status);
+            if resp.status == JobStatus::Failed {
+                let msg = resp.error.as_deref().unwrap_or("(no detail provided)");
+                bail!("job {job_id} failed on server: {msg}");
+            }
+            if resp.status == JobStatus::Complete {
+                return Ok(resp);
+            }
+
+            if Instant::now() >= deadline {
+                bail!(
+                    "job {job_id} timed out after {timeout:.1?} — last status: {:?}",
+                    resp.status
+                );
             }
 
             tokio::time::sleep(delay).await;

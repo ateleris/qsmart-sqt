@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 // Enumerations
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkloadType {
     ObjectDetection,
+    #[default]
     ImageClassification,
     PixelSegmentation,
     Classification,
@@ -17,38 +18,22 @@ pub enum WorkloadType {
     TimeSeriesForecasting,
 }
 
-impl Default for WorkloadType {
-    fn default() -> Self {
-        Self::ImageClassification
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Instrumentation {
+    #[default]
     None,
     Asan,
     Valgrind,
     Gprof,
 }
 
-impl Default for Instrumentation {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeasurementMode {
+    #[default]
     Latency,
     Throughput,
-}
-
-impl Default for MeasurementMode {
-    fn default() -> Self {
-        Self::Latency
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -668,6 +653,17 @@ mod tests {
         assert_eq!(err.error.code, "VALIDATION_ERROR");
         assert!(err.error.details.is_some());
         assert!(err.error.details.unwrap().contains("object_detection"));
+    }
+
+    #[test]
+    fn failed_job_is_terminal_but_not_complete() {
+        // wait_for_job branches on Failed vs Complete separately.
+        // Complete → return Ok; Failed → bail! with error message.
+        assert!(JobStatus::Failed.is_terminal());
+        assert!(JobStatus::Complete.is_terminal());
+        assert_ne!(JobStatus::Failed, JobStatus::Complete);
+        assert!(!JobStatus::Accepted.is_terminal());
+        assert!(!JobStatus::Running.is_terminal());
     }
 
     #[test]
