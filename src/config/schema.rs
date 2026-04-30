@@ -9,6 +9,10 @@ pub struct SqtConfig {
     pub build_dir: PathBuf,
     pub api: ApiConfig,
     pub report: ReportConfig,
+    /// Optional path to the customer-supplied model ZIP (ONNX model +
+    /// pre/post-processing code). Forwarded to the API as `model_zip`.
+    #[serde(default)]
+    pub model_zip_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +54,11 @@ impl SqtConfig {
         if self.report.output_dir.is_relative() {
             self.report.output_dir = config_dir.join(&self.report.output_dir);
         }
+        if let Some(ref mut p) = self.model_zip_path {
+            if p.is_relative() {
+                *p = config_dir.join(&*p);
+            }
+        }
         Ok(())
     }
 
@@ -63,6 +72,11 @@ impl SqtConfig {
             tracing::info!("API token env: (none - unauthenticated)");
         }
         tracing::info!("Report output dir: {}", self.report.output_dir.display());
+        if let Some(ref p) = self.model_zip_path {
+            tracing::info!("Model ZIP: {}", p.display());
+        } else {
+            tracing::info!("Model ZIP: (none - server default)");
+        }
     }
 }
 

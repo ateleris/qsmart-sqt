@@ -2,9 +2,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use sqt::api::types::RunMetrics;
 
 use crate::config::{BinaryConfig, InputMode};
+
+/// Execution metrics produced by running the binary in a container.
+pub struct RunBinaryOutput {
+    pub return_code: Option<i64>,
+    pub time_execution_ms: Option<f64>,
+    pub memory_peak_rss_kb: Option<f64>,
+    pub memory_avg_rss_kb: Option<f64>,
+    pub cpu_pct: Option<f64>,
+}
 use crate::docker::{self, DockerRun};
 
 /// Run the binary inside a Docker container and collect execution metrics.
@@ -21,7 +29,7 @@ pub fn collect(
     input: Option<&str>,
     workspace: &Path,
     timeout: Duration,
-) -> Result<RunMetrics> {
+) -> Result<RunBinaryOutput> {
     let binary = &binary_config.path;
 
     // Build the invocation fragment (binary + args + input handling).
@@ -91,19 +99,12 @@ pub fn collect(
     // Wall time is always measured on the host side, independent of GNU time.
     let time_execution = output.wall_time.as_secs_f64() * 1000.0; // ms
 
-    Ok(RunMetrics {
+    Ok(RunBinaryOutput {
         return_code: Some(i64::from(output.exit_code)),
-        time_execution: Some(time_execution),
-        memory_peak_rss,
-        memory_avg_rss: None, // GNU time doesn't provide avg RSS
-        cpu_max_pct: cpu_pct,
-        cpu_avg_pct: cpu_pct, // single sample - max == avg
-        memory_leaks: None,
-        coverage_line_pct: None,
-        ml_accuracy: None,
-        ml_f1_score: None,
-        ml_recall: None,
-        ml_precision: None,
+        time_execution_ms: Some(time_execution),
+        memory_peak_rss_kb: memory_peak_rss,
+        memory_avg_rss_kb: None,
+        cpu_pct,
     })
 }
 

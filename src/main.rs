@@ -26,6 +26,11 @@ enum Commands {
         config: PathBuf,
         #[arg(short, long, help = "Write JSON report to this path")]
         output: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Path to model ZIP (ONNX + pre/post-processing code); overrides config"
+        )]
+        model_zip: Option<PathBuf>,
     },
 }
 
@@ -41,8 +46,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { config, output } => {
-            let cfg = config::load_config(&config)?;
+        Commands::Run { config, output, model_zip } => {
+            let mut cfg = config::load_config(&config)?;
+            if let Some(zip_path) = model_zip {
+                cfg.model_zip_path = Some(zip_path);
+            }
             cfg.print_summary();
 
             let specs = specs::all_specs();

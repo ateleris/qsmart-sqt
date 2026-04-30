@@ -3,12 +3,14 @@
 mod example;
 mod example2;
 
+use crate::api::types::WorkloadType;
 use crate::constraint::{Constraint, ConstraintOutcome};
 use crate::metrics::Target;
 
 #[derive(Debug, Clone, Default)]
 pub struct TestSpec {
     pub requirement_uid: String,
+    pub workload_type: WorkloadType,
     pub target: Target,
     pub constraints: Vec<Constraint>,
 }
@@ -77,7 +79,7 @@ mod tests {
     fn make_spec() -> TestSpec {
         TestSpec {
             requirement_uid: "REQ-001".to_string(),
-            constraints: vec![Constraint::cpu_max_pct(Op::Lte, 80.0)],
+            constraints: vec![Constraint::cpu_avg_normalized_pct(Op::Lte, 80.0)],
             ..Default::default()
         }
     }

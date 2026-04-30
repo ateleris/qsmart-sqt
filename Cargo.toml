@@ -32,6 +32,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 inventory = "0.3"
+base64 = "0.22"
 axum = "0.8"
 uuid = { version = "1", features = ["v4"] }
 

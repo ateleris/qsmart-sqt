@@ -7,13 +7,12 @@ use axum::{
     http::StatusCode,
 };
 use sqt::api::types::{
-    AnalysisAccepted, AnalysisRequest, AnalysisStatusResponse, JobStatus, RunAccepted, RunRequest,
-    RunStatusResponse,
+    JobAccepted, JobRequest, JobStatus, JobStatusResponse, MeasurementMode,
 };
 use uuid::Uuid;
 
 use crate::config::{BinaryConfig, ToolConfig};
-use crate::store::{self, JobKind, JobStore};
+use crate::store::{self, JobStore};
 
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
@@ -25,33 +24,34 @@ pub struct AppState {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/v1/runs
+// POST /api/v1/jobs
 // ---------------------------------------------------------------------------
 
-pub async fn create_run(
+pub async fn create_job(
     State(state): State<AppState>,
-    Json(req): Json<RunRequest>,
-) -> (StatusCode, Json<RunAccepted>) {
-    let run_id = Uuid::new_v4().to_string();
+    Json(req): Json<JobRequest>,
+) -> (StatusCode, Json<JobAccepted>) {
+    let job_id = Uuid::new_v4().to_string();
     let timeout_secs = req.timeout_secs.unwrap_or(60);
 
-    let job = store::JobState::new_run(
-        run_id.clone(),
-        req.input.clone(),
-        timeout_secs,
-    );
+    let job = store::JobState::new(job_id.clone(), req.model.clone());
     let created_at = job.created_at.clone();
 
     {
         let mut store = state.store.write().await;
-        store.insert(run_id.clone(), job);
+        store.insert(job_id.clone(), job);
     }
 
+    let input = req.input.as_ref().and_then(|v| v.as_str()).map(|s| s.to_string());
+    let model_zip = req.model_zip.clone();
+
     tracing::info!(
-        run_id = %run_id,
-        input = ?req.input,
+        job_id = %job_id,
+        model = ?req.model,
+        input = ?input,
+        has_model_zip = model_zip.is_some(),
         timeout_secs,
-        "POST /api/v1/runs - accepted run job"
+        "POST /api/v1/jobs - accepted"
     );
 
     // Spawn background execution
@@ -59,11 +59,9 @@ pub async fn create_run(
     let workspace = state.workspace.clone();
     let config = state.tool_config.clone();
     let binary_config = state.binary_config.clone();
-    let id = run_id.clone();
-    let input = req.input.clone();
+    let id = job_id.clone();
 
     tokio::spawn(async move {
-        // Mark as running
         {
             let mut s = store.write().await;
             if let Some(job) = s.get_mut(&id) {
@@ -71,18 +69,19 @@ pub async fn create_run(
                 job.started_at = Some(crate::now_iso());
             }
         }
-        tracing::info!(run_id = %id, "run job started");
+        tracing::info!(job_id = %id, "job started");
 
-        // Execute in blocking thread pool
         let result = tokio::task::spawn_blocking({
             let workspace = workspace.clone();
             let config = config.clone();
             let binary_config = binary_config.clone();
             let input = input.clone();
+            let model_zip = model_zip.clone();
             move || {
                 crate::run_job::execute(
                     &binary_config,
                     input.as_deref(),
+                    model_zip.as_deref(),
                     timeout_secs,
                     &workspace,
                     &config,
@@ -91,7 +90,6 @@ pub async fn create_run(
         })
         .await;
 
-        // Update job state
         let mut s = store.write().await;
         if let Some(job) = s.get_mut(&id) {
             job.completed_at = Some(crate::now_iso());
@@ -99,162 +97,24 @@ pub async fn create_run(
                 Ok(Ok(metrics)) => {
                     job.status = JobStatus::Complete;
                     tracing::info!(
-                        run_id = %id,
+                        job_id = %id,
                         return_code = ?metrics.return_code,
-                        time_ms = ?metrics.time_execution,
-                        peak_rss_kb = ?metrics.memory_peak_rss,
-                        cpu_pct = ?metrics.cpu_max_pct,
-                        leaks = ?metrics.memory_leaks,
-                        coverage = ?metrics.coverage_line_pct,
-                        "run job complete"
-                    );
-                    job.run_metrics = Some(metrics);
-                }
-                Ok(Err(e)) => {
-                    job.status = JobStatus::Failed;
-                    tracing::error!(run_id = %id, error = %e, "run job failed");
-                    job.error = Some(format!("{e:#}"));
-                }
-                Err(e) => {
-                    job.status = JobStatus::Failed;
-                    tracing::error!(run_id = %id, error = %e, "run job panicked");
-                    job.error = Some(format!("task panicked: {e}"));
-                }
-            }
-        }
-    });
-
-    (
-        StatusCode::ACCEPTED,
-        Json(RunAccepted {
-            run_id,
-            status: "accepted".into(),
-            created_at,
-        }),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// GET /api/v1/runs/{run_id}
-// ---------------------------------------------------------------------------
-
-pub async fn get_run(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-) -> Result<Json<RunStatusResponse>, StatusCode> {
-    let store = state.store.read().await;
-    let job = store.get(&run_id).ok_or(StatusCode::NOT_FOUND)?;
-
-    let input = match &job.kind {
-        JobKind::Run { input, .. } => input.clone(),
-        _ => return Err(StatusCode::NOT_FOUND),
-    };
-
-    tracing::debug!(
-        run_id = %run_id,
-        status = ?job.status,
-        "GET /api/v1/runs/{run_id}"
-    );
-
-    Ok(Json(RunStatusResponse {
-        run_id: job.id.clone(),
-        input,
-        status: job.status.clone(),
-        created_at: job.created_at.clone(),
-        started_at: job.started_at.clone(),
-        completed_at: job.completed_at.clone(),
-        error: job.error.clone(),
-        metrics: job.run_metrics.clone().unwrap_or_default(),
-    }))
-}
-
-// ---------------------------------------------------------------------------
-// POST /api/v1/analysis
-// ---------------------------------------------------------------------------
-
-pub async fn create_analysis(
-    State(state): State<AppState>,
-    Json(req): Json<AnalysisRequest>,
-) -> (StatusCode, Json<AnalysisAccepted>) {
-    let analysis_id = Uuid::new_v4().to_string();
-    let timeout_secs = req.timeout_secs.unwrap_or(120);
-
-    let job = store::JobState::new_analysis(
-        analysis_id.clone(),
-        timeout_secs,
-    );
-    let created_at = job.created_at.clone();
-
-    {
-        let mut store = state.store.write().await;
-        store.insert(analysis_id.clone(), job);
-    }
-
-    tracing::info!(
-        analysis_id = %analysis_id,
-        timeout_secs,
-        "POST /api/v1/analysis - accepted analysis job"
-    );
-
-    // Spawn background execution
-    let store = state.store.clone();
-    let workspace = state.workspace.clone();
-    let config = state.tool_config.clone();
-    let binary_config = state.binary_config.clone();
-    let id = analysis_id.clone();
-
-    tokio::spawn(async move {
-        // Mark as running
-        {
-            let mut s = store.write().await;
-            if let Some(job) = s.get_mut(&id) {
-                job.status = JobStatus::Running;
-                job.started_at = Some(crate::now_iso());
-            }
-        }
-        tracing::info!(analysis_id = %id, "analysis job started");
-
-        // Execute in blocking thread pool
-        let result = tokio::task::spawn_blocking({
-            let workspace = workspace.clone();
-            let config = config.clone();
-            let binary_config = binary_config.clone();
-            move || {
-                crate::analysis_job::execute(
-                    &binary_config.path,
-                    timeout_secs,
-                    &workspace,
-                    &config,
-                )
-            }
-        })
-        .await;
-
-        // Update job state
-        let mut s = store.write().await;
-        if let Some(job) = s.get_mut(&id) {
-            job.completed_at = Some(crate::now_iso());
-            match result {
-                Ok(Ok(metrics)) => {
-                    job.status = JobStatus::Complete;
-                    tracing::info!(
-                        analysis_id = %id,
+                        time_ms = ?metrics.time_avg_ms,
+                        peak_rss_kb = ?metrics.memory_peak_rss_kb,
+                        cpu_pct = ?metrics.cpu_avg_normalized_pct,
                         binary_size_kb = ?metrics.binary_size_kb,
-                        sonar_critical = ?metrics.sonar_critical_issues,
-                        sonar_major = ?metrics.sonar_major_issues,
-                        static_warnings = ?metrics.static_warnings,
-                        "analysis job complete"
+                        "job complete"
                     );
-                    job.analysis_metrics = Some(metrics);
+                    job.metrics = Some(metrics);
                 }
                 Ok(Err(e)) => {
                     job.status = JobStatus::Failed;
-                    tracing::error!(analysis_id = %id, error = %e, "analysis job failed");
+                    tracing::error!(job_id = %id, error = %e, "job failed");
                     job.error = Some(format!("{e:#}"));
                 }
                 Err(e) => {
                     job.status = JobStatus::Failed;
-                    tracing::error!(analysis_id = %id, error = %e, "analysis job panicked");
+                    tracing::error!(job_id = %id, error = %e, "job panicked");
                     job.error = Some(format!("task panicked: {e}"));
                 }
             }
@@ -263,8 +123,8 @@ pub async fn create_analysis(
 
     (
         StatusCode::ACCEPTED,
-        Json(AnalysisAccepted {
-            analysis_id,
+        Json(JobAccepted {
+            job_id,
             status: "accepted".into(),
             created_at,
         }),
@@ -272,34 +132,35 @@ pub async fn create_analysis(
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/v1/analysis/{analysis_id}
+// GET /api/v1/jobs/{job_id}
 // ---------------------------------------------------------------------------
 
-pub async fn get_analysis(
+pub async fn get_job(
     State(state): State<AppState>,
-    Path(analysis_id): Path<String>,
-) -> Result<Json<AnalysisStatusResponse>, StatusCode> {
+    Path(job_id): Path<String>,
+) -> Result<Json<JobStatusResponse>, StatusCode> {
     let store = state.store.read().await;
-    let job = store.get(&analysis_id).ok_or(StatusCode::NOT_FOUND)?;
-
-    match &job.kind {
-        JobKind::Analysis { .. } => {}
-        _ => return Err(StatusCode::NOT_FOUND),
-    };
+    let job = store.get(&job_id).ok_or(StatusCode::NOT_FOUND)?;
 
     tracing::debug!(
-        analysis_id = %analysis_id,
+        job_id = %job_id,
         status = ?job.status,
-        "GET /api/v1/analysis/{analysis_id}"
+        "GET /api/v1/jobs/{job_id}"
     );
 
-    Ok(Json(AnalysisStatusResponse {
-        analysis_id: job.id.clone(),
+    Ok(Json(JobStatusResponse {
+        job_id: job.id.clone(),
+        model: job.workload_type.clone(),
+        mode: MeasurementMode::default(),
+        repetitions: 1,
         status: job.status.clone(),
         created_at: job.created_at.clone(),
         started_at: job.started_at.clone(),
         completed_at: job.completed_at.clone(),
         error: job.error.clone(),
-        metrics: job.analysis_metrics.clone().unwrap_or_default(),
+        tags: None,
+        hardware: None,
+        metrics: job.metrics.clone().unwrap_or_default(),
+        output: None,
     }))
 }

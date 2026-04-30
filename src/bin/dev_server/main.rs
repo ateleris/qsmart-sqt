@@ -5,7 +5,6 @@ use axum::Router;
 use axum::routing::{get, post};
 use clap::Parser;
 
-mod analysis_job;
 mod config;
 mod docker;
 mod handlers;
@@ -124,13 +123,8 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/api/v1/runs", post(handlers::create_run))
-        .route("/api/v1/runs/{run_id}", get(handlers::get_run))
-        .route("/api/v1/analysis", post(handlers::create_analysis))
-        .route(
-            "/api/v1/analysis/{analysis_id}",
-            get(handlers::get_analysis),
-        )
+        .route("/api/v1/jobs", post(handlers::create_job))
+        .route("/api/v1/jobs/{job_id}", get(handlers::get_job))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port)

@@ -1,8 +1,55 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Enumerations
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadType {
+    ObjectDetection,
+    ImageClassification,
+    PixelSegmentation,
+    Classification,
+    Regression,
+    TimeSeriesForecasting,
+}
+
+impl Default for WorkloadType {
+    fn default() -> Self {
+        Self::ImageClassification
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Instrumentation {
+    None,
+    Asan,
+    Valgrind,
+    Gprof,
+}
+
+impl Default for Instrumentation {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeasurementMode {
+    Latency,
+    Throughput,
+}
+
+impl Default for MeasurementMode {
+    fn default() -> Self {
+        Self::Latency
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -15,7 +62,7 @@ pub enum JobStatus {
 
 impl JobStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, JobStatus::Complete | JobStatus::Failed)
+        matches!(self, Self::Complete | Self::Failed)
     }
 }
 
@@ -23,152 +70,199 @@ impl JobStatus {
 // Request types
 // ---------------------------------------------------------------------------
 
+/// Body for `POST /api/v1/jobs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunRequest {
+pub struct JobRequest {
+    pub model: WorkloadType,
+    /// Base64-encoded ZIP containing the customer's AI model and
+    /// pre/post-processing code. `None` falls back to server-configured model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
+    pub model_zip: Option<String>,
+    /// Workload-specific input data (images, tabular rows, time series, or
+    /// dataset reference). `None` when the server has a default dataset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    #[serde(default = "default_repetitions")]
+    pub repetitions: u32,
+    #[serde(default)]
+    pub instrumentation: Instrumentation,
+    #[serde(default)]
+    pub mode: MeasurementMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warmup_repetitions: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnalysisRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_secs: Option<u64>,
+fn default_repetitions() -> u32 {
+    1
 }
 
 // ---------------------------------------------------------------------------
-// Accepted responses
+// Accepted response
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunAccepted {
-    pub run_id: String,
+pub struct JobAccepted {
+    pub job_id: String,
     pub status: String,
     pub created_at: String,
 }
 
+// ---------------------------------------------------------------------------
+// Hardware descriptor
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnalysisAccepted {
-    pub analysis_id: String,
-    pub status: String,
-    pub created_at: String,
+pub struct HardwareInfo {
+    #[serde(rename = "type")]
+    pub hw_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_total_kb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accelerator_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_mhz: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
-// Fixed-schema metrics
+// Unified metrics (all fields nullable; null = tool unavailable)
 // ---------------------------------------------------------------------------
 
-/// Per-run metrics returned by `GET /api/v1/runs/{run_id}`.
-///
-/// All fields are `Option` so that in-progress responses (with no results yet)
-/// deserialize without error.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunMetrics {
+pub struct JobMetrics {
     pub return_code: Option<i64>,
-    #[serde(rename = "time.execution")]
-    pub time_execution: Option<f64>,
-    #[serde(rename = "memory.peak_rss")]
-    pub memory_peak_rss: Option<f64>,
-    #[serde(rename = "memory.avg_rss")]
-    pub memory_avg_rss: Option<f64>,
-    #[serde(rename = "cpu.max_pct")]
-    pub cpu_max_pct: Option<f64>,
-    #[serde(rename = "cpu.avg_pct")]
-    pub cpu_avg_pct: Option<f64>,
-    #[serde(rename = "memory.leaks")]
-    pub memory_leaks: Option<f64>,
+
+    #[serde(rename = "time.avg_ms")]
+    pub time_avg_ms: Option<f64>,
+    #[serde(rename = "time.latency_p50_ms")]
+    pub time_latency_p50_ms: Option<f64>,
+    #[serde(rename = "time.latency_p95_ms")]
+    pub time_latency_p95_ms: Option<f64>,
+    #[serde(rename = "time.latency_p99_ms")]
+    pub time_latency_p99_ms: Option<f64>,
+    #[serde(rename = "time.throughput_fps")]
+    pub time_throughput_fps: Option<f64>,
+    #[serde(rename = "time.startup_ms")]
+    pub time_startup_ms: Option<f64>,
+    #[serde(rename = "time.first_inference_ms")]
+    pub time_first_inference_ms: Option<f64>,
+
+    #[serde(rename = "memory.avg_rss_kb")]
+    pub memory_avg_rss_kb: Option<f64>,
+    #[serde(rename = "memory.peak_rss_kb")]
+    pub memory_peak_rss_kb: Option<f64>,
+    #[serde(rename = "memory.leaks_bytes")]
+    pub memory_leaks_bytes: Option<i64>,
+    #[serde(rename = "memory.stack_kb")]
+    pub memory_stack_kb: Option<f64>,
+    #[serde(rename = "memory.heap_allocations")]
+    pub memory_heap_allocations: Option<i64>,
+
+    #[serde(rename = "cpu.avg_normalized_pct")]
+    pub cpu_avg_normalized_pct: Option<f64>,
+
     #[serde(rename = "coverage.line_pct")]
     pub coverage_line_pct: Option<f64>,
-    #[serde(rename = "ml.accuracy")]
-    pub ml_accuracy: Option<f64>,
-    #[serde(rename = "ml.f1_score")]
-    pub ml_f1_score: Option<f64>,
-    #[serde(rename = "ml.recall")]
-    pub ml_recall: Option<f64>,
-    #[serde(rename = "ml.precision")]
-    pub ml_precision: Option<f64>,
+    #[serde(rename = "coverage.branch_pct")]
+    pub coverage_branch_pct: Option<f64>,
+    #[serde(rename = "coverage.function_pct")]
+    pub coverage_function_pct: Option<f64>,
+    #[serde(rename = "coverage.lines_covered")]
+    pub coverage_lines_covered: Option<i64>,
+    #[serde(rename = "coverage.lines_total")]
+    pub coverage_lines_total: Option<i64>,
+
+    #[serde(rename = "static.warnings")]
+    pub static_warnings: Option<i64>,
+    #[serde(rename = "static.critical_issues")]
+    pub static_critical_issues: Option<i64>,
+    #[serde(rename = "static.major_issues")]
+    pub static_major_issues: Option<i64>,
+
+    #[serde(rename = "binary.size_kb")]
+    pub binary_size_kb: Option<f64>,
+
+    #[serde(rename = "power.avg_watts")]
+    pub power_avg_watts: Option<f64>,
+    #[serde(rename = "power.peak_watts")]
+    pub power_peak_watts: Option<f64>,
+
+    #[serde(rename = "hardware.temperature_celsius")]
+    pub hardware_temperature_celsius: Option<f64>,
 }
 
-impl RunMetrics {
-    /// Look up a metric value by its wire name.
-    ///
-    /// Returns `None` if the field is absent or the name is unknown.
+impl JobMetrics {
+    /// Look up a metric value by its wire name. Returns `None` when the field
+    /// is absent or the name is unknown.
     #[allow(clippy::cast_precision_loss)]
     pub fn get(&self, name: &str) -> Option<f64> {
         match name {
             "return_code" => self.return_code.map(|v| v as f64),
-            "time.execution" => self.time_execution,
-            "memory.peak_rss" => self.memory_peak_rss,
-            "memory.avg_rss" => self.memory_avg_rss,
-            "cpu.max_pct" => self.cpu_max_pct,
-            "cpu.avg_pct" => self.cpu_avg_pct,
-            "memory.leaks" => self.memory_leaks,
+            "time.avg_ms" => self.time_avg_ms,
+            "time.latency_p50_ms" => self.time_latency_p50_ms,
+            "time.latency_p95_ms" => self.time_latency_p95_ms,
+            "time.latency_p99_ms" => self.time_latency_p99_ms,
+            "time.throughput_fps" => self.time_throughput_fps,
+            "time.startup_ms" => self.time_startup_ms,
+            "time.first_inference_ms" => self.time_first_inference_ms,
+            "memory.avg_rss_kb" => self.memory_avg_rss_kb,
+            "memory.peak_rss_kb" => self.memory_peak_rss_kb,
+            "memory.leaks_bytes" => self.memory_leaks_bytes.map(|v| v as f64),
+            "memory.stack_kb" => self.memory_stack_kb,
+            "memory.heap_allocations" => self.memory_heap_allocations.map(|v| v as f64),
+            "cpu.avg_normalized_pct" => self.cpu_avg_normalized_pct,
             "coverage.line_pct" => self.coverage_line_pct,
-            "ml.accuracy" => self.ml_accuracy,
-            "ml.f1_score" => self.ml_f1_score,
-            "ml.recall" => self.ml_recall,
-            "ml.precision" => self.ml_precision,
-            _ => None,
-        }
-    }
-}
-
-/// Per-binary analysis metrics returned by `GET /api/v1/analysis/{analysis_id}`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AnalysisMetrics {
-    #[serde(rename = "sonar.critical_issues")]
-    pub sonar_critical_issues: Option<i64>,
-    #[serde(rename = "sonar.major_issues")]
-    pub sonar_major_issues: Option<i64>,
-    #[serde(rename = "static.warnings")]
-    pub static_warnings: Option<i64>,
-    #[serde(rename = "binary.size_kb")]
-    pub binary_size_kb: Option<f64>,
-}
-
-impl AnalysisMetrics {
-    /// Look up a metric value by its wire name.
-    ///
-    /// Returns `None` if the field is absent or the name is unknown.
-    #[allow(clippy::cast_precision_loss)]
-    pub fn get(&self, name: &str) -> Option<f64> {
-        match name {
-            "sonar.critical_issues" => self.sonar_critical_issues.map(|v| v as f64),
-            "sonar.major_issues" => self.sonar_major_issues.map(|v| v as f64),
+            "coverage.branch_pct" => self.coverage_branch_pct,
+            "coverage.function_pct" => self.coverage_function_pct,
+            "coverage.lines_covered" => self.coverage_lines_covered.map(|v| v as f64),
+            "coverage.lines_total" => self.coverage_lines_total.map(|v| v as f64),
             "static.warnings" => self.static_warnings.map(|v| v as f64),
+            "static.critical_issues" => self.static_critical_issues.map(|v| v as f64),
+            "static.major_issues" => self.static_major_issues.map(|v| v as f64),
             "binary.size_kb" => self.binary_size_kb,
+            "power.avg_watts" => self.power_avg_watts,
+            "power.peak_watts" => self.power_peak_watts,
+            "hardware.temperature_celsius" => self.hardware_temperature_celsius,
             _ => None,
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Status responses
+// Model output
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunStatusResponse {
-    pub run_id: String,
+pub struct JobOutput {
+    #[serde(rename = "type")]
+    pub output_type: String,
+    pub result_consistent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
-    pub status: JobStatus,
-    pub created_at: String,
+    pub outputs: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub metrics: RunMetrics,
+    pub outputs_checksum: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Status response
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnalysisStatusResponse {
-    pub analysis_id: String,
+pub struct JobStatusResponse {
+    pub job_id: String,
+    pub model: WorkloadType,
+    pub mode: MeasurementMode,
+    pub repetitions: u32,
     pub status: JobStatus,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,8 +271,14 @@ pub struct AnalysisStatusResponse {
     pub completed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hardware: Option<HardwareInfo>,
     #[serde(default)]
-    pub metrics: AnalysisMetrics,
+    pub metrics: JobMetrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<JobOutput>,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +308,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn job_status_is_terminal_for_complete_and_failed() {
+    fn job_status_is_terminal() {
         assert!(JobStatus::Complete.is_terminal());
         assert!(JobStatus::Failed.is_terminal());
         assert!(!JobStatus::Accepted.is_terminal());
@@ -216,133 +316,111 @@ mod tests {
     }
 
     #[test]
-    fn run_accepted_deserializes() {
+    fn job_accepted_deserializes() {
         let json =
-            r#"{"run_id":"run-abc123","status":"accepted","created_at":"2026-02-26T10:00:00Z"}"#;
-        let accepted: RunAccepted = serde_json::from_str(json).unwrap();
-        assert_eq!(accepted.run_id, "run-abc123");
+            r#"{"job_id":"job-abc123","status":"accepted","created_at":"2026-03-06T10:00:00Z"}"#;
+        let accepted: JobAccepted = serde_json::from_str(json).unwrap();
+        assert_eq!(accepted.job_id, "job-abc123");
         assert_eq!(accepted.status, "accepted");
     }
 
     #[test]
-    fn run_status_response_deserializes() {
+    fn job_status_response_deserializes() {
         let json = r#"{
-            "run_id": "run-abc123",
-            "input": "test_input.bin",
+            "job_id": "job-abc123",
+            "model": "image_classification",
+            "mode": "latency",
+            "repetitions": 10,
             "status": "complete",
-            "created_at": "2026-02-26T10:00:00Z",
-            "started_at": "2026-02-26T10:00:01Z",
-            "completed_at": "2026-02-26T10:00:05Z",
+            "created_at": "2026-03-06T10:00:00Z",
+            "started_at": "2026-03-06T10:00:01Z",
+            "completed_at": "2026-03-06T10:00:05Z",
             "metrics": {
                 "return_code": 0,
-                "time.execution": 87.3,
-                "memory.peak_rss": 4096.0
+                "time.avg_ms": 87.3,
+                "memory.peak_rss_kb": 4096.0
             }
         }"#;
-        let resp: RunStatusResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.run_id, "run-abc123");
+        let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.job_id, "job-abc123");
+        assert_eq!(resp.model, WorkloadType::ImageClassification);
         assert_eq!(resp.status, JobStatus::Complete);
         assert!(resp.status.is_terminal());
         assert_eq!(resp.metrics.return_code, Some(0));
-        assert_eq!(resp.metrics.time_execution, Some(87.3));
-        assert_eq!(resp.metrics.memory_peak_rss, Some(4096.0));
-        assert!(resp.metrics.memory_leaks.is_none());
+        assert_eq!(resp.metrics.time_avg_ms, Some(87.3));
+        assert_eq!(resp.metrics.memory_peak_rss_kb, Some(4096.0));
+        assert!(resp.metrics.memory_leaks_bytes.is_none());
     }
 
     #[test]
-    fn run_metrics_all_null_deserializes() {
+    fn job_metrics_all_null_deserializes() {
         let json = r#"{
-            "run_id": "run-xyz",
+            "job_id": "job-xyz",
+            "model": "regression",
+            "mode": "latency",
+            "repetitions": 1,
             "status": "running",
-            "created_at": "2026-02-26T10:00:00Z",
+            "created_at": "2026-03-06T10:00:00Z",
             "metrics": {}
         }"#;
-        let resp: RunStatusResponse = serde_json::from_str(json).unwrap();
+        let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
         assert!(resp.metrics.return_code.is_none());
-        assert!(resp.metrics.time_execution.is_none());
-        assert!(resp.metrics.memory_peak_rss.is_none());
+        assert!(resp.metrics.time_avg_ms.is_none());
+        assert!(resp.metrics.memory_peak_rss_kb.is_none());
     }
 
     #[test]
-    fn run_metrics_get_returns_correct_field() {
-        let m = RunMetrics {
+    fn job_metrics_get_returns_correct_field() {
+        let m = JobMetrics {
             return_code: Some(0),
-            time_execution: Some(87.3),
-            memory_peak_rss: Some(4096.0),
-            memory_avg_rss: Some(2048.0),
-            cpu_max_pct: Some(95.0),
-            cpu_avg_pct: Some(50.0),
-            memory_leaks: Some(0.0),
-            coverage_line_pct: Some(85.5),
-            ml_accuracy: Some(0.97),
-            ml_f1_score: Some(0.95),
-            ml_recall: Some(0.94),
-            ml_precision: Some(0.96),
+            time_avg_ms: Some(87.3),
+            memory_peak_rss_kb: Some(4096.0),
+            memory_avg_rss_kb: Some(2048.0),
+            memory_leaks_bytes: Some(0),
+            cpu_avg_normalized_pct: Some(24.3),
+            coverage_line_pct: Some(87.2),
+            static_critical_issues: Some(0),
+            static_major_issues: Some(3),
+            static_warnings: Some(1),
+            binary_size_kb: Some(412.0),
+            ..Default::default()
         };
         assert_eq!(m.get("return_code"), Some(0.0));
-        assert_eq!(m.get("time.execution"), Some(87.3));
-        assert_eq!(m.get("memory.peak_rss"), Some(4096.0));
-        assert_eq!(m.get("memory.avg_rss"), Some(2048.0));
-        assert_eq!(m.get("cpu.max_pct"), Some(95.0));
-        assert_eq!(m.get("cpu.avg_pct"), Some(50.0));
-        assert_eq!(m.get("memory.leaks"), Some(0.0));
-        assert_eq!(m.get("coverage.line_pct"), Some(85.5));
-        assert_eq!(m.get("ml.accuracy"), Some(0.97));
-        assert_eq!(m.get("ml.f1_score"), Some(0.95));
-        assert_eq!(m.get("ml.recall"), Some(0.94));
-        assert_eq!(m.get("ml.precision"), Some(0.96));
+        assert_eq!(m.get("time.avg_ms"), Some(87.3));
+        assert_eq!(m.get("memory.peak_rss_kb"), Some(4096.0));
+        assert_eq!(m.get("memory.avg_rss_kb"), Some(2048.0));
+        assert_eq!(m.get("memory.leaks_bytes"), Some(0.0));
+        assert_eq!(m.get("cpu.avg_normalized_pct"), Some(24.3));
+        assert_eq!(m.get("coverage.line_pct"), Some(87.2));
+        assert_eq!(m.get("static.critical_issues"), Some(0.0));
+        assert_eq!(m.get("static.major_issues"), Some(3.0));
+        assert_eq!(m.get("static.warnings"), Some(1.0));
+        assert_eq!(m.get("binary.size_kb"), Some(412.0));
     }
 
     #[test]
-    fn run_metrics_get_unknown_returns_none() {
-        let m = RunMetrics::default();
+    fn job_metrics_get_unknown_returns_none() {
+        let m = JobMetrics::default();
         assert!(m.get("no_such_metric").is_none());
-        assert!(m.get("return_code").is_none()); // field present but None
+        assert!(m.get("return_code").is_none());
     }
 
     #[test]
-    fn analysis_status_response_deserializes() {
-        let json = r#"{
-            "analysis_id": "analysis-001",
-            "status": "complete",
-            "created_at": "2026-02-26T10:00:00Z",
-            "metrics": {
-                "sonar.critical_issues": 2,
-                "sonar.major_issues": 5,
-                "static.warnings": 3,
-                "binary.size_kb": 1024.5
-            }
-        }"#;
-        let resp: AnalysisStatusResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.analysis_id, "analysis-001");
-        assert_eq!(resp.status, JobStatus::Complete);
-        assert_eq!(resp.metrics.sonar_critical_issues, Some(2));
-        assert_eq!(resp.metrics.sonar_major_issues, Some(5));
-        assert_eq!(resp.metrics.static_warnings, Some(3));
-        assert_eq!(resp.metrics.binary_size_kb, Some(1024.5));
-    }
+    fn job_request_model_zip_optional() {
+        let json = r#"{"model":"image_classification"}"#;
+        let req: JobRequest = serde_json::from_str(json).unwrap();
+        assert!(req.model_zip.is_none());
 
-    #[test]
-    fn analysis_metrics_get_returns_correct_field() {
-        let m = AnalysisMetrics {
-            sonar_critical_issues: Some(2),
-            sonar_major_issues: Some(5),
-            static_warnings: Some(3),
-            binary_size_kb: Some(1024.5),
-        };
-        assert_eq!(m.get("sonar.critical_issues"), Some(2.0));
-        assert_eq!(m.get("sonar.major_issues"), Some(5.0));
-        assert_eq!(m.get("static.warnings"), Some(3.0));
-        assert_eq!(m.get("binary.size_kb"), Some(1024.5));
-        assert!(m.get("unknown").is_none());
+        let with_zip = r#"{"model":"image_classification","model_zip":"abc123=="}"#;
+        let req2: JobRequest = serde_json::from_str(with_zip).unwrap();
+        assert_eq!(req2.model_zip.as_deref(), Some("abc123=="));
     }
 
     #[test]
     fn error_response_deserializes() {
-        let json = r#"{"error":{"code":"NOT_FOUND","message":"Run not found","timestamp":"2026-02-26T10:00:00Z"}}"#;
+        let json = r#"{"error":{"code":"NOT_FOUND","message":"Job not found","timestamp":"2026-03-06T10:00:00Z"}}"#;
         let err: ErrorResponse = serde_json::from_str(json).unwrap();
         assert_eq!(err.error.code, "NOT_FOUND");
-        assert_eq!(err.error.message, "Run not found");
         assert!(err.error.details.is_none());
     }
 }

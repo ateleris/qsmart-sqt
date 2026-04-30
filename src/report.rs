@@ -163,6 +163,7 @@ mod tests {
             requirement_uid: uid.to_string(),
             target: make_target(binary),
             constraints: vec![Constraint::return_code(Op::Eq, 0)],
+            ..Default::default()
         }
     }
 
