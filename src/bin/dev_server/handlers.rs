@@ -7,7 +7,8 @@ use axum::{
     http::StatusCode,
 };
 use sqt::api::types::{
-    JobAccepted, JobRequest, JobStatus, JobStatusResponse, MeasurementMode,
+    ApiError as ApiErrorBody, ErrorResponse, JobAccepted, JobRequest, JobStatus,
+    JobStatusResponse, MeasurementMode,
 };
 use uuid::Uuid;
 
@@ -42,7 +43,17 @@ pub async fn create_job(
         store.insert(job_id.clone(), job);
     }
 
-    let input = req.input.as_ref().and_then(|v| v.as_str()).map(|s| s.to_string());
+    let input = req.input.as_ref().and_then(|v| {
+        if v.as_str().is_none() {
+            tracing::warn!(
+                job_id = %job_id,
+                input = ?v,
+                "job input is not a plain string — only string inputs are supported \
+                 by the dev server; input will be ignored"
+            );
+        }
+        v.as_str().map(|s| s.to_string())
+    });
     let model_zip = req.model_zip.clone();
 
     tracing::info!(
@@ -135,32 +146,63 @@ pub async fn create_job(
 // GET /api/v1/jobs/{job_id}
 // ---------------------------------------------------------------------------
 
+type NotFound = (StatusCode, Json<ErrorResponse>);
+
 pub async fn get_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
-) -> Result<Json<JobStatusResponse>, StatusCode> {
-    let store = state.store.read().await;
-    let job = store.get(&job_id).ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<Json<JobStatusResponse>, NotFound> {
+    // Snapshot under read lock, then release before constructing the response.
+    let snapshot = {
+        let store = state.store.read().await;
+        store.get(&job_id).map(|job| {
+            (
+                job.id.clone(),
+                job.workload_type.clone(),
+                job.status.clone(),
+                job.created_at.clone(),
+                job.started_at.clone(),
+                job.completed_at.clone(),
+                job.error.clone(),
+                job.metrics.clone(),
+            )
+        })
+    }; // read lock released here
+
+    let (id, workload_type, status, created_at, started_at, completed_at, error, metrics) =
+        snapshot.ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: ApiErrorBody {
+                        code: "JOB_NOT_FOUND".into(),
+                        message: format!("job '{job_id}' not found"),
+                        details: None,
+                        timestamp: crate::now_iso(),
+                    },
+                }),
+            )
+        })?;
 
     tracing::debug!(
         job_id = %job_id,
-        status = ?job.status,
+        status = ?status,
         "GET /api/v1/jobs/{job_id}"
     );
 
     Ok(Json(JobStatusResponse {
-        job_id: job.id.clone(),
-        model: job.workload_type.clone(),
+        job_id: id,
+        model: workload_type,
         mode: MeasurementMode::default(),
         repetitions: 1,
-        status: job.status.clone(),
-        created_at: job.created_at.clone(),
-        started_at: job.started_at.clone(),
-        completed_at: job.completed_at.clone(),
-        error: job.error.clone(),
+        status,
+        created_at,
+        started_at,
+        completed_at,
+        error,
         tags: None,
         hardware: None,
-        metrics: job.metrics.clone().unwrap_or_default(),
+        metrics: metrics.unwrap_or_default(),
         output: None,
     }))
 }

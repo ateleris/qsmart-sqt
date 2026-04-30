@@ -1,8 +1,11 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use uuid::Uuid;
 
 /// Specification for a Docker container run.
 pub struct DockerRun {
@@ -25,40 +28,35 @@ pub struct DockerOutput {
 
 /// Execute `docker run --rm` with the given spec and capture output.
 ///
-/// Enforces the timeout by using `--stop-timeout` and checking wall time.
+/// Enforces the timeout by polling with `try_wait` and sending `docker kill`
+/// followed by `SIGKILL` to the CLI process when the deadline is exceeded.
 pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
+    // Stable name so we can kill the container by name on timeout.
+    let container_name = format!("sqt-{}", Uuid::new_v4().simple());
+
     let mut cmd = Command::new("docker");
-    cmd.arg("run").arg("--rm");
+    cmd.arg("run").arg("--rm").arg("--name").arg(&container_name);
 
-    // Volume mounts
     for (host_path, container_path) in &spec.volumes {
-        cmd.arg("-v").arg(format!(
-            "{}:{}",
-            host_path.display(),
-            container_path
-        ));
+        cmd.arg("-v")
+            .arg(format!("{}:{}", host_path.display(), container_path));
     }
-
-    // Environment variables
     for (key, val) in &spec.env {
         cmd.arg("-e").arg(format!("{key}={val}"));
     }
-
-    // Working directory inside container
     if let Some(ref wd) = spec.working_dir {
         cmd.arg("-w").arg(wd);
     }
-
-    // Image
     cmd.arg(&spec.image);
-
-    // Command to run
     for arg in &spec.command {
         cmd.arg(arg);
     }
 
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
     tracing::info!(
         image = %spec.image,
+        container = %container_name,
         cmd = ?spec.command,
         env = ?spec.env,
         volumes = ?spec.volumes.iter().map(|(h, c)| format!("{}:{}", h.display(), c)).collect::<Vec<_>>(),
@@ -66,34 +64,66 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
     );
 
     let start = Instant::now();
-    let output = cmd
-        .output()
-        .context("failed to execute docker command - is Docker installed and running?")?;
+    let mut child = cmd
+        .spawn()
+        .context("failed to execute docker command — is Docker installed and running?")?;
+
+    // Drain stdout/stderr on separate threads. Pipe buffers are finite:
+    // if we don't read, the child blocks on write and try_wait never fires.
+    let mut out_pipe = child.stdout.take().expect("stdout was piped");
+    let mut err_pipe = child.stderr.take().expect("stderr was piped");
+    let out_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let err_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    // Poll for exit, enforcing the hard timeout.
+    let exit_code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code().unwrap_or(-1),
+            Ok(None) => {}
+            Err(e) => {
+                kill_container(&container_name, &mut child);
+                let _ = out_thread.join();
+                let _ = err_thread.join();
+                return Err(e.into());
+            }
+        }
+        if start.elapsed() >= spec.timeout {
+            tracing::warn!(
+                container = %container_name,
+                timeout_secs = spec.timeout.as_secs_f64(),
+                "container exceeded timeout, killing"
+            );
+            kill_container(&container_name, &mut child);
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            bail!(
+                "docker container '{}' timed out after {:.1}s",
+                container_name,
+                spec.timeout.as_secs_f64()
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
     let wall_time = start.elapsed();
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout_text = String::from_utf8_lossy(&output.stdout);
-    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    let stdout = out_thread.join().unwrap_or_default();
+    let stderr = err_thread.join().unwrap_or_default();
 
-    if wall_time > spec.timeout {
-        tracing::error!(
-            image = %spec.image,
-            exit_code,
-            wall_ms = wall_time.as_millis() as u64,
-            stdout = %stdout_text,
-            stderr = %stderr_text,
-            "docker container exceeded timeout"
-        );
-        bail!(
-            "docker container exceeded timeout ({:.1}s > {:.1}s)",
-            wall_time.as_secs_f64(),
-            spec.timeout.as_secs_f64()
-        );
-    }
+    let stdout_text = String::from_utf8_lossy(&stdout);
+    let stderr_text = String::from_utf8_lossy(&stderr);
 
-    if !output.status.success() {
+    if exit_code != 0 {
         tracing::warn!(
             image = %spec.image,
+            container = %container_name,
             exit_code,
             wall_ms = wall_time.as_millis() as u64,
             stdout = %stdout_text,
@@ -103,6 +133,7 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
     } else {
         tracing::info!(
             image = %spec.image,
+            container = %container_name,
             exit_code,
             wall_ms = wall_time.as_millis() as u64,
             stdout = %stdout_text,
@@ -111,12 +142,18 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
         );
     }
 
-    Ok(DockerOutput {
-        exit_code,
-        stdout: output.stdout,
-        stderr: output.stderr,
-        wall_time,
-    })
+    Ok(DockerOutput { exit_code, stdout, stderr, wall_time })
+}
+
+/// Send `docker kill` to stop the container, then kill the CLI process.
+fn kill_container(container_name: &str, child: &mut std::process::Child) {
+    let _ = Command::new("docker")
+        .args(["kill", container_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    child.kill().ok();
+    child.wait().ok();
 }
 
 /// Helper: create a volume mount pair from a host path, mapping it to
@@ -146,8 +183,8 @@ pub fn check_docker() -> Result<()> {
 pub fn check_image(image: &str) -> Result<()> {
     let output = Command::new("docker")
         .args(["image", "inspect", image])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .context("failed to run `docker image inspect`")?;
 
@@ -195,7 +232,8 @@ pub fn check_binary_in_image(image: &str, binary: &str) -> Result<()> {
         bail!(
             "binary '{binary}' is not executable inside image '{image}' \
              - check that the file has execute permissions. \
-             stderr: {}", stderr.trim()
+             stderr: {}",
+            stderr.trim()
         );
     }
     Ok(())
