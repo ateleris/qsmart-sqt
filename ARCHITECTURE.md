@@ -121,6 +121,7 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 #### SQT Generic (Ateleris - Open Source)
 - Configuration management
 - Requirements parsing and traceability
+- Accepting the customer-supplied model ZIP (via CLI flag or config file) and forwarding it to the API
 - Job submission and polling via REST API
 - Metric extraction from job results
 - Constraint evaluation against extracted values
@@ -924,6 +925,7 @@ Results are embedded directly in the GET response; there is no separate `/result
 ```json
 {
   "model": "image_classification",
+  "model_zip": "<base64-encoded-zip>",
   "input": { "type": "images", "images": ["<base64-image>", "..."] },
   "repetitions": 10,
   "warmup_repetitions": 3,
@@ -932,6 +934,22 @@ Results are embedded directly in the GET response; there is no separate `/result
   "timeout_secs": 60,
   "tags": { "requirement_uid": "REQ-ML-L-003", "git_sha": "a1b2c3d" }
 }
+```
+
+`model_zip` is a base64-encoded ZIP archive supplied by the customer. It contains
+the AI model (e.g. an ONNX file) and its accompanying pre-processing and
+post-processing code. Klepsydra unpacks this bundle on the server side and uses it
+for inference. When `null`, the server falls back to any model pre-configured
+server-side.
+
+SQT Generic reads the ZIP path from the CLI flag `--model-zip <path>` or from
+`sqt-config.yaml` (`model_zip_path`), encodes it as base64, and embeds it in
+every `POST /api/v1/jobs` request for the qualification session.
+
+The exact ZIP structure and naming conventions are defined by Klepsydra and are
+outside the scope of SQT Generic. A future revision may replace the inline
+base64 field with a dedicated model upload endpoint to avoid re-sending the ZIP
+with every job.
 ```
 
 For large image batches (hundreds or thousands of images), the request body will be
@@ -1156,6 +1174,7 @@ See **Section 4.6** for the full rationale and report output format.
 
 6. **REST API Client**
    - Implement HTTP client for the job API (see `job-api.openapi.yaml`)
+   - Read customer-supplied model ZIP from CLI flag (`--model-zip`) or config (`model_zip_path`), base64-encode, and embed in every `POST /api/v1/jobs`
    - Submit one job per spec with all required task names
    - Poll for job status until complete
    - Extract metric values from task results
@@ -1213,6 +1232,7 @@ See **Section 4.6** for the full rationale and report output format.
    - Klepsydra AI unit tests
    - Integration tests
    - Hardware-specific validation
+   - Unpacking and running the customer-supplied model ZIP (model + pre/post-proc code) on target hardware
 
 2. **Performance Benchmarking**
    - PBF implementation

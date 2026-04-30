@@ -1,5 +1,9 @@
 sequenceDiagram
     autonumber
+    box rgb(230,255,230) Customer
+        participant customer as APCO / Customer
+    end
+
     box rgb(224,236,255) Ateleris
         participant report as Qualification Report
         participant sqt    as SQT Generic
@@ -7,10 +11,12 @@ sequenceDiagram
 
     box rgb(255,232,214) Klepsydra
         participant api   as Job API Server
-        participant black  as AI Core · App Code · Hardware
+        participant black  as AI Inference Engine · Hardware
     end
 
     Note over black: closed source - never crosses boundary
+
+    customer ->> sqt: model zip file<br/>(ONNX model + pre/post-proc code)<br/>configurable
 
     sqt ->> api: GET /api/v1/docs
     api -->> sqt: StrictDoc documents<br/>(requirement UIDs + VERIFICATION methods)
@@ -19,9 +25,9 @@ sequenceDiagram
     rect rgb(210,220,245)
         Note over sqt: Testable reqs - VERIFICATION: Test
 
-        sqt ->> api: POST /api/v1/jobs<br/>{ workload type, input data }
-        api ->> black: execute
-        Note over black: binary selection, packaging,<br/>pre/post-processing, hardware setup -<br/>all decided internally, never exposed
+        sqt ->> api: POST /api/v1/jobs<br/>{ workload type, input data, model_zip }
+        api ->> black: execute with customer model
+        Note over black: unpack ZIP, run pre-proc → inference → post-proc<br/>on target hardware — all internal to Klepsydra
         black -->> api: output
         api -->> sqt: metrics { time.avg_ms, memory.peak_rss_kb, … }
 

@@ -112,6 +112,7 @@ paths:
                 summary: Image classification, 10 repetitions, latency mode
                 value:
                   model: image_classification
+                  model_zip: "<base64-encoded-zip>"
                   input:
                     type: images
                     images:
@@ -676,6 +677,30 @@ components:
       properties:
         model:
           $ref: "#/components/schemas/WorkloadType"
+        model_zip:
+          type: string
+          format: byte
+          nullable: true
+          description: |
+            Base64-encoded ZIP archive provided by the customer. The archive
+            contains the AI model (e.g. an ONNX file) together with the
+            accompanying pre-processing and post-processing code. The server
+            (Klepsydra) unpacks this bundle and uses it for inference.
+
+            The exact ZIP structure and naming conventions are defined by the
+            server and are outside the scope of SQT Generic.
+
+            When `null`, the server uses whatever model is already configured
+            server-side. Providing the ZIP is required for customer-supplied
+            models that are not pre-loaded on the server.
+
+            Note: ONNX models can be large (tens to hundreds of MB). Ensure
+            the server's HTTP frontend is configured to accept the necessary
+            body size (e.g. `client_max_body_size 2g` in nginx).
+
+            Future revision may replace this inline field with a dedicated
+            model upload endpoint to avoid re-sending the ZIP with every job.
+          example: "<base64-encoded-zip>"
         input:
           $ref: "#/components/schemas/JobInput"
           description: |

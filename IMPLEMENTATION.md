@@ -213,13 +213,14 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 
 - [x] **T-002** Implement `SqtConfig` struct and YAML parser
   - Fields: `project.name`, `project.version`, `build_dir`, `api.url`,
-    `api.token_env` (optional), `report.output_dir`
+    `api.token_env` (optional), `report.output_dir`, `model_zip_path` (optional path to customer model ZIP)
   - Validate on load: required fields non-empty, API URL starts with http/https,
     relative paths resolved against config file directory
   - Unit tests with valid and invalid config fixtures (7 tests, all passing)
 
 - [x] **T-003** Implement CLI skeleton
   - Single subcommand: `sqt run --config <path>` (env: `SQT_CONFIG`)
+  - Optional flag: `--model-zip <path>` (overrides `model_zip_path` from config)
   - Load and validate config, print summary via `tracing::info!`, exit 0
   - `#[tokio::main]` from day one; `tracing_subscriber` with `EnvFilter` (default: info)
 
@@ -391,7 +392,7 @@ at the bottom of the file. No other file needs to change.
     - `Instrumentation` - enum: `None | Asan | Valgrind | Gprof`
     - `MeasurementMode` - enum: `Latency | Throughput`
     - `JobInput` - enum over input variants: `Images(Vec<Bytes>)`, `DatasetRef(String)`, `Tabular(Vec<Vec<f64>>)`, `TimeSeries(Vec<Vec<f64>>)`
-    - `JobRequest` - `model`, `input`, `repetitions`, `instrumentation`, `mode`, `timeout_secs`
+    - `JobRequest` - `model`, `model_zip` (base64-encoded `Option<Bytes>`), `input`, `repetitions`, `instrumentation`, `mode`, `timeout_secs`
     - `JobAccepted` - `job_id`, `status`, `created_at`
     - `JobStatusResponse` - `job_id`, `model`, `mode`, `repetitions`, `status`, timestamps, `hardware`, `metrics`, `output`
     - `HardwareInfo` - `type`, `model`, `cores`, `memory_total_kb`, `accelerator_model`
@@ -410,6 +411,7 @@ at the bottom of the file. No other file needs to change.
 
 - [ ] **T-042** Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
   - Group specs by `(workload_type, input_key)` → deduplicated `Vec<JobRequest>`
+  - If a model ZIP path is present (from config or CLI), read and base64-encode it once; embed the encoded bytes in every `JobRequest` as `model_zip`
   - No metric routing by prefix - all constraints reference fields of `JobMetrics` directly
   - Submit all jobs concurrently; `tokio::join_all` on futures
   - Map nullable `JobMetrics` field → `MetricValue` (null → `ConstraintOutcome { passed: false }`)
