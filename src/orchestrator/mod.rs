@@ -255,4 +255,77 @@ mod tests {
         assert_eq!(m.get("memory.peak_rss_kb"), Some(4096.0));
         assert!(m.get("no.such.metric").is_none());
     }
+
+    // --- JobRequest construction (T-042) -------------------------------------
+
+    #[test]
+    fn build_job_request_embeds_model_zip() {
+        // T-042: model ZIP read once and embedded in every JobRequest.
+        let spec = make_spec(WorkloadType::ImageClassification, None, 30);
+        let refs = vec![&spec];
+        let zip = Some("base64encodedzip==".to_string());
+        let req = build_job_request(&WorkloadType::ImageClassification, &None, &refs, zip.clone());
+        assert_eq!(req.model_zip, zip, "model_zip must be passed through to the request");
+    }
+
+    #[test]
+    fn build_job_request_no_model_zip_when_absent() {
+        // When no ZIP is configured, model_zip must be None in the request.
+        let spec = make_spec(WorkloadType::ImageClassification, None, 30);
+        let refs = vec![&spec];
+        let req = build_job_request(&WorkloadType::ImageClassification, &None, &refs, None);
+        assert!(req.model_zip.is_none());
+    }
+
+    #[test]
+    fn build_job_request_workload_type_propagates() {
+        // The workload type from the group key must appear in the request body.
+        let spec = make_spec(WorkloadType::ObjectDetection, None, 30);
+        let refs = vec![&spec];
+        let req = build_job_request(&WorkloadType::ObjectDetection, &None, &refs, None);
+        assert_eq!(req.model, WorkloadType::ObjectDetection);
+    }
+
+    #[test]
+    fn build_job_request_input_becomes_json_string() {
+        // The input path must be forwarded as a JSON string value in the request.
+        let spec = make_spec(WorkloadType::Regression, Some("data.csv"), 30);
+        let refs = vec![&spec];
+        let input = Some("data.csv".to_string());
+        let req = build_job_request(&WorkloadType::Regression, &input, &refs, None);
+        assert_eq!(
+            req.input,
+            Some(serde_json::Value::String("data.csv".into())),
+            "input path must be forwarded as a JSON string"
+        );
+    }
+
+    #[test]
+    fn build_job_request_no_input_is_none() {
+        let spec = make_spec(WorkloadType::Classification, None, 30);
+        let refs = vec![&spec];
+        let req = build_job_request(&WorkloadType::Classification, &None, &refs, None);
+        assert!(req.input.is_none());
+    }
+
+    // --- Null metric = failing outcome (AD-013) ------------------------------
+
+    #[test]
+    fn unavailable_metric_produces_failing_outcome_not_error() {
+        // AD-013 / ARCH §5.5.2: a null metric field means a tool was unavailable,
+        // not that the job failed. The orchestrator must map null → ConstraintOutcome
+        // { passed: false } — not bail with an error.
+        let outcome = failing_outcome("memory.leaks_bytes", "metric unavailable");
+        assert!(!outcome.passed, "null metric must produce a FAIL outcome");
+        assert!(
+            outcome.actual.is_nan(),
+            "actual value must be NaN when metric was unavailable"
+        );
+        assert!(outcome.message.contains("FAIL"));
+        assert!(outcome.message.contains("memory.leaks_bytes"));
+        assert!(
+            outcome.evidence.is_empty(),
+            "unavailable metric has no evidence to record"
+        );
+    }
 }

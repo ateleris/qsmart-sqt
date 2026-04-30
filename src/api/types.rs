@@ -423,4 +423,257 @@ mod tests {
         assert_eq!(err.error.code, "NOT_FOUND");
         assert!(err.error.details.is_none());
     }
+
+    // ----- Wire-name tests (ARCH §5.2, §5.3, §5.4) --------------------------
+    // These pin the exact JSON strings that the Klepsydra API server expects.
+    // A changed `rename_all` attribute would silently break the contract.
+
+    #[test]
+    fn workload_type_wire_names() {
+        // ARCH §5.2 defines these exact snake_case names.
+        let cases: &[(WorkloadType, &str)] = &[
+            (WorkloadType::ObjectDetection, "object_detection"),
+            (WorkloadType::ImageClassification, "image_classification"),
+            (WorkloadType::PixelSegmentation, "pixel_segmentation"),
+            (WorkloadType::Classification, "classification"),
+            (WorkloadType::Regression, "regression"),
+            (WorkloadType::TimeSeriesForecasting, "time_series_forecasting"),
+        ];
+        for (variant, wire) in cases {
+            let json = serde_json::to_string(variant).unwrap();
+            assert_eq!(json, format!("\"{wire}\""), "{variant:?} wire name wrong");
+            let round: WorkloadType = serde_json::from_str(&json).unwrap();
+            assert_eq!(&round, variant, "{variant:?} round-trip failed");
+        }
+    }
+
+    #[test]
+    fn job_status_wire_names_all_variants() {
+        // All four status values must serialize to lowercase (API contract).
+        let cases: &[(JobStatus, &str)] = &[
+            (JobStatus::Accepted, "\"accepted\""),
+            (JobStatus::Running, "\"running\""),
+            (JobStatus::Complete, "\"complete\""),
+            (JobStatus::Failed, "\"failed\""),
+        ];
+        for (variant, wire) in cases {
+            assert_eq!(&serde_json::to_string(variant).unwrap(), wire, "{variant:?}");
+            let round: JobStatus = serde_json::from_str(wire).unwrap();
+            assert_eq!(&round, variant, "{variant:?} round-trip failed");
+        }
+    }
+
+    #[test]
+    fn instrumentation_wire_names() {
+        // ARCH §5.4: instrumentation values sent to server must be lowercase.
+        let cases: &[(Instrumentation, &str)] = &[
+            (Instrumentation::None, "\"none\""),
+            (Instrumentation::Asan, "\"asan\""),
+            (Instrumentation::Valgrind, "\"valgrind\""),
+            (Instrumentation::Gprof, "\"gprof\""),
+        ];
+        for (variant, wire) in cases {
+            assert_eq!(&serde_json::to_string(variant).unwrap(), wire, "{variant:?}");
+        }
+    }
+
+    #[test]
+    fn measurement_mode_wire_names() {
+        // ARCH §5.3: latency / throughput.
+        assert_eq!(serde_json::to_string(&MeasurementMode::Latency).unwrap(), "\"latency\"");
+        assert_eq!(
+            serde_json::to_string(&MeasurementMode::Throughput).unwrap(),
+            "\"throughput\""
+        );
+    }
+
+    // ----- JobRequest serialization (ARCH §5.5.1) ----------------------------
+
+    #[test]
+    fn job_request_defaults_are_spec_compliant() {
+        // ARCH §5.5.1: when only model is given, repetitions=1,
+        // instrumentation=none, mode=latency must be assumed.
+        let json = r#"{"model":"regression"}"#;
+        let req: JobRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.repetitions, 1, "default repetitions must be 1");
+        assert_eq!(req.instrumentation, Instrumentation::None, "default instrumentation must be none");
+        assert_eq!(req.mode, MeasurementMode::Latency, "default mode must be latency");
+        assert!(req.model_zip.is_none());
+        assert!(req.input.is_none());
+    }
+
+    #[test]
+    fn job_request_absent_model_zip_omitted_from_json() {
+        // ARCH §5.5.1: `model_zip` must NOT appear in the request body when None
+        // (skip_serializing_if). Sending `"model_zip": null` would be a protocol error.
+        let req = JobRequest {
+            model: WorkloadType::Classification,
+            model_zip: None,
+            input: None,
+            repetitions: 1,
+            instrumentation: Instrumentation::default(),
+            mode: MeasurementMode::default(),
+            warmup_repetitions: None,
+            timeout_secs: None,
+            tags: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            !json.contains("model_zip"),
+            "absent model_zip must be omitted from JSON, got: {json}"
+        );
+    }
+
+    #[test]
+    fn job_request_model_zip_present_serializes_correctly() {
+        // model_zip must appear as a base64 string when present.
+        let req = JobRequest {
+            model: WorkloadType::ImageClassification,
+            model_zip: Some("aGVsbG8=".into()), // base64("hello")
+            input: None,
+            repetitions: 1,
+            instrumentation: Instrumentation::default(),
+            mode: MeasurementMode::default(),
+            warmup_repetitions: None,
+            timeout_secs: None,
+            tags: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"model_zip\":\"aGVsbG8=\""), "model_zip missing in: {json}");
+        let back: JobRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.model_zip.as_deref(), Some("aGVsbG8="));
+    }
+
+    // ----- JobStatusResponse edge cases (ARCH §5.5.2) -----------------------
+
+    #[test]
+    fn job_status_response_with_hardware_deserializes() {
+        // ARCH §5.5.2 example: hardware descriptor with GR740 fields.
+        let json = r#"{
+            "job_id": "job-hw-test",
+            "model": "image_classification",
+            "mode": "latency",
+            "repetitions": 10,
+            "status": "complete",
+            "created_at": "2026-03-06T10:00:00Z",
+            "hardware": {
+                "type": "cpu",
+                "model": "GR740 Leon4",
+                "cores": 4,
+                "memory_total_kb": 131072,
+                "clock_mhz": 250.0,
+                "os": "RTEMS 6"
+            },
+            "metrics": {
+                "time.avg_ms": 87.3,
+                "cpu.avg_normalized_pct": 24.3
+            }
+        }"#;
+        let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
+        let hw = resp.hardware.as_ref().expect("hardware block must be present");
+        assert_eq!(hw.hw_type, "cpu");
+        assert_eq!(hw.model.as_deref(), Some("GR740 Leon4"));
+        assert_eq!(hw.cores, Some(4));
+        assert_eq!(hw.clock_mhz, Some(250.0));
+        assert_eq!(hw.os.as_deref(), Some("RTEMS 6"));
+    }
+
+    #[test]
+    fn job_output_result_consistent_field() {
+        // ARCH §5.6 (AD-017): result_consistent records whether every repetition
+        // produced bit-identical results.
+        let json = r#"{
+            "job_id": "job-out",
+            "model": "classification",
+            "mode": "latency",
+            "repetitions": 5,
+            "status": "complete",
+            "created_at": "2026-03-06T10:00:00Z",
+            "metrics": {},
+            "output": {
+                "type": "classification_labels",
+                "result_consistent": true,
+                "outputs_checksum": "a3f1c2d4"
+            }
+        }"#;
+        let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
+        let out = resp.output.as_ref().expect("output block must be present");
+        assert!(out.result_consistent, "result_consistent must be true");
+        assert_eq!(out.outputs_checksum.as_deref(), Some("a3f1c2d4"));
+        assert_eq!(out.output_type, "classification_labels");
+    }
+
+    #[test]
+    fn failed_job_carries_error_field() {
+        // ARCH §5.5.2: a failed job has an `error` field with a description.
+        let json = r#"{
+            "job_id": "job-fail",
+            "model": "regression",
+            "mode": "latency",
+            "repetitions": 1,
+            "status": "failed",
+            "created_at": "2026-03-06T10:00:00Z",
+            "error": "binary not found: /opt/model.onnx",
+            "metrics": {}
+        }"#;
+        let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.status.is_terminal());
+        assert_eq!(
+            resp.error.as_deref(),
+            Some("binary not found: /opt/model.onnx")
+        );
+    }
+
+    #[test]
+    fn complete_job_null_metric_field_is_none() {
+        // ARCH §5.5.2: "A complete job may have null metric fields — those indicate
+        // unavailable tools, not infrastructure failure."
+        // Explicitly null fields must deserialize to None, not error.
+        let json = r#"{
+            "job_id": "job-partial",
+            "model": "image_classification",
+            "mode": "latency",
+            "repetitions": 1,
+            "status": "complete",
+            "created_at": "2026-03-06T10:00:00Z",
+            "metrics": {
+                "return_code": 0,
+                "time.avg_ms": 87.3,
+                "memory.leaks_bytes": null,
+                "coverage.line_pct": null
+            }
+        }"#;
+        let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.metrics.return_code, Some(0));
+        assert_eq!(resp.metrics.time_avg_ms, Some(87.3));
+        assert!(
+            resp.metrics.memory_leaks_bytes.is_none(),
+            "explicit null must deserialize as None"
+        );
+        assert!(resp.metrics.coverage_line_pct.is_none());
+    }
+
+    #[test]
+    fn error_response_with_details_deserializes() {
+        // ARCH §5.8: details field is optional.
+        let json = r#"{
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "unknown model type: 'depth_estimation'",
+                "details": "Supported types: object_detection, image_classification, ...",
+                "timestamp": "2026-03-06T10:00:00Z"
+            }
+        }"#;
+        let err: ErrorResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(err.error.code, "VALIDATION_ERROR");
+        assert!(err.error.details.is_some());
+        assert!(err.error.details.unwrap().contains("object_detection"));
+    }
+
+    #[test]
+    fn workload_type_default_is_image_classification() {
+        // TestSpec derives Default which falls through to WorkloadType::default().
+        // This must be ImageClassification so unset specs have a defined workload.
+        assert_eq!(WorkloadType::default(), WorkloadType::ImageClassification);
+    }
 }

@@ -434,4 +434,73 @@ mod tests {
     fn from_name_unknown_returns_none() {
         assert!(Constraint::from_name("no.such.metric", Op::Eq, 0.0).is_none());
     }
+
+    // --- Cross-module contract (AD-013) --------------------------------------
+
+    #[test]
+    fn server_metric_names_recognized_by_job_metrics_get() {
+        // Every metric name returned by metric_name() for a server-side constraint
+        // must be a key recognized by JobMetrics::get(). If they diverge, the
+        // orchestrator silently produces "metric unavailable" failing outcomes for
+        // every run — the qualification tool appears to work but measures nothing.
+        //
+        // ml.* metrics are excluded: they are computed client-side from
+        // output.all_outputs (T-054) and are intentionally absent from JobMetrics.
+        use crate::api::types::JobMetrics;
+
+        let server_side = vec![
+            Constraint::return_code(Op::Eq, 0),
+            Constraint::execution_time(Op::Lte, 100.0),
+            Constraint::time_latency_p50_ms(Op::Lte, 50.0),
+            Constraint::time_latency_p95_ms(Op::Lte, 90.0),
+            Constraint::time_latency_p99_ms(Op::Lte, 100.0),
+            Constraint::time_throughput_fps(Op::Gte, 10.0),
+            Constraint::memory_peak_rss(Op::Lte, 4096.0),
+            Constraint::memory_avg_rss(Op::Lte, 2048.0),
+            Constraint::memory_leaks(Op::Eq, 0.0),
+            Constraint::memory_stack_kb(Op::Lte, 64.0),
+            Constraint::memory_heap_allocations(Op::Lte, 1000),
+            Constraint::cpu_avg_normalized_pct(Op::Lte, 80.0),
+            Constraint::coverage_line_pct(Op::Gte, 80.0),
+            Constraint::coverage_branch_pct(Op::Gte, 70.0),
+            Constraint::coverage_function_pct(Op::Gte, 75.0),
+            Constraint::static_warnings(Op::Lte, 10),
+            Constraint::static_critical_issues(Op::Eq, 0),
+            Constraint::static_major_issues(Op::Lte, 5),
+            Constraint::binary_size_kb(Op::Lte, 1024.0),
+        ];
+
+        // Fully-populated metrics so get() returns Some for every valid name.
+        let metrics = JobMetrics {
+            return_code: Some(0),
+            time_avg_ms: Some(87.3),
+            time_latency_p50_ms: Some(50.0),
+            time_latency_p95_ms: Some(90.0),
+            time_latency_p99_ms: Some(100.0),
+            time_throughput_fps: Some(30.0),
+            memory_peak_rss_kb: Some(4096.0),
+            memory_avg_rss_kb: Some(2048.0),
+            memory_leaks_bytes: Some(0),
+            memory_stack_kb: Some(48.0),
+            memory_heap_allocations: Some(0),
+            cpu_avg_normalized_pct: Some(24.3),
+            coverage_line_pct: Some(87.2),
+            coverage_branch_pct: Some(72.1),
+            coverage_function_pct: Some(95.0),
+            static_warnings: Some(1),
+            static_critical_issues: Some(0),
+            static_major_issues: Some(3),
+            binary_size_kb: Some(412.0),
+            ..Default::default()
+        };
+
+        for constraint in &server_side {
+            let name = constraint.metric_name();
+            assert!(
+                metrics.get(name).is_some(),
+                "Constraint::metric_name() returned '{name}' but JobMetrics::get('{name}') \
+                 returned None — this constraint can never be evaluated, only silently failed"
+            );
+        }
+    }
 }

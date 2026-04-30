@@ -233,4 +233,50 @@ report:
         assert!(cfg.build_dir.starts_with(&config_dir));
         assert!(cfg.report.output_dir.starts_with(&config_dir));
     }
+
+    // --- model_zip_path (T-002 / ARCH §6.1) ----------------------------------
+
+    #[test]
+    fn model_zip_path_optional_can_be_omitted() {
+        // model_zip_path is an optional field; omitting it must not fail parsing.
+        let cfg = load(
+            r#"
+project:
+  name: "Test"
+  version: "1.0.0"
+build_dir: "./build"
+api:
+  url: "https://example.com"
+report:
+  output_dir: "./reports"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.model_zip_path.is_none());
+    }
+
+    #[test]
+    fn model_zip_path_relative_is_resolved_against_config_dir() {
+        // Relative model_zip_path must be resolved to an absolute path in the
+        // same way as build_dir and report.output_dir.
+        let f = write_config(
+            r#"
+project:
+  name: "Test"
+  version: "1.0.0"
+build_dir: "./build"
+api:
+  url: "https://example.com"
+report:
+  output_dir: "./reports"
+model_zip_path: "./model.zip"
+"#,
+        );
+        let config_dir = f.path().parent().unwrap().to_path_buf();
+        let cfg = super::super::load_config(f.path()).unwrap();
+        let p = cfg.model_zip_path.expect("model_zip_path must be present");
+        assert!(p.is_absolute(), "model_zip_path must be resolved to an absolute path");
+        assert!(p.starts_with(&config_dir));
+        assert!(p.ends_with("model.zip"));
+    }
 }
