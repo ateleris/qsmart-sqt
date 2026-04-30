@@ -15,7 +15,9 @@
 - [3. Configuration Management](#3-configuration-management)
 - [4. Requirements Management](#4-requirements-management)
   - [4.5 Declarative Test Specifications](#45-declarative-test-specifications)
+  - [4.6 Compliant Requirements (Non-Testable)](#46-compliant-requirements-non-testable)
 - [5. REST API Interface](#5-rest-api-interface)
+  - [5.10 Requirements Documents Endpoint](#510-requirements-documents-endpoint)
 - [6. Scope Definition](#6-scope-definition)
 - [7. Requirements to Code Flow](#7-requirements-to-code-flow)
 - [8. Hardware & Emulation Strategy](#8-hardware--emulation-strategy)
@@ -778,6 +780,65 @@ for spec in &specs {
 
 The orchestrator never calls metric collectors directly - all tool execution happens server-side. The `MetricCollector` trait (and Phase 2 built-in collectors) remains valid as the implementation layer for the local dev API server. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
 
+### 4.6 Compliant Requirements (Non-Testable)
+
+Not all requirements can be verified by automated testing. Requirements verified
+by **inspection**, **review**, **analysis**, or **demonstration** cannot be
+expressed as SQT metric constraints — yet they must appear in the qualification
+report as verified.
+
+#### 4.6.1 The Problem
+
+An `.sdoc` file may contain:
+
+```strictdoc
+[REQUIREMENT]
+UID: REQ-ML-L-NFR-001
+TITLE: ECSS compliance
+STATEMENT: The ML-L shall be developed according to ECSS-E-ST-40C.
+VERIFICATION: Inspection, Review
+```
+
+There is no automated test that can check "was this standard followed?". The
+verification evidence consists of documents, design reviews, and audits —
+artefacts that exist on the server side (Klepsydra). SQT Generic has no way to
+evaluate these directly.
+
+#### 4.6.2 Solution: Server-Provided Requirements via `GET /api/v1/docs`
+
+The server exposes its StrictDoc requirements documents through
+`GET /api/v1/docs`. SQT Generic fetches these once at session start and applies
+the following rule:
+
+| Requirement `VERIFICATION` field | SQT treatment |
+|---|---|
+| Includes `Test` | Must be covered by a `.test.yaml` spec; evaluated normally |
+| Does **not** include `Test` | Marked **compliant** on the server's authority |
+| Requirement absent from server docs | Not applicable (not owned by server) |
+
+Requirements in the second row — inspection-only, review-only, or
+analysis-only — are recorded in the report with:
+
+- `status: compliant`
+- `evidence_source: server_declaration` (as opposed to `sqt_test`)
+- The requirement's UID, title, and statement from the parsed `.sdoc`
+- The list of declared verification methods
+
+#### 4.6.3 Qualification Report Impact
+
+The report's traceability matrix separates requirements by verification path:
+
+```
+Requirements Coverage
+─────────────────────────────────────────────────────
+Tested (via SQT specs):       REQ-ML-L-001 ✅  REQ-ML-L-003 ✅
+Compliant by declaration:     REQ-ML-L-NFR-001 ✅  REQ-ML-L-NFR-002 ✅
+Not covered:                  (none)
+```
+
+This gives auditors a complete picture without conflating two fundamentally
+different verification modes.
+
 ---
 
 ## 5. REST API Interface
@@ -1024,6 +1085,41 @@ maximum delay: 30 s
 All jobs for a qualification session are submitted in parallel; the orchestrator
 awaits them concurrently. Total wall-clock time is bounded by the slowest job,
 not the sum of all jobs.
+
+### 5.10 Requirements Documents Endpoint
+
+**Endpoint**: `GET /api/v1/docs`
+
+Returns the StrictDoc requirements documents managed by the server. Called
+once per qualification session before any jobs are submitted.
+
+**Response** (200 OK):
+```json
+{
+  "documents": [
+    {
+      "filename": "ml-l-requirements.sdoc",
+      "title": "ML-L Software Requirements Specification",
+      "content": "[DOCUMENT]\nTITLE: ML-L Software Requirements Specification\n..."
+    }
+  ]
+}
+```
+
+- `documents` may be an empty array if the server has no requirements documents configured.
+- `content` is the full raw StrictDoc text, UTF-8 encoded with LF line endings.
+- `title` is provided as a convenience; SQT Generic parses `content` authoritatively.
+
+**SQT Generic behaviour**:
+
+1. Fetch `GET /api/v1/docs`.
+2. Parse each `content` string as StrictDoc; extract all `[REQUIREMENT]` blocks.
+3. For each requirement, inspect the `VERIFICATION` field:
+   - Contains `Test` → schedule for normal constraint evaluation (requires a `.test.yaml`).
+   - No `Test` → record as `compliant` with `evidence_source: server_declaration`.
+4. Include all requirements in the report traceability matrix, grouped by verification path.
+
+See **Section 4.6** for the full rationale and report output format.
 
 ---
 

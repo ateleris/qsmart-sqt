@@ -77,6 +77,8 @@ security:
 tags:
   - name: Jobs
     description: AI model qualification jobs
+  - name: Docs
+    description: Requirements documents (StrictDoc format)
 
 paths:
 
@@ -280,6 +282,113 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Requirements documents
+  # ---------------------------------------------------------------------------
+
+  /api/v1/docs:
+    get:
+      operationId: getDocs
+      summary: Get requirements documents in StrictDoc format
+      description: |
+        Returns the requirements documents managed by the server, in StrictDoc
+        text format. This is the first call SQT Generic makes in every
+        qualification session. The returned documents serve as the **canonical
+        requirement baseline** — the complete set of requirements the server
+        is responsible for, and against which the qualification report is
+        measured.
+
+        ## Session start flow
+
+        1. Fetch `GET /api/v1/docs`.
+        2. Parse each `.sdoc` document; extract every `[REQUIREMENT]` block.
+        3. Split requirements by `VERIFICATION` field:
+
+        | Verification method(s) | SQT treatment |
+        |---|---|
+        | Does **not** include `Test` (e.g. `Inspection`, `Review`, `Analysis`) | Mark **compliant** — server's authority accepted; no job submitted |
+        | Includes `Test` **and** a matching `.test.yaml` spec exists | Evaluate via qualification jobs; pass/fail from metric constraints |
+        | Includes `Test` but **no** matching `.test.yaml` spec exists | Flag as **UNCOVERED** — qualification gap reported |
+
+        An `UNCOVERED` requirement is treated as a failed qualification: the
+        report records it with status `uncovered` and the session exits with a
+        non-zero code. This ensures that adding a testable requirement to the
+        server's `.sdoc` files without a corresponding SQT spec is immediately
+        visible rather than silently ignored.
+
+        ## Test specifications (`.test.yaml`)
+
+        For every `VERIFICATION: Test` requirement, SQT Generic expects a
+        sidecar file that encodes the testable constraints in machine-readable
+        form. Example for `REQ-ML-L-003` ("inference in < 100 ms"):
+
+        ```yaml
+        requirement_uid: REQ-ML-L-003
+        constraints:
+          - metric: time.avg_ms
+            op: lte
+            value: 100
+          - metric: memory.peak_rss_kb
+            op: lte
+            value: 2048
+          - metric: return_code
+            op: eq
+            value: 0
+        ```
+
+        The `metric` names correspond directly to keys in the
+        `JobStatusResponse.metrics` object returned by `GET /api/v1/jobs/{id}`.
+        SQT submits a qualification job, waits for completion, then evaluates
+        each constraint against the returned metric value.
+
+        ## Non-testable requirements
+
+        Requirements whose `VERIFICATION` field contains only non-`Test`
+        methods (e.g. `Inspection, Review`) are marked compliant on the
+        server's authority. The qualification report records them with
+        `evidence_source: server_declaration` and lists the declared
+        verification methods. No job is submitted for these.
+
+        ## Response format
+
+        One entry per `.sdoc` file. Each entry carries the full raw StrictDoc
+        text; SQT Generic parses it client-side. The server may return an
+        empty `documents` array if no requirements documents are configured.
+      tags: [Docs]
+      responses:
+        "200":
+          description: Requirements documents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocsResponse"
+              example:
+                documents:
+                  - filename: "ml-l-requirements.sdoc"
+                    title: "ML-L Software Requirements Specification"
+                    content: |
+                      [DOCUMENT]
+                      TITLE: ML-L Software Requirements Specification
+                      VERSION: 1.0.0
+
+                      [REQUIREMENT]
+                      UID: REQ-ML-L-003
+                      STATUS: Active
+                      TITLE: Inference latency requirement
+                      STATEMENT: The ML-L shall execute inference in less than 100ms on GR740 @ 250MHz.
+                      VERIFICATION: Test
+
+                      [REQUIREMENT]
+                      UID: REQ-ML-L-NFR-001
+                      STATUS: Active
+                      TITLE: ECSS compliance
+                      STATEMENT: The ML-L shall be developed and qualified according to ECSS-E-ST-40C and ECSS-Q-ST-80C.
+                      VERIFICATION: Inspection, Review
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1089,6 +1198,54 @@ components:
 
         Terminal states: `complete` and `failed`. Clients shall stop polling
         when the status is terminal.
+
+    # -------------------------------------------------------------------------
+    # Requirements documents
+    # -------------------------------------------------------------------------
+
+    DocsResponse:
+      type: object
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          description: |
+            All StrictDoc documents known to the server. May be empty if the
+            server has no requirements documents configured.
+          items:
+            $ref: "#/components/schemas/StrictdocDocument"
+
+    StrictdocDocument:
+      type: object
+      required: [filename, content]
+      properties:
+        filename:
+          type: string
+          description: |
+            Original filename of the StrictDoc document (e.g.
+            `ml-l-requirements.sdoc`). Used as a human-readable label in
+            the qualification report; does not need to be a valid path on
+            the client side.
+          example: "ml-l-requirements.sdoc"
+        title:
+          type: string
+          nullable: true
+          description: |
+            Document title as declared in the `[DOCUMENT] TITLE:` field.
+            Provided as a convenience so that SQT Generic can display it
+            without parsing. `null` when the server does not pre-parse the
+            document.
+          example: "ML-L Software Requirements Specification"
+        content:
+          type: string
+          description: |
+            Full raw StrictDoc document text. SQT Generic parses this
+            client-side to extract `[REQUIREMENT]` blocks, UIDs, titles,
+            statements, and `VERIFICATION` methods.
+
+            The string is UTF-8 encoded and uses LF line endings. It may
+            be large for documents with many requirements; no size limit is
+            mandated by this spec.
 
     # -------------------------------------------------------------------------
     # Error
