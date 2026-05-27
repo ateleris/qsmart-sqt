@@ -16,7 +16,7 @@ jobs:
       image: rust:1.95-trixie
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - name: Build
       run: cargo build --verbose
     - name: Run tests
