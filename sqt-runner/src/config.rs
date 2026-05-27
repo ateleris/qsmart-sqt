@@ -149,6 +149,10 @@ pub struct BuildConfig {
     /// Additional directories added as `-I` include paths.
     #[serde(default)]
     pub include_dirs: Vec<String>,
+
+    /// Maximum time allowed for the compile step in seconds (default: 300).
+    #[serde(default)]
+    pub compile_timeout_secs: Option<u64>,
 }
 
 fn default_compiler() -> String {
@@ -192,29 +196,46 @@ fn default_workspace() -> PathBuf {
 impl ServerConfig {
     /// Load configuration from a YAML file.
     ///
-    /// Relative paths in `binary.path` and `workspace` are resolved against
-    /// the current working directory.
+    /// Relative paths in `binary.path`, `workspace`, and any `build.*` paths
+    /// are resolved against the current working directory. Docker requires
+    /// absolute paths for all volume mounts and working directories.
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file: {}", path.display()))?;
         let mut config: Self = serde_yaml::from_str(&contents)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
 
-        // Resolve binary path to absolute (Docker requires absolute paths for
-        // volume mounts and working directories).
+        let cwd = std::env::current_dir().context("failed to determine current directory")?;
+
+        // Resolve binary path to absolute.
         let binary_path = PathBuf::from(&config.binary.path);
         if binary_path.is_relative() {
-            let abs = std::env::current_dir()
-                .context("failed to determine current directory")?
-                .join(&binary_path);
-            config.binary.path = abs.display().to_string();
+            config.binary.path = cwd.join(&binary_path).display().to_string();
         }
 
-        // Resolve workspace to absolute as well.
+        // Resolve workspace to absolute.
         if config.workspace.is_relative() {
-            config.workspace = std::env::current_dir()
-                .context("failed to determine current directory")?
-                .join(&config.workspace);
+            config.workspace = cwd.join(&config.workspace);
+        }
+
+        // Resolve build paths to absolute (Docker bind mounts require absolute paths).
+        if let Some(ref mut build) = config.build {
+            let source = PathBuf::from(&build.source);
+            if source.is_relative() {
+                build.source = cwd.join(&source).display().to_string();
+            }
+
+            let engine_lib = PathBuf::from(&build.engine_lib);
+            if engine_lib.is_relative() {
+                build.engine_lib = cwd.join(&engine_lib).display().to_string();
+            }
+
+            for inc in &mut build.include_dirs {
+                let p = PathBuf::from(&*inc);
+                if p.is_relative() {
+                    *inc = cwd.join(&p).display().to_string();
+                }
+            }
         }
 
         Ok(config)

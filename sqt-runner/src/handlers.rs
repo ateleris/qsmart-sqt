@@ -108,7 +108,9 @@ pub async fn create_job(
         Json(JobAccepted {
             job_id,
             status: "accepted".into(),
-            queue_position: 0,
+            // TODO(auth): enforce Bearer token validation before this handler
+            // is reachable. Tracked for a dedicated auth session.
+            queue_position: 1,
             created_at,
         }),
     )
@@ -161,18 +163,24 @@ pub async fn get_job(
         "GET /api/v1/jobs/{job_id}"
     );
 
+    // `queue_position` is non-null only while the job is still accepted (queued).
+    // `hardware` is null until the job starts running.
+    let queue_position = (status == JobStatus::Accepted).then_some(1);
+    let hardware = (status != JobStatus::Accepted).then(|| state.executor.hardware_info());
+
     Ok(Json(JobStatusResponse {
         job_id: id,
         model: workload_type,
         mode: MeasurementMode::default(),
         repetitions: 1,
         status,
+        queue_position,
         created_at,
         started_at,
         completed_at,
         error,
         tags: None,
-        hardware: Some(state.executor.hardware_info()),
+        hardware,
         metrics: metrics.unwrap_or_default(),
         output: None,
     }))

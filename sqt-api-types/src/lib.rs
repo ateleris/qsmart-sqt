@@ -260,6 +260,9 @@ pub struct JobStatusResponse {
     pub mode: MeasurementMode,
     pub repetitions: u32,
     pub status: JobStatus,
+    /// Non-null only while `status == "accepted"` (queued, not yet running).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,

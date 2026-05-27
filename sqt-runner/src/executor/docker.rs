@@ -54,18 +54,20 @@ impl DockerExecutor {
 
         let flags = instrumentation_flags(&request.instrumentation);
 
-        // Build the compiler invocation
-        let mut compile_args: Vec<String> = vec![build.compiler.clone()];
-        compile_args.extend(flags.iter().map(|s| (*s).to_string()));
-        compile_args.extend(build.extra_flags.iter().cloned());
+        // Build the compiler invocation - every argument is individually
+        // shell-quoted so paths or flags containing spaces or special
+        // characters are handled safely.
+        let mut compile_args: Vec<String> = vec![shell_quote(&build.compiler)];
+        compile_args.extend(flags.iter().map(|s| shell_quote(s)));
+        compile_args.extend(build.extra_flags.iter().map(|s| shell_quote(s)));
         for inc in &build.include_dirs {
-            compile_args.push(format!("-I{inc}"));
+            compile_args.push(format!("-I{}", shell_quote(inc)));
         }
         compile_args.extend([
             "-o".to_string(),
-            output.display().to_string(),
-            build.source.clone(),
-            build.engine_lib.clone(),
+            shell_quote(&output.display().to_string()),
+            shell_quote(&build.source),
+            shell_quote(&build.engine_lib),
         ]);
 
         // Compile then copy engine lib into workspace so it is reachable at
@@ -76,6 +78,9 @@ impl DockerExecutor {
             shell_quote(&build.engine_lib),
             shell_quote(&workspace.display().to_string()),
         );
+
+        let compile_timeout =
+            Duration::from_secs(build.compile_timeout_secs.unwrap_or(300));
 
         // Collect unique volume mounts
         let mut volumes: Vec<(PathBuf, String)> = vec![
@@ -94,7 +99,7 @@ impl DockerExecutor {
             command: vec!["sh".into(), "-c".into(), shell_cmd],
             volumes,
             working_dir: Some(source_dir.display().to_string()),
-            timeout: Duration::from_secs(300),
+            timeout: compile_timeout,
             env: vec![],
         };
 
