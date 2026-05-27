@@ -283,6 +283,38 @@ pub struct JobStatusResponse {
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
+// GET /api/v1/docs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DocsResponse {
+    pub documents: Vec<StrictdocDocument>,
+    pub attachments: Vec<Attachment>,
+}
+
+/// A StrictDoc `.sdoc` file served as raw text for client-side parsing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrictdocDocument {
+    pub filename: String,
+    /// Title extracted from `[DOCUMENT] TITLE:` as a convenience; `null` if
+    /// the server does not pre-parse the document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Full raw StrictDoc text, UTF-8, LF line endings.
+    pub content: String,
+}
+
+/// A non-StrictDoc evidence file (PDF, spreadsheet, etc.) included verbatim
+/// in the QDP. Not parsed by SQT Reporter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub filename: String,
+    pub content_type: String,
+    /// Base64-encoded file contents (standard encoding, no line breaks).
+    pub data: String,
+}
+
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {

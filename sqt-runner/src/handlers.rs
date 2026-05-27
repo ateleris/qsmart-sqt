@@ -1,15 +1,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context as _;
+
 use axum::{
     Json,
     extract::{Path, State},
-    http::{StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use sqt_types::{
-    ApiError as ApiErrorBody, ErrorResponse, JobAccepted, JobRequest, JobStatus,
-    JobStatusResponse, MeasurementMode,
+    ApiError as ApiErrorBody, Attachment, DocsResponse, ErrorResponse, JobAccepted, JobRequest,
+    JobStatus, JobStatusResponse, MeasurementMode, StrictdocDocument,
 };
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -25,8 +27,8 @@ pub struct AppState {
     pub executor: Arc<dyn JobExecutor>,
     /// Limits concurrent job execution to one at a time (sequential queue).
     pub job_semaphore: Arc<Semaphore>,
-    /// Path to the qualification documents zip file (served by GET /api/v1/docs).
-    pub docs_zip: Option<PathBuf>,
+    /// Directory scanned by GET /api/v1/docs (`.sdoc` → documents, rest → attachments).
+    pub docs_dir: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +220,8 @@ pub async fn get_job(
 // ---------------------------------------------------------------------------
 
 pub async fn get_docs(State(state): State<AppState>) -> Response {
-    let Some(ref zip_path) = state.docs_zip else {
-        tracing::warn!("GET /api/v1/docs - no docs configured");
+    let Some(ref docs_dir) = state.docs_dir else {
+        tracing::warn!("GET /api/v1/docs - no docs directory configured");
         return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -234,23 +236,26 @@ pub async fn get_docs(State(state): State<AppState>) -> Response {
             .into_response();
     };
 
-    let path = zip_path.clone();
-    let read_result =
-        tokio::task::spawn_blocking(move || std::fs::read(&path)).await;
+    let dir = docs_dir.clone();
+    let scan_result = tokio::task::spawn_blocking(move || scan_docs_dir(&dir)).await;
 
-    match read_result {
-        Ok(Ok(bytes)) => {
-            tracing::info!(bytes = bytes.len(), "GET /api/v1/docs - serving docs zip");
-            ([(header::CONTENT_TYPE, "application/zip")], bytes).into_response()
+    match scan_result {
+        Ok(Ok(response)) => {
+            tracing::info!(
+                documents = response.documents.len(),
+                attachments = response.attachments.len(),
+                "GET /api/v1/docs - serving docs"
+            );
+            Json(response).into_response()
         }
         Ok(Err(e)) => {
-            tracing::error!(error = %e, "GET /api/v1/docs - failed to read zip");
+            tracing::error!(error = %e, "GET /api/v1/docs - failed to scan docs directory");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: ApiErrorBody {
                         code: "DOCS_READ_ERROR".into(),
-                        message: format!("failed to read docs zip: {e}"),
+                        message: format!("failed to read docs directory: {e}"),
                         details: None,
                         timestamp: crate::now_iso(),
                     },
@@ -273,5 +278,161 @@ pub async fn get_docs(State(state): State<AppState>) -> Response {
             )
                 .into_response()
         }
+    }
+}
+
+/// Scan `dir` for docs files (non-recursive).
+///
+/// `.sdoc` files are read as UTF-8 text and placed in `documents`.
+/// All other files are base64-encoded and placed in `attachments`.
+/// Entries are sorted by filename for deterministic responses.
+fn scan_docs_dir(dir: &std::path::Path) -> anyhow::Result<DocsResponse> {
+    use base64::Engine as _;
+
+    let mut documents: Vec<StrictdocDocument> = Vec::new();
+    let mut attachments: Vec<Attachment> = Vec::new();
+
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .with_context(|| format!("cannot read docs directory: {}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .collect();
+
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let filename = entry.file_name().to_string_lossy().into_owned();
+
+        if path.extension().and_then(|e| e.to_str()) == Some("sdoc") {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("cannot read {filename}"))?;
+            let title = extract_sdoc_title(&content);
+            documents.push(StrictdocDocument { filename, title, content });
+        } else {
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("cannot read {filename}"))?;
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let content_type = mime_type_for(&filename).to_string();
+            attachments.push(Attachment { filename, content_type, data });
+        }
+    }
+
+    Ok(DocsResponse { documents, attachments })
+}
+
+/// Extract the title from the first `[DOCUMENT]` block's `TITLE:` field.
+fn extract_sdoc_title(content: &str) -> Option<String> {
+    let mut in_document = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[DOCUMENT]" {
+            in_document = true;
+            continue;
+        }
+        if in_document {
+            if let Some(title) = trimmed.strip_prefix("TITLE:") {
+                return Some(title.trim().to_string());
+            }
+            // Stop at the next block marker.
+            if trimmed.starts_with('[') {
+                break;
+            }
+        }
+    }
+    None
+}
+
+fn mime_type_for(filename: &str) -> &'static str {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf"  => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "zip"  => "application/zip",
+        "txt"  => "text/plain",
+        "html" => "text/html",
+        "json" => "application/json",
+        _      => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_title_from_document_block() {
+        let sdoc = "[DOCUMENT]\nTITLE: ML-L Requirements\nVERSION: 1.0\n\n[REQUIREMENT]\nUID: R-001\n";
+        assert_eq!(extract_sdoc_title(sdoc), Some("ML-L Requirements".into()));
+    }
+
+    #[test]
+    fn extract_title_ignores_requirement_title() {
+        let sdoc = "[DOCUMENT]\nTITLE: Doc Title\n\n[REQUIREMENT]\nTITLE: Req Title\n";
+        assert_eq!(extract_sdoc_title(sdoc), Some("Doc Title".into()));
+    }
+
+    #[test]
+    fn extract_title_returns_none_when_absent() {
+        let sdoc = "[DOCUMENT]\nVERSION: 1.0\n\n[REQUIREMENT]\nUID: R-001\n";
+        assert_eq!(extract_sdoc_title(sdoc), None);
+    }
+
+    #[test]
+    fn mime_type_known_extensions() {
+        assert_eq!(mime_type_for("report.pdf"), "application/pdf");
+        assert_eq!(mime_type_for("data.xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        assert_eq!(mime_type_for("notes.txt"), "text/plain");
+    }
+
+    #[test]
+    fn mime_type_unknown_falls_back_to_octet_stream() {
+        assert_eq!(mime_type_for("binary.bin"), "application/octet-stream");
+        assert_eq!(mime_type_for("noextension"), "application/octet-stream");
+    }
+
+    #[test]
+    fn scan_docs_dir_splits_sdoc_from_attachments() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("reqs.sdoc"), "[DOCUMENT]\nTITLE: Reqs\n").unwrap();
+        let mut pdf = std::fs::File::create(dir.path().join("evidence.pdf")).unwrap();
+        pdf.write_all(b"%PDF-1.4 placeholder").unwrap();
+
+        let result = scan_docs_dir(dir.path()).unwrap();
+
+        assert_eq!(result.documents.len(), 1);
+        assert_eq!(result.documents[0].filename, "reqs.sdoc");
+        assert_eq!(result.documents[0].title.as_deref(), Some("Reqs"));
+
+        assert_eq!(result.attachments.len(), 1);
+        assert_eq!(result.attachments[0].filename, "evidence.pdf");
+        assert_eq!(result.attachments[0].content_type, "application/pdf");
+        // data is valid base64
+        use base64::Engine as _;
+        assert!(base64::engine::general_purpose::STANDARD
+            .decode(&result.attachments[0].data)
+            .is_ok());
+    }
+
+    #[test]
+    fn scan_docs_dir_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = scan_docs_dir(dir.path()).unwrap();
+        assert!(result.documents.is_empty());
+        assert!(result.attachments.is_empty());
+    }
+
+    #[test]
+    fn scan_docs_dir_sorted_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z-last.sdoc"), "[DOCUMENT]\nTITLE: Z\n").unwrap();
+        std::fs::write(dir.path().join("a-first.sdoc"), "[DOCUMENT]\nTITLE: A\n").unwrap();
+
+        let result = scan_docs_dir(dir.path()).unwrap();
+        assert_eq!(result.documents[0].filename, "a-first.sdoc");
+        assert_eq!(result.documents[1].filename, "z-last.sdoc");
     }
 }

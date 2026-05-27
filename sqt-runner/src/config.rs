@@ -162,12 +162,12 @@ fn default_compiler() -> String {
 /// Configuration for the `GET /api/v1/docs` endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DocsConfig {
-    /// Path to the qualification documents zip file served to the Reporter.
+    /// Directory containing qualification documents pre-placed by the ML-L Provider.
     ///
-    /// The file is served verbatim as `application/zip`. It is expected to
-    /// contain the ML-L Provider's ECSS documentation baseline, unit test
-    /// results, and validation test results (as Strictdoc `.sdoc` files).
-    pub zip_path: PathBuf,
+    /// The runner scans this directory (non-recursively) at request time:
+    /// - `*.sdoc` files → `documents[]` (served as raw UTF-8 text)
+    /// - all other files → `attachments[]` (served as base64-encoded blobs)
+    pub directory: PathBuf,
 }
 
 /// Top-level server configuration loaded from a YAML file.
@@ -236,10 +236,10 @@ impl ServerConfig {
             config.workspace = cwd.join(&config.workspace);
         }
 
-        // Resolve docs zip path to absolute.
+        // Resolve docs directory path to absolute.
         if let Some(ref mut docs) = config.docs {
-            if docs.zip_path.is_relative() {
-                docs.zip_path = cwd.join(&docs.zip_path);
+            if docs.directory.is_relative() {
+                docs.directory = cwd.join(&docs.directory);
             }
         }
 

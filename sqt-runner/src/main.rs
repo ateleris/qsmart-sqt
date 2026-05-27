@@ -74,9 +74,9 @@ async fn main() {
     }
 
     if let Some(ref docs) = server_config.docs {
-        tracing::info!("docs zip: {}", docs.zip_path.display());
+        tracing::info!("docs directory: {}", docs.directory.display());
     } else {
-        tracing::info!("docs zip: not configured (GET /api/v1/docs will return 404)");
+        tracing::info!("docs directory: not configured (GET /api/v1/docs will return 404)");
     }
 
     if let Some(ref img) = tool_config.run_image {
@@ -131,16 +131,21 @@ async fn main() {
         }
     }
 
-    // Check docs zip exists if configured
+    // Check docs directory exists and is readable if configured
     if let Some(ref docs) = server_config.docs {
-        if !docs.zip_path.exists() {
+        if !docs.directory.is_dir() {
             panic!(
-                "preflight: docs zip not found: {} — \
-                 ensure the ML-L Provider has pre-placed the file",
-                docs.zip_path.display()
+                "preflight: docs directory not found or not a directory: {} — \
+                 ensure the ML-L Provider has pre-placed documents there",
+                docs.directory.display()
             );
         }
-        tracing::info!("docs zip OK: {}", docs.zip_path.display());
+        let n = std::fs::read_dir(&docs.directory)
+            .expect("preflight: cannot read docs directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .count();
+        tracing::info!("docs directory OK: {} ({n} file(s))", docs.directory.display());
     }
 
     tracing::info!("preflight checks passed");
@@ -161,7 +166,7 @@ async fn main() {
         workspace: server_config.workspace,
         executor,
         job_semaphore: Arc::new(Semaphore::new(1)),
-        docs_zip: server_config.docs.map(|d| d.zip_path),
+        docs_dir: server_config.docs.map(|d| d.directory),
     };
 
     let app = Router::new()
