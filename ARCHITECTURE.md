@@ -315,49 +315,66 @@ logging:
 #### SQT Runner Configuration: `sqt-runner.yaml`
 
 ```yaml
-# Execution target
-runner:
-  target: x86_64-linux               # x86_64-linux | gr740 (planned) | gr765 (planned)
+# Binary under test (pre-built, or compiled per-job when [build] is present)
+binary:
+  path: ./artifacts/ml_l_inference
+  args: []
+  env:
+    LD_LIBRARY_PATH: /opt/libs
+  input_mode: stdin                   # stdin | arg | env:VAR_NAME
 
-  # Paths to ML-L Provider artifacts (pre-placed on filesystem before session)
-  artifacts:
-    inference_engine: ./artifacts/klepsydra-engine
-    trained_model:    ./artifacts/model.onnx
-    main_program:     ./artifacts/main
-    input_data:       ./artifacts/input/
-    output_reference: ./artifacts/reference_output/
+# Per-job scratch directory for tool output (valgrind XML, coverage data, etc.)
+workspace: /var/sqt/workspace
 
-  # Qualification documents served via GET /api/v1/docs
-  docs:
-    ecss_baseline:           ./docs/ecss-baseline.sdoc
-    unit_test_results:       ./docs/unit-test-results.sdoc
-    validation_test_results: ./docs/validation-test-results.sdoc
+# Per-tool Docker image configuration
+tools:
+  run:
+    image: sqt-run:latest             # required; image used for normal execution runs
+  valgrind:
+    image: sqt-valgrind:latest        # optional; enables memory.leaks_bytes
+  coverage:
+    image: sqt-coverage:latest        # optional; enables coverage.line_pct
+  sonarqube:
+    url: "http://sonar.local:9000"    # optional; enables static.critical_issues / major_issues
+    token_env: SONAR_TOKEN            # env var holding the auth token
+  static_analysis:
+    image: sqt-static:latest          # optional; enables static.warnings
 
-  # Tool configuration (all runner-side)
-  tools:
-    valgrind:       /usr/bin/valgrind
-    lcov:           /usr/bin/lcov
-    sonar_scanner:  /usr/local/bin/sonar-scanner
-    sonar_url:      "http://localhost:9000"
-    sonar_project:  "ml-l-qualification"
+# Build step (optional; omit when using a pre-built binary)
+# When present, the runner compiles [build.source] against [build.engine_lib]
+# before each job using the instrumentation flags from the job request.
+build:
+  image: gcc:14-bookworm              # Docker image providing the compiler
+  source: ./src/main.cpp              # main program source file
+  engine_lib: ./artifacts/libengine.so  # ML-L engine shared library
+  compiler: g++                       # default: g++
+  extra_flags: ["-std=c++17"]
+  include_dirs: ["./include"]
+  compile_timeout_secs: 300
 
-# REST API server settings
-server:
-  host: "0.0.0.0"
-  port: 8080
-  auth:
-    type: "bearer"
-    token_env: "SQT_RUNNER_TOKEN"
+# Target hardware descriptor (returned verbatim in every job response)
+hardware:
+  hw_type: x86_64-linux
+  model: null
+  cores: null
+  memory_total_kb: null
+  clock_mhz: null
+  os: null
 
-# Logging
-logging:
-  level: "info"
-  output: "stdout"
-  file_path: "./logs/sqt-runner.log"
-  format: "json"
+# Qualification documents served via GET /api/v1/docs
+# Each entry is a path to a StrictDoc (.sdoc) file pre-placed by the ML-L Provider.
+# The runner reads and serves these as JSON document objects.
+docs:
+  documents:
+    - path: ./docs/ecss-baseline.sdoc
+      filename: ecss-baseline.sdoc
+    - path: ./docs/unit-test-results.sdoc
+      filename: unit-test-results.sdoc
+    - path: ./docs/validation-test-results.sdoc
+      filename: validation-test-results.sdoc
 ```
 
-The model and artifacts are configured at Runner startup, not per job. To qualify a different model version, restart the Runner with updated artifact paths (or override them via CLI flags, e.g. `--trained-model ./artifacts/model-v2.onnx`).
+The binary and artifacts are configured at Runner startup, not per job. To qualify a different version, restart the Runner with an updated config file.
 
 ### 3.2 Configuration Validation
 

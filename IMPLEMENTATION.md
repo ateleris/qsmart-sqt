@@ -396,7 +396,10 @@ at the bottom of the file. No other file needs to change.
 
 #### API and orchestrator (redesign)
 
-- [ ] **T-040** Redesign API types for single-endpoint model (`src/runner_api/types.rs`)
+- [x] **T-040** Redesign API types for single-endpoint model (`sqt-types/src/lib.rs`)
+  - **Note**: types were placed in the shared `sqt-types` workspace crate rather than
+    `src/runner_api/types.rs` to avoid duplication between Reporter and Runner.
+    All Reporter source imports them as `sqt_types::*`.
   - Replace `RunRequest`/`RunAccepted`/`RunStatusResponse`/`RunMetrics`/
     `AnalysisRequest`/`AnalysisAccepted`/`AnalysisStatusResponse`/`AnalysisMetrics`
     with the new unified types:
