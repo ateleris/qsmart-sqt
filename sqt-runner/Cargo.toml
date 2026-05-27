@@ -12,7 +12,7 @@ name = "sqt-test-binary"
 path = "src/bin/test_binary.rs"
 
 [dependencies]
-sqt-api-types = { workspace = true }
+sqt-types = { workspace = true }
 anyhow = "1"
 tokio = { workspace = true }
 axum = { workspace = true }

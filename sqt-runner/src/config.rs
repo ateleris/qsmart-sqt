@@ -197,7 +197,7 @@ pub struct ServerConfig {
     /// Returned verbatim in `JobStatusResponse.hardware` so the reporter can
     /// record which device produced each result.
     #[serde(default)]
-    pub hardware: sqt_api_types::HardwareInfo,
+    pub hardware: sqt_types::HardwareInfo,
 
     /// Qualification documents served via `GET /api/v1/docs`.
     ///

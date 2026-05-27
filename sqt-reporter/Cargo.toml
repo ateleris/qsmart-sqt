@@ -12,7 +12,7 @@ name = "sqt"
 path = "src/main.rs"
 
 [dependencies]
-sqt-api-types = { workspace = true }
+sqt-types = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

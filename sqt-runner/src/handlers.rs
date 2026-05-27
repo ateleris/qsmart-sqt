@@ -7,7 +7,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use sqt_api_types::{
+use sqt_types::{
     ApiError as ApiErrorBody, ErrorResponse, JobAccepted, JobRequest, JobStatus,
     JobStatusResponse, MeasurementMode,
 };

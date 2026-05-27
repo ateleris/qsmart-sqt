@@ -1,9 +1,9 @@
 [workspace]
-members = ["sqt-api-types", "sqt-reporter", "sqt-runner"]
+members = ["sqt-types", "sqt-reporter", "sqt-runner"]
 resolver = "2"
 
 [workspace.dependencies]
-sqt-api-types = { path = "./sqt-api-types" }
+sqt-types = { path = "./sqt-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = { package = "serde_yaml_ng", version = "0.9" }

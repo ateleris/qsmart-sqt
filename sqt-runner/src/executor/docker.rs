@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use sqt_api_types::{HardwareInfo, Instrumentation, JobMetrics, JobRequest};
+use sqt_types::{HardwareInfo, Instrumentation, JobMetrics, JobRequest};
 
 use crate::config::{BinaryConfig, BuildConfig, ToolConfig};
 use crate::docker::{self, DockerRun};

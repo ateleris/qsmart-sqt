@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
-use sqt_api_types::{ErrorResponse, JobAccepted, JobRequest, JobStatus, JobStatusResponse};
+use sqt_types::{ErrorResponse, JobAccepted, JobRequest, JobStatus, JobStatusResponse};
 
 pub struct ApiClient {
     client: reqwest::Client,

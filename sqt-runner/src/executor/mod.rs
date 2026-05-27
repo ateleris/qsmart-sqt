@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use sqt_api_types::{HardwareInfo, JobMetrics, JobRequest};
+use sqt_types::{HardwareInfo, JobMetrics, JobRequest};
 
 pub mod docker;
 

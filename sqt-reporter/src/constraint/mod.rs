@@ -486,7 +486,7 @@ mod tests {
         //
         // ml.* metrics are excluded: they are computed client-side from
         // output.all_outputs (T-054) and are intentionally absent from JobMetrics.
-        use sqt_api_types::JobMetrics;
+        use sqt_types::JobMetrics;
 
         let server_side = vec![
             Constraint::return_code(Op::Eq, 0),

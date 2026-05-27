@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use futures::future::try_join_all;
 
-use sqt_api_types::{Instrumentation, JobRequest, MeasurementMode, WorkloadType};
+use sqt_types::{Instrumentation, JobRequest, MeasurementMode, WorkloadType};
 use crate::api::ApiClient;
 use crate::config::SqtConfig;
 use crate::constraint::ConstraintOutcome;
@@ -152,7 +152,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use sqt_api_types::{JobMetrics, WorkloadType};
+    use sqt_types::{JobMetrics, WorkloadType};
     use crate::constraint::{Constraint, Op};
     use crate::constraint::evaluator::evaluate;
     use crate::metrics::{Platform, Target};

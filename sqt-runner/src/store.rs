@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqt_api_types::{JobMetrics, JobStatus, WorkloadType};
+use sqt_types::{JobMetrics, JobStatus, WorkloadType};
 use tokio::sync::RwLock;
 
 /// In-memory state for a single job.

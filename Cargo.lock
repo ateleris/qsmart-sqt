@@ -1467,14 +1467,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqt-api-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "sqt-reporter"
 version = "0.1.0"
 dependencies = [
@@ -1487,7 +1479,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sqt-api-types",
+ "sqt-types",
  "tempfile",
  "tokio",
  "tracing",
@@ -1506,12 +1498,20 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sqt-api-types",
+ "sqt-types",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "sqt-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
