@@ -1,6 +1,6 @@
-# SQT Generic – Implementation Overview
+# SQT Reporter – Implementation Overview
 
-**Status**: Initial planning
+**Status**: In progress
 **Date**: 2026-02-24
 
 ---
@@ -8,18 +8,19 @@
 ## Scope of This Document
 
 This document describes the concrete implementation plan for the first working version of
-SQT Generic. It deliberately narrows the scope compared to ARCHITECTURE.md:
+SQT Reporter. It deliberately narrows the scope compared to ARCHITECTURE.md:
 
-- **Requirements parsing is deferred.** StrictDoc files will be read in a later phase to
-  auto-generate Rust implementations. For now, all test specifications are written
+- **Requirements parsing is deferred.** StrictDoc files fetched from `GET /api/v1/docs`
+  will drive spec generation in a later phase. For now, all test specifications are written
   directly in Rust.
-- **The plugin system is compile-time only.** There is no dynamic loading, no external
-  process protocol, and no Python SDK. Users add a Rust file to the correct module,
-  implement one trait, add one `mod` declaration, and recompile. The registry is
-  populated automatically via the `inventory` crate - no central registration file.
-- **The focus is on getting a runnable qualification loop.** The binary should be able to
-  run a set of metric collectors against a target binary, evaluate constraints, and
-  produce a basic report.
+- **The metric extensibility system is compile-time only (Runner-side).** There is no dynamic
+  loading, no external process protocol, and no Python SDK. The metric collectors described
+  in Phase 2 are Runner-side reference implementations that will be wired into the local dev
+  server (T-063). The Reporter itself never calls collectors directly - it submits jobs to the
+  Runner API and reads the flat `JobMetrics` response.
+- **The focus is on getting a runnable qualification loop.** The Reporter binary should be able
+  to fetch docs, submit jobs to the SQT Runner, evaluate metric constraints, and produce a
+  basic report.
 
 ---
 
@@ -36,8 +37,8 @@ self-registers with a single macro call. Adding a new metric means:
 4. Add `mod my_metric;` to the parent `mod.rs`
 5. Run `cargo build`
 
-No central registration file is ever edited. The architecture can evolve toward dynamic
-plugins (Section 10 of ARCHITECTURE.md) once the core loop is proven.
+No central registration file is ever edited. This extensibility model lives in the SQT Runner;
+the Reporter only reads the resulting `JobMetrics` fields over the REST API.
 
 ### Central Trait
 
@@ -59,7 +60,7 @@ pub struct MetricValue {
 }
 
 pub trait MetricCollector: Send + Sync {
-    /// Unique metric name, e.g. "memory.peak_rss" or "custom.model_drift"
+    /// Unique metric name, e.g. "memory.peak_rss_kb" or "custom.model_drift"
     fn name(&self) -> &str;
 
     /// Execute the measurement and return the value + evidence
@@ -126,8 +127,8 @@ pub fn spec() -> TestSpec {
             ..Default::default()
         },
         constraints: vec![
-            Constraint::new("time.execution", Op::Lte, Value::ms(100.0)),
-            Constraint::new("memory.peak_rss", Op::Lte, Value::kb(512.0)),
+            Constraint::new("time.avg_ms", Op::Lte, Value::ms(100.0)),
+            Constraint::new("memory.peak_rss_kb", Op::Lte, Value::kb(512.0)),
             Constraint::new("return_code", Op::Eq, Value::int(0)),
         ],
     }
@@ -142,7 +143,7 @@ function - no discovery magic needed.
 ## Project Structure
 
 ```
-ats-sqt/
+sqt-reporter/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── ARCHITECTURE.md
@@ -154,9 +155,9 @@ ats-sqt/
     │
     ├── config/
     │   ├── mod.rs
-    │   └── schema.rs           ← SqtConfig struct + YAML parsing
+    │   └── schema.rs           ← ReporterConfig struct + sqt-reporter.yaml parsing
     │
-    ├── metrics/
+    ├── metrics/                ← Runner-side reference collectors (used by local dev server T-063)
     │   ├── mod.rs              ← MetricCollector trait, Target, MetricValue, CollectorFactory
     │   ├── registry.rs         ← build_registry() via inventory::iter - never edit this
     │   ├── builtin/
@@ -181,10 +182,10 @@ ats-sqt/
     ├── orchestrator/
     │   └── mod.rs              ← run all specs, collect results
     │
-    ├── api/
-    │   ├── mod.rs              ← JobApiClient - REST client for job-api.openapi.yaml
-    │   ├── client.rs
-    │   └── types.rs            ← JobRequest, JobStatus, TaskResult, …
+    ├── runner_api/             ← REST client for SQT Runner (job-api.openapi.yaml)
+    │   ├── mod.rs
+    │   ├── client.rs           ← JobApiClient
+    │   └── types.rs            ← JobRequest, JobStatusResponse, JobMetrics, …
     │
     ├── evidence/
     │   └── mod.rs              ← RunResult, RequirementResult aggregation
@@ -211,16 +212,27 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
     `inventory`
   - Set up `rustfmt.toml` and `clippy` lint configuration (`pedantic` at warn)
 
-- [x] **T-002** Implement `SqtConfig` struct and YAML parser
-  - Fields: `project.name`, `project.version`, `build_dir`, `api.url`,
-    `api.token_env` (optional), `report.output_dir`, `model_zip_path` (optional path to customer model ZIP)
-  - Validate on load: required fields non-empty, API URL starts with http/https,
+- [x] **T-002** Implement `ReporterConfig` struct and YAML parser (`sqt-reporter.yaml`)
+  - Full field set (matches ARCHITECTURE.md Section 3.1):
+    - `project`: `name`, `version`, `ecss_level`, `target_trl`
+    - `runner`: `url`, `auth.type`, `auth.token_env` (optional),
+      `poll_interval_initial_secs`, `poll_interval_max_secs`, `job_timeout_secs`
+    - `test_specs.directory`
+    - `reports`: `output_dir`, `timestamp_format`,
+      `formats.pdf.enabled`, `formats.pdf.engine` (typst | pdflatex | xelatex),
+      `formats.html.enabled`, `formats.json.enabled`
+    - `ci_integration`: `provider` (github_actions | gitlab_ci | jenkins | none),
+      `artifacts.upload`, `artifacts.retention_days`, `artifacts.paths`
+    - `logging`: `level`, `output` (stdout | file | both), `file_path`, `format` (json | plain)
+  - No `model_zip_path` - the model is configured on the Runner at startup, not transmitted per job
+  - Validate on load: required fields non-empty, runner URL starts with http/https,
     relative paths resolved against config file directory
+  - `ci_integration` section can be stubbed with an `Unknown` provider variant initially
   - Unit tests with valid and invalid config fixtures (7 tests, all passing)
 
 - [x] **T-003** Implement CLI skeleton
   - Single subcommand: `sqt run --config <path>` (env: `SQT_CONFIG`)
-  - Optional flag: `--model-zip <path>` (overrides `model_zip_path` from config)
+  - No `--model-zip` flag - the model is Runner-configured at startup
   - Load and validate config, print summary via `tracing::info!`, exit 0
   - `#[tokio::main]` from day one; `tracing_subscriber` with `EnvFilter` (default: info)
 
@@ -260,10 +272,10 @@ Tasks are ordered by dependency. Complete each phase before starting the next.
 ### Phase 2 - Metric Registry and Built-in Collectors
 
 > **Architecture note**: These collectors execute tools locally (valgrind, lcov, etc.).
-> In the primary (API-first) architecture, they run **server-side** - either in the
-> ML-L Specific server (Klepsydra) or in a local dev API server. The code remains in
-> this crate as reference implementations and will be exposed via the local dev server
-> binary in a future phase. The orchestrator (Phase 3) never calls collectors directly.
+> In the primary (API-first) architecture, they run **server-side** in the SQT Runner.
+> The code remains in this crate as reference implementations and will be wired into the
+> local dev server binary (T-063). The Reporter orchestrator (Phase 3) never calls
+> collectors directly - it submits jobs to the Runner API and reads `JobMetrics`.
 
 - [x] **T-020** Implement `MetricRegistry` and `build_registry()`
   - ~~Declare `CollectorFactory` struct and `inventory::collect!(CollectorFactory)`~~ **Done in
@@ -286,27 +298,27 @@ at the bottom of the file. No other file needs to change.
   - Evidence: captured stdout/stderr saved to working dir
   - This is the simplest collector and validates the whole pipeline end-to-end
 
-- [x] **T-022** Implement `ExecutionTimeCollector`  (`time.execution`)
+- [x] **T-022** Implement `ExecutionTimeCollector`  (`time.avg_ms`)
   - Wraps target execution with `std::time::Instant`
-  - Returns wall-clock time in milliseconds
+  - Returns average wall-clock time per repetition in milliseconds
   - Evidence: start time, end time, duration
 
-- [x] **T-023** Implement `MemoryPeakRssCollector`  (`memory.peak_rss`)
+- [x] **T-023** Implement `MemoryPeakRssCollector`  (`memory.peak_rss_kb`)
   - On Linux: spawn binary via `/usr/bin/time -v`, parse "Maximum resident set size"
   - Returns value in kilobytes
   - Evidence: raw `/usr/bin/time` output saved to working dir
 
-- [x] **T-024** Implement `MemoryLeaksCollector`  (`memory.leaks`)
+- [x] **T-024** Implement `MemoryLeaksCollector`  (`memory.leaks_bytes`)
   - Spawn binary under `valgrind --tool=memcheck --leak-check=full`
   - Parse Valgrind XML output (`--xml=yes --xml-file=...`)
   - Returns total leaked bytes; evidence: Valgrind XML report
 
-- [x] **T-025** Implement `CoverageLineCollector`  (`coverage.line_percent`)
+- [x] **T-025** Implement `CoverageLineCollector`  (`coverage.line_pct`)
   - Assumes test binary was compiled with `--coverage` (gcov instrumentation)
   - Runs `lcov --capture` then `lcov --summary` and parses line coverage percentage
   - Evidence: lcov `.info` file path and summary text
 
-- [x] **T-026** Implement `SonarCriticalIssuesCollector`  (`sonar.critical_issues`)
+- [x] **T-026** Implement `SonarCriticalIssuesCollector`  (`static.critical_issues`)
   - Invokes `sonar-scanner` with project config
   - Reads issues from SonarQube REST API (`/api/issues/search?severities=CRITICAL`)
   - Returns count of critical issues as `f64`
@@ -352,7 +364,7 @@ at the bottom of the file. No other file needs to change.
     `(workload, input)` as the deduplication key when grouping specs into jobs
 
 - [x] **T-033** Write first example spec (`src/specs/example.rs`)
-  - `REQ-EXAMPLE-001`: `return_code == 0` and `time.avg_ms <= 100ms`
+  - `REQ-EXAMPLE-001`: `return_code == 0`, `time.avg_ms <= 100`, `memory.peak_rss_kb <= 512`
   - Serves as the template users copy when adding their own specs
 
 - [x] **T-034** Implement `Orchestrator` (`src/orchestrator/mod.rs`)
@@ -384,7 +396,7 @@ at the bottom of the file. No other file needs to change.
 
 #### API and orchestrator (redesign)
 
-- [ ] **T-040** Redesign API types for single-endpoint model (`src/api/types.rs`)
+- [ ] **T-040** Redesign API types for single-endpoint model (`src/runner_api/types.rs`)
   - Replace `RunRequest`/`RunAccepted`/`RunStatusResponse`/`RunMetrics`/
     `AnalysisRequest`/`AnalysisAccepted`/`AnalysisStatusResponse`/`AnalysisMetrics`
     with the new unified types:
@@ -392,30 +404,91 @@ at the bottom of the file. No other file needs to change.
     - `Instrumentation` - enum: `None | Asan | Valgrind | Gprof`
     - `MeasurementMode` - enum: `Latency | Throughput`
     - `JobInput` - enum over input variants: `Images(Vec<Bytes>)`, `DatasetRef(String)`, `Tabular(Vec<Vec<f64>>)`, `TimeSeries(Vec<Vec<f64>>)`
-    - `JobRequest` - `model`, `model_zip` (base64-encoded `Option<Bytes>`), `input`, `repetitions`, `instrumentation`, `mode`, `timeout_secs`
-    - `JobAccepted` - `job_id`, `status`, `created_at`
-    - `JobStatusResponse` - `job_id`, `model`, `mode`, `repetitions`, `status`, timestamps, `hardware`, `metrics`, `output`
-    - `HardwareInfo` - `type`, `model`, `cores`, `memory_total_kb`, `accelerator_model`
-    - `JobMetrics` - 20 nullable fields (see `job-api.openapi.yaml` §JobMetrics)
-    - `JobOutput` - `type`, `result_consistent`, `sample_output`, `all_outputs`
+    - `JobRequest` - `model`, `input`, `repetitions`, `instrumentation`, `mode`,
+      `warmup_repetitions`, `batch_size`, `tags`, `timeout_secs`
+      - **No `model_zip`** - the model is configured on the Runner at startup
+    - `JobAccepted` - required fields: `job_id: String`, `status: String` (always `"accepted"`),
+      `queue_position: u32` (**required, non-optional** - always present in the 202 response),
+      `created_at: String`
+    - `JobStatusResponse` - `job_id: String`, `model: WorkloadType`, `mode: MeasurementMode`,
+      `repetitions: u32`, `status: JobStatusEnum`,
+      `queue_position: Option<u32>` (non-null only when `status == "accepted"`),
+      `created_at: String`, `started_at: Option<String>`, `completed_at: Option<String>`,
+      `error: Option<String>`, `tags: Option<HashMap<String,String>>`,
+      `hardware: Option<HardwareInfo>`, `metrics: Option<JobMetrics>`, `output: Option<JobOutput>`
+    - `HardwareInfo` - `type: String` (required), `model: Option<String>`,
+      `cores: Option<i64>`, `memory_total_kb: Option<i64>`, `accelerator_model: Option<String>`,
+      `clock_mhz: Option<f64>` (note: float, not integer - e.g. GR740 @ 250.0 MHz),
+      `os: Option<String>`
+    - `JobMetrics` - all nullable fields matching `job-api.openapi.yaml §JobMetrics`:
+      `return_code: Option<i64>`,
+      `time.avg_ms: Option<f64>`, `time.latency_p50_ms: Option<f64>`,
+      `time.latency_p95_ms: Option<f64>`, `time.latency_p99_ms: Option<f64>`,
+      `time.throughput_fps: Option<f64>`, `time.startup_ms: Option<f64>`,
+      `time.first_inference_ms: Option<f64>`,
+      `memory.avg_rss_kb: Option<f64>`, `memory.peak_rss_kb: Option<f64>`,
+      `memory.leaks_bytes: Option<i64>`, `memory.stack_kb: Option<f64>`,
+      `memory.heap_allocations: Option<i64>`,
+      `cpu.avg_normalized_pct: Option<f64>`,
+      `coverage.line_pct: Option<f64>`, `coverage.branch_pct: Option<f64>`,
+      `coverage.function_pct: Option<f64>`, `coverage.lines_covered: Option<i64>`,
+      `coverage.lines_total: Option<i64>`,
+      `static.warnings: Option<i64>`, `static.critical_issues: Option<i64>`,
+      `static.major_issues: Option<i64>`,
+      `binary.size_kb: Option<f64>`,
+      `power.avg_watts: Option<f64>`, `power.peak_watts: Option<f64>`,
+      `hardware.temperature_celsius: Option<f64>`
+      - Field names contain dots: use `#[serde(rename = "time.avg_ms")]` on every field
+      - `JobMetrics` is a flat struct, not a nested map
+    - `JobOutput` - `type`, `result_consistent`, `outputs: Option<Vec<serde_json::Value>>`,
+      `outputs_checksum: Option<String>`
   - All fields `Deserialize` + `Serialize`; `Option` fields use
     `#[serde(skip_serializing_if = "Option::is_none")]`
 
-- [ ] **T-041** Update `JobApiClient` for single-endpoint model (`src/api/client.rs`)
+- [ ] **T-041** Update `JobApiClient` for single-endpoint model (`src/runner_api/client.rs`)
   - `submit_job(&JobRequest) -> Result<String>` (job_id)
   - `get_job_status(job_id) -> Result<JobStatusResponse>`
   - `wait_for_job(job_id) -> Result<JobStatusResponse>`
+  - `get_docs() -> Result<DocsResponse>` - fetches `GET /api/v1/docs`
   - Remove `submit_run`, `get_run_status`, `wait_for_run`,
     `submit_analysis`, `get_analysis_status`, `wait_for_analysis`
   - Exponential backoff unchanged (1 s, x2, 30 s cap)
 
+- [ ] **T-043** Implement baseline checker (`src/baseline/mod.rs`)
+  - Called at session start before any jobs are submitted
+  - Call `client.get_docs()` → `DocsResponse`
+  - Parse each `StrictdocDocument.content` string: extract `[REQUIREMENT]` blocks,
+    `UID`, `STATUS`, `TITLE`, `VERIFICATION` field
+  - Classify each requirement:
+    - `VERIFICATION` contains `Test` → testable; requires a matching `.test.yaml`
+    - `VERIFICATION` contains only non-Test methods → compliant by declaration; no job needed
+  - ECSS compliance gate: if required baseline documents are missing or empty, halt with
+    a non-zero exit and a clear error message before any jobs are submitted
+  - Returns `RequirementSet { testable: Vec<Requirement>, compliant_by_declaration: Vec<Requirement> }`
+  - **Note**: full Strictdoc parsing (nested sections, relations, etc.) is deferred; only
+    the fields needed for the compliance gate and traceability matrix are extracted here
+  - Prerequisite of T-042 and T-044
+
+- [ ] **T-044** Implement `.test.yaml` spec loader (`src/specs/loader.rs`)
+  - Scans `config.test_specs.directory` for `*.test.yaml` files at runtime
+  - Deserializes each file into a `TestSpec` struct:
+    `requirement_uid`, `constraints: Vec<Constraint>` (metric key + op + value),
+    optional `workload`, `input`, `repetitions`, `instrumentation`, `mode`, `reference`
+  - Matches each spec to a requirement UID from `RequirementSet.testable`
+  - Detects UNCOVERED requirements (testable with no matching spec): records them as
+    failed and exits non-zero after reporting all uncovered UIDs
+  - Supersedes the compile-time `all_specs()` approach (T-032) for the Reporter's primary
+    workflow; T-032 remains valid for the dev server (T-063)
+  - Prerequisite of T-042
+
 - [ ] **T-042** Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
   - Group specs by `(workload_type, input_key)` → deduplicated `Vec<JobRequest>`
-  - If a model ZIP path is present (from config or CLI), read and base64-encode it once; embed the encoded bytes in every `JobRequest` as `model_zip`
+  - No `model_zip` - omit entirely from `JobRequest`
   - No metric routing by prefix - all constraints reference fields of `JobMetrics` directly
-  - Submit all jobs concurrently; `tokio::join_all` on futures
+  - Submit all jobs upfront; Runner executes sequentially (queue); Reporter polls each
+    job ID via `wait_for_job` with exponential backoff
   - Map nullable `JobMetrics` field → `MetricValue` (null → `ConstraintOutcome { passed: false }`)
-  - After job completes: if `output.all_outputs` is non-null, pass to accuracy evaluator
+  - After job completes: if `output.outputs` is non-null, pass to accuracy evaluator
     (client-side computation of accuracy/F1/IoU/L2 against reference labels from spec)
   - Assemble `RunResult` with one `SpecResult` per spec
 
@@ -437,12 +510,17 @@ at the bottom of the file. No other file needs to change.
   - Printed at end of every `sqt run`
 
 - [ ] **T-053** Implement traceability matrix (plain text + JSON)
-  - Maps each requirement UID → verification status + evidence file paths
+  - Requires input from T-043 (requirement set) and T-044 (spec matching results)
+  - Must cover all three ECSS-required categories for every requirement:
+    - **Tested**: covered by a `.test.yaml` spec + job result (pass/fail + evidence paths)
+    - **Compliant by declaration**: non-Test requirements accepted on server's authority;
+      recorded with `evidence_source: server_declaration` and the declared verification methods
+    - **Uncovered**: testable requirements with no matching `.test.yaml` spec (always fail)
   - Written to `traceability.json` and `traceability.txt`
-  - Basis for the future PDF QDP report
+  - Basis for the future PDF QDP report (T-055)
 
 - [ ] **T-054** Implement client-side accuracy evaluator (`src/accuracy/mod.rs`)
-  - Called after a completed job when `output.all_outputs` is non-null
+  - Called after a completed job when `output.outputs` is non-null
   - Compares outputs against reference labels attached to the `TestSpec`
   - Computes configurable metrics per workload type:
     - `image_classification`, `classification`: accuracy, F1, precision, recall
@@ -452,6 +530,13 @@ at the bottom of the file. No other file needs to change.
   - Returns a `Vec<MetricValue>` that feeds into `ConstraintEvaluator` like any other metric
   - Reference labels are attached to `TestSpec` as an optional `reference: Vec<serde_json::Value>`
     field; if absent, accuracy constraints for that spec are skipped with a warning
+
+- [ ] **T-055** QDP packaging (`src/report/qdp.rs`) *(deferred - after T-053 is stable)*
+  - Bundle all report outputs into `qdp.zip` with a manifest file
+  - Minimum contents: `system-test-report.pdf` (or `.json` until PDF is implemented),
+    `traceability.json`, `traceability.txt`, evidence files from `EvidenceStore`
+  - The QDP is a required ECSS output artefact (ARCHITECTURE.md Section 1, 6.2, 7 step 9)
+  - Scope: packaging only; report generation is T-051/T-053; PDF generation is post-T-055
 
 ---
 
@@ -471,11 +556,11 @@ at the bottom of the file. No other file needs to change.
   - `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
   - Runs on every push to `main` and every pull request
 
-- [ ] **T-063** Local dev API server binary
+- [ ] **T-063** Local dev API server binary (`sqt-server`)
   - Second binary in the Cargo workspace: `sqt-server`
   - Uses the Phase 2 metric collectors as task implementations
-  - Implements the `job-api.openapi.yaml` contract
-  - Allows end-to-end testing without a live Klepsydra endpoint
+  - Implements the `job-api.openapi.yaml` contract (SQT Runner interface)
+  - Allows end-to-end testing without a live SQT Runner deployment
 
 ---
 
@@ -499,12 +584,15 @@ Phase 3 (new):
   T-035 ◄── T-002, T-003, T-013
 
 Phase 4 (API redesign - single endpoint):
-  T-040 (types) ──► T-041 (client) ──► T-042 (orchestrator rewrite)
-  T-042 ◄── T-032, T-035
+  T-040 (types) ──► T-041 (client) ──► T-043 (baseline checker)
+  T-043 ──► T-044 (spec loader)
+  T-041 + T-043 + T-044 ──► T-042 (orchestrator rewrite)
+  T-042 ◄── T-035
 
 Phase 4 (reporting + accuracy):
-  T-050 ──► T-051 ──► T-052 ──► T-053
-  T-050 ◄── T-042
+  T-050 ──► T-051 ──► T-052
+  T-043 + T-044 + T-050 ──► T-053 (traceability matrix)
+  T-053 ──► T-055 (QDP packaging)
   T-054 (accuracy evaluator) ◄── T-042
 
 Phase 5: T-060 ──► T-061 ──► T-062 ──► T-063
@@ -517,11 +605,11 @@ Phase 5: T-060 ──► T-061 ──► T-062 ──► T-063
 
 | Feature | When |
 |---|---|
-| StrictDoc parsing | Phase 2 of the project - will generate Rust specs automatically |
-| Dynamic plugin loading (external process) | After compile-time approach is validated |
+| StrictDoc parsing from `GET /api/v1/docs` | Phase 2 - Reporter fetches docs at session start and auto-generates specs |
+| Dynamic plugin loading (external process) | Explicitly rejected (AD-012); compile-time only |
 | PDF QDP report generation | After traceability matrix is stable |
-| Full SonarQube quality-gate integration | After basic collectors are working |
-| GR740 / GR765 hardware targets | After Klepsydra API contract is finalised |
+| Full SonarQube quality-gate integration | After basic collectors are working in Runner |
+| GR740 / GR765 hardware targets | After TAL design is confirmed with Klepsydra |
 | HTML interactive report | Nice-to-have, after JSON report is working |
 
 ---
