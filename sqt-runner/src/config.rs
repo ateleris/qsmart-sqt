@@ -422,4 +422,175 @@ tools:
         assert!(tc.sonar_url.is_none());
         assert!(tc.static_image.is_none());
     }
+
+    #[test]
+    fn tool_config_reads_sonar_token_from_env() {
+        let yaml = r#"
+binary:
+  path: app
+tools:
+  run:
+    image: run:1
+  sonarqube:
+    url: http://sonar:9000
+    token_env: MY_SONAR_TOKEN
+"#;
+        // SAFETY: test-only, single-threaded context
+        unsafe { std::env::set_var("MY_SONAR_TOKEN", "secret-token") };
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let tc = ToolConfig::from_server_config(&config);
+        assert_eq!(tc.sonar_url.as_deref(), Some("http://sonar:9000"));
+        assert_eq!(tc.sonar_token.as_deref(), Some("secret-token"));
+        unsafe { std::env::remove_var("MY_SONAR_TOKEN") };
+    }
+
+    #[test]
+    fn tool_config_sonar_token_absent_when_env_unset() {
+        let yaml = r#"
+binary:
+  path: app
+tools:
+  run:
+    image: run:1
+  sonarqube:
+    url: http://sonar:9000
+"#;
+        // SAFETY: test-only, single-threaded context
+        unsafe { std::env::remove_var("SONAR_TOKEN") };
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let tc = ToolConfig::from_server_config(&config);
+        assert!(tc.sonar_token.is_none());
+    }
+
+    #[test]
+    fn parse_env_input_mode_empty_var_name_is_error() {
+        let yaml = r#"
+binary:
+  path: app
+  input_mode: "env:"
+"#;
+        let result: Result<ServerConfig, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn server_config_load_resolves_relative_paths() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("sqt-runner.yaml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+binary:
+  path: artifacts/ml_l_inference
+workspace: workspace
+tools:
+  run:
+    image: sqt-run:latest
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(&config_path).unwrap();
+
+        assert!(config.binary.path.starts_with('/'), "binary path must be absolute");
+        assert!(config.workspace.is_absolute(), "workspace must be absolute");
+    }
+
+    #[test]
+    fn server_config_load_resolves_build_paths() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("sqt-runner.yaml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+binary:
+  path: /bin/app
+tools:
+  run:
+    image: sqt-run:latest
+build:
+  image: gcc:14
+  source: src/main.cpp
+  engine_lib: lib/libengine.so
+  include_dirs:
+    - include/
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(&config_path).unwrap();
+        let build = config.build.unwrap();
+
+        assert!(
+            PathBuf::from(&build.source).is_absolute(),
+            "build.source must be absolute"
+        );
+        assert!(
+            PathBuf::from(&build.engine_lib).is_absolute(),
+            "build.engine_lib must be absolute"
+        );
+        assert!(
+            PathBuf::from(&build.include_dirs[0]).is_absolute(),
+            "include_dirs[0] must be absolute"
+        );
+    }
+
+    #[test]
+    fn server_config_load_resolves_docs_directory() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("sqt-runner.yaml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+binary:
+  path: /bin/app
+tools:
+  run:
+    image: sqt-run:latest
+docs:
+  directory: docs/
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(&config_path).unwrap();
+        let docs = config.docs.unwrap();
+
+        assert!(docs.directory.is_absolute(), "docs.directory must be absolute");
+    }
+
+    #[test]
+    fn server_config_load_keeps_absolute_paths_unchanged() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("sqt-runner.yaml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+binary:
+  path: /absolute/path/app
+workspace: /absolute/workspace
+tools:
+  run:
+    image: sqt-run:latest
+"#
+        )
+        .unwrap();
+
+        let config = ServerConfig::load(&config_path).unwrap();
+
+        assert_eq!(config.binary.path, "/absolute/path/app");
+        assert_eq!(config.workspace, PathBuf::from("/absolute/workspace"));
+    }
 }

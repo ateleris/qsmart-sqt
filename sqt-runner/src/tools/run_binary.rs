@@ -238,4 +238,45 @@ mod tests {
             "./app"
         );
     }
+
+    #[test]
+    fn invocation_stdin_no_input() {
+        let config = make_config("./app", &["--flag"], InputMode::Stdin);
+        assert_eq!(build_binary_invocation(&config, None), "./app --flag");
+    }
+
+    #[test]
+    fn shell_join_quotes_spaces() {
+        let parts = vec!["/usr/bin/app".to_string(), "arg with space".to_string()];
+        let result = shell_join(&parts);
+        assert_eq!(result, "/usr/bin/app 'arg with space'");
+    }
+
+    #[test]
+    fn shell_join_escapes_single_quotes() {
+        let parts = vec!["./app".to_string(), "it's".to_string()];
+        let result = shell_join(&parts);
+        assert_eq!(result, "./app 'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_join_plain_args_unquoted() {
+        let parts = vec!["./app".to_string(), "--model".to_string(), "resnet50".to_string()];
+        assert_eq!(shell_join(&parts), "./app --model resnet50");
+    }
+
+    #[test]
+    fn parse_time_field_strips_percent() {
+        let text = "\tPercent of CPU this job got: 75%\n";
+        assert_eq!(
+            parse_time_field(text, "Percent of CPU this job got:"),
+            Some(75.0)
+        );
+    }
+
+    #[test]
+    fn parse_time_field_returns_none_for_non_numeric() {
+        let text = "\tSome field: not-a-number\n";
+        assert_eq!(parse_time_field(text, "Some field:"), None);
+    }
 }

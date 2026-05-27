@@ -360,6 +360,192 @@ fn mime_type_for(filename: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::routing::{get, post};
+    use http_body_util::BodyExt as _;
+    use sqt_types::{HardwareInfo, JobMetrics};
+    use tokio::sync::Semaphore;
+    use tower::ServiceExt as _;
+
+    use crate::executor::JobExecutor;
+    use crate::store;
+
+    struct StubExecutor;
+    impl JobExecutor for StubExecutor {
+        fn execute(&self, _req: &sqt_types::JobRequest, _ws: &std::path::Path) -> anyhow::Result<JobMetrics> {
+            Ok(JobMetrics::default())
+        }
+        fn hardware_info(&self) -> HardwareInfo { HardwareInfo::default() }
+    }
+
+    fn test_app(docs_dir: Option<std::path::PathBuf>) -> Router {
+        let state = AppState {
+            store: store::new_store(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            executor: Arc::new(StubExecutor),
+            job_semaphore: Arc::new(Semaphore::new(1)),
+            docs_dir,
+        };
+        Router::new()
+            .route("/api/v1/jobs", post(create_job))
+            .route("/api/v1/jobs/{job_id}", get(get_job))
+            .route("/api/v1/docs", get(get_docs))
+            .with_state(state)
+    }
+
+    async fn body_json(body: axum::body::Body) -> serde_json::Value {
+        let bytes = body.collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ---- GET /api/v1/jobs/{job_id} ------------------------------------------
+
+    #[tokio::test]
+    async fn get_job_unknown_id_returns_404() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/jobs/no-such-job")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["error"]["code"], "JOB_NOT_FOUND");
+    }
+
+    // ---- GET /api/v1/docs ---------------------------------------------------
+
+    #[tokio::test]
+    async fn get_docs_not_configured_returns_404() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/docs")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["error"]["code"], "DOCS_NOT_CONFIGURED");
+    }
+
+    #[tokio::test]
+    async fn get_docs_empty_directory_returns_empty_arrays() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(Some(dir.path().to_path_buf()));
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/docs")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["documents"], serde_json::json!([]));
+        assert_eq!(json["attachments"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn get_docs_returns_sdoc_in_documents_and_pdf_in_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("reqs.sdoc"),
+            "[DOCUMENT]\nTITLE: Test Reqs\n\n[REQUIREMENT]\nUID: R-001\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("evidence.pdf"), b"%PDF placeholder").unwrap();
+
+        let app = test_app(Some(dir.path().to_path_buf()));
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/docs")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+
+        assert_eq!(json["documents"].as_array().unwrap().len(), 1);
+        assert_eq!(json["documents"][0]["filename"], "reqs.sdoc");
+        assert_eq!(json["documents"][0]["title"], "Test Reqs");
+        assert!(json["documents"][0]["content"].as_str().unwrap().contains("R-001"));
+
+        assert_eq!(json["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(json["attachments"][0]["filename"], "evidence.pdf");
+        assert_eq!(json["attachments"][0]["content_type"], "application/pdf");
+        assert!(json["attachments"][0]["data"].as_str().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn get_docs_nonexistent_directory_returns_500() {
+        let app = test_app(Some(std::path::PathBuf::from("/nonexistent/path/12345")));
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/docs")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["error"]["code"], "DOCS_READ_ERROR");
+    }
+
+    // ---- POST /api/v1/jobs --------------------------------------------------
+
+    #[tokio::test]
+    async fn post_job_accepted_returns_202() {
+        let app = test_app(None);
+        let body = serde_json::json!({ "model": "image_classification" });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/jobs")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "accepted");
+        assert!(json["job_id"].as_str().unwrap().len() > 0);
+        assert_eq!(json["queue_position"], 1);
+    }
+
+    #[tokio::test]
+    async fn post_job_returns_job_id_that_is_retrievable() {
+        let state = AppState {
+            store: store::new_store(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            executor: Arc::new(StubExecutor),
+            job_semaphore: Arc::new(Semaphore::new(1)),
+            docs_dir: None,
+        };
+        let app = Router::new()
+            .route("/api/v1/jobs", post(create_job))
+            .route("/api/v1/jobs/{job_id}", get(get_job))
+            .with_state(state);
+
+        // Submit a job and capture the job_id.
+        let body = serde_json::json!({ "model": "regression" });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/jobs")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        let job_id = json["job_id"].as_str().unwrap().to_string();
+
+        // Poll for the job - it should be found (accepted or already complete).
+        let req = axum::http::Request::builder()
+            .uri(format!("/api/v1/jobs/{job_id}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["job_id"], job_id);
+        assert_eq!(json["model"], "regression");
+    }
 
     #[test]
     fn extract_title_from_document_block() {
