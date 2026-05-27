@@ -10,8 +10,6 @@ env:
 jobs:
   build:
     runs-on: self-hosted
-    container:
-      image: ghcr.io/ateleris/qsmart-sqt/ci:latest
 
     steps:
       - uses: actions/checkout@v6

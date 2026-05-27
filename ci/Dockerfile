@@ -1,9 +1,7 @@
-FROM debian:trixie-slim
+FROM myoung34/github-runner:latest
 
+# Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    git \
     pkg-config \
     libssl-dev \
     build-essential \
