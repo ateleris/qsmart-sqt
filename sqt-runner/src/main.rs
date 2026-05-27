@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -7,12 +8,13 @@ use clap::Parser;
 
 mod config;
 mod docker;
+mod executor;
 mod handlers;
-mod run_job;
 mod store;
 mod tools;
 
 use config::{ServerConfig, ToolConfig};
+use executor::docker::DockerExecutor;
 
 #[derive(Parser)]
 #[command(
@@ -64,6 +66,12 @@ async fn main() {
     }
     tracing::info!("input mode: {:?}", server_config.binary.input_mode);
 
+    if let Some(ref build) = server_config.build {
+        tracing::info!("build image: {}", build.image);
+        tracing::info!("build source: {}", build.source);
+        tracing::info!("build engine_lib: {}", build.engine_lib);
+    }
+
     if let Some(ref img) = tool_config.run_image {
         tracing::info!("run image: {img}");
     }
@@ -80,7 +88,7 @@ async fn main() {
         tracing::info!("static analysis image: {img}");
     }
 
-    // --- Preflight checks (fail fast) -----------------------------------------
+    // --- Preflight checks (fail fast) ----------------------------------------
     tracing::info!("running preflight checks...");
 
     docker::check_docker().expect("preflight: Docker check failed");
@@ -91,6 +99,7 @@ async fn main() {
         (tool_config.valgrind_image.as_deref(), "valgrind"),
         (tool_config.coverage_image.as_deref(), "coverage"),
         (tool_config.static_image.as_deref(), "static_analysis"),
+        (server_config.build.as_ref().map(|b| b.image.as_str()), "build"),
     ]
     .into_iter()
     .filter_map(|(img, name)| img.map(|i| (i, name)))
@@ -102,11 +111,17 @@ async fn main() {
         tracing::info!("{name} image OK: {image}");
     }
 
-    // Check binary is executable inside the run image
-    if let Some(ref run_image) = tool_config.run_image {
-        docker::check_binary_in_image(run_image, &server_config.binary.path)
-            .expect("preflight: binary check failed");
-        tracing::info!("binary OK: {} (in {})", server_config.binary.path, run_image);
+    // Check binary is executable inside the run image (only for pre-built binaries)
+    if server_config.build.is_none() {
+        if let Some(ref run_image) = tool_config.run_image {
+            docker::check_binary_in_image(run_image, &server_config.binary.path)
+                .expect("preflight: binary check failed");
+            tracing::info!(
+                "binary OK: {} (in {})",
+                server_config.binary.path,
+                run_image
+            );
+        }
     }
 
     tracing::info!("preflight checks passed");
@@ -115,11 +130,17 @@ async fn main() {
     std::fs::create_dir_all(&server_config.workspace)
         .expect("failed to create workspace directory");
 
+    let executor = Arc::new(DockerExecutor::new(
+        server_config.binary,
+        server_config.build,
+        tool_config,
+        server_config.hardware,
+    ));
+
     let state = handlers::AppState {
         store: store::new_store(),
-        workspace: server_config.workspace.clone(),
-        binary_config: std::sync::Arc::new(server_config.binary),
-        tool_config: std::sync::Arc::new(tool_config),
+        workspace: server_config.workspace,
+        executor,
     };
 
     let app = Router::new()

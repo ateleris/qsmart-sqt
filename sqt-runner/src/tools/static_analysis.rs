@@ -50,7 +50,9 @@ fn count_warnings(text: &str) -> i64 {
             let lower = line.to_lowercase();
             lower.contains("warning") || lower.contains("[warning]")
         })
-        .count() as i64
+        .count()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

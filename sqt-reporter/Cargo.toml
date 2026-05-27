@@ -12,23 +12,22 @@ name = "sqt"
 path = "src/main.rs"
 
 [dependencies]
-sqt-api-types = { path = "../sqt-api-types" }
-clap = { version = "4", features = ["derive", "env"] }
-serde = { version = "1", features = ["derive"] }
-serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
+sqt-api-types = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
 anyhow = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-serde_json = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-inventory = "0.3"
-futures = "0.3"
+tokio = { workspace = true, features = ["time"] }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+inventory = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

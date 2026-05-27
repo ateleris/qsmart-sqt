@@ -118,6 +118,43 @@ pub struct StaticAnalysisToolConfig {
     pub image: String,
 }
 
+/// Build configuration for compiling the main program source against the ML-L
+/// engine shared library.
+///
+/// When present, the runner compiles the source file before each job run.
+/// Omit entirely when using a pre-built binary (the common case during
+/// development).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BuildConfig {
+    /// Docker image that provides the compiler and toolchain (e.g.
+    /// `gcc:14-bookworm`).
+    pub image: String,
+
+    /// Absolute path to the main program source file (.cpp / .c).
+    pub source: String,
+
+    /// Absolute path to the ML-L engine shared library (.so) to link against.
+    /// The library is also copied into the workspace so the binary can find it
+    /// at runtime via `LD_LIBRARY_PATH`.
+    pub engine_lib: String,
+
+    /// Compiler executable (default: `g++`).
+    #[serde(default = "default_compiler")]
+    pub compiler: String,
+
+    /// Extra compiler/linker flags appended after instrumentation flags.
+    #[serde(default)]
+    pub extra_flags: Vec<String>,
+
+    /// Additional directories added as `-I` include paths.
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+}
+
+fn default_compiler() -> String {
+    "g++".into()
+}
+
 /// Top-level server configuration loaded from a YAML file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -131,6 +168,21 @@ pub struct ServerConfig {
     /// Per-tool configuration.
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    /// Build configuration for compiling the main program source.
+    ///
+    /// When set, the runner compiles the source before each job and links it
+    /// against the ML-L engine shared library. When absent, `binary.path`
+    /// must point to a pre-built executable.
+    #[serde(default)]
+    pub build: Option<BuildConfig>,
+
+    /// Description of the target hardware.
+    ///
+    /// Returned verbatim in `JobStatusResponse.hardware` so the reporter can
+    /// record which device produced each result.
+    #[serde(default)]
+    pub hardware: sqt_api_types::HardwareInfo,
 }
 
 fn default_workspace() -> PathBuf {

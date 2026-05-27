@@ -28,7 +28,7 @@ pub fn collect(
         "--tool=memcheck".to_string(),
         "--xml=yes".to_string(),
         format!("--xml-file={}", xml_path.display()),
-        binary.to_string(),
+        binary.clone(),
     ];
     // Append configured binary arguments
     command.extend(binary_config.args.iter().cloned());

@@ -1,7 +1,7 @@
 mod example;
 mod example2;
 
-use crate::api::types::WorkloadType;
+use sqt_api_types::WorkloadType;
 use crate::constraint::{Constraint, ConstraintOutcome};
 use crate::metrics::Target;
 
@@ -126,7 +126,7 @@ mod tests {
         // Both example specs must explicitly declare ImageClassification.
         // If workload_type were left defaulted they'd silently use the default
         // value; this test pins the explicit choice so a future change is noticed.
-        use crate::api::types::WorkloadType;
+        use sqt_api_types::WorkloadType;
         let specs = all_specs();
         let uid_001 = specs.iter().find(|s| s.requirement_uid == "REQ-EXAMPLE-001");
         let uid_002 = specs.iter().find(|s| s.requirement_uid == "REQ-EXAMPLE-002");

@@ -125,7 +125,7 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
             image = %spec.image,
             container = %container_name,
             exit_code,
-            wall_ms = wall_time.as_millis() as u64,
+            wall_ms = wall_time.as_secs_f64() * 1000.0,
             stdout = %stdout_text,
             stderr = %stderr_text,
             "docker container exited with non-zero status"
@@ -135,7 +135,7 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
             image = %spec.image,
             container = %container_name,
             exit_code,
-            wall_ms = wall_time.as_millis() as u64,
+            wall_ms = wall_time.as_secs_f64() * 1000.0,
             stdout = %stdout_text,
             stderr = %stderr_text,
             "docker container finished"

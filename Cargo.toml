@@ -1,3 +1,21 @@
 [workspace]
 members = ["sqt-api-types", "sqt-reporter", "sqt-runner"]
 resolver = "2"
+
+[workspace.dependencies]
+sqt-api-types = { path = "./sqt-api-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+inventory = "0.3"
+futures = "0.3"
+clap = { version = "4", features = ["derive", "env"] }
+axum = "0.8"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"

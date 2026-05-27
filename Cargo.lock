@@ -1489,7 +1489,6 @@ dependencies = [
  "serde_yaml_ng",
  "sqt-api-types",
  "tempfile",
- "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",

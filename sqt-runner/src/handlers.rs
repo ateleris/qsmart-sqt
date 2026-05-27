@@ -12,7 +12,7 @@ use sqt_api_types::{
 };
 use uuid::Uuid;
 
-use crate::config::{BinaryConfig, ToolConfig};
+use crate::executor::JobExecutor;
 use crate::store::{self, JobStore};
 
 /// Shared application state passed to all handlers.
@@ -20,8 +20,7 @@ use crate::store::{self, JobStore};
 pub struct AppState {
     pub store: JobStore,
     pub workspace: PathBuf,
-    pub binary_config: Arc<BinaryConfig>,
-    pub tool_config: Arc<ToolConfig>,
+    pub executor: Arc<dyn JobExecutor>,
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +32,6 @@ pub async fn create_job(
     Json(req): Json<JobRequest>,
 ) -> (StatusCode, Json<JobAccepted>) {
     let job_id = Uuid::new_v4().to_string();
-    let timeout_secs = req.timeout_secs.unwrap_or(60);
 
     let job = store::JobState::new(job_id.clone(), req.model.clone());
     let created_at = job.created_at.clone();
@@ -43,31 +41,18 @@ pub async fn create_job(
         store.insert(job_id.clone(), job);
     }
 
-    let input = req.input.as_ref().and_then(|v| {
-        if v.as_str().is_none() {
-            tracing::warn!(
-                job_id = %job_id,
-                input = ?v,
-                "job input is not a plain string — only string inputs are supported \
-                 by the dev server; input will be ignored"
-            );
-        }
-        v.as_str().map(|s| s.to_string())
-    });
-
     tracing::info!(
         job_id = %job_id,
         model = ?req.model,
-        input = ?input,
-        timeout_secs,
+        input = ?req.input,
+        timeout_secs = ?req.timeout_secs,
         "POST /api/v1/jobs - accepted"
     );
 
     // Spawn background execution
     let store = state.store.clone();
     let workspace = state.workspace.clone();
-    let config = state.tool_config.clone();
-    let binary_config = state.binary_config.clone();
+    let executor = state.executor.clone();
     let id = job_id.clone();
 
     tokio::spawn(async move {
@@ -82,18 +67,8 @@ pub async fn create_job(
 
         let result = tokio::task::spawn_blocking({
             let workspace = workspace.clone();
-            let config = config.clone();
-            let binary_config = binary_config.clone();
-            let input = input.clone();
-            move || {
-                crate::run_job::execute(
-                    &binary_config,
-                    input.as_deref(),
-                    timeout_secs,
-                    &workspace,
-                    &config,
-                )
-            }
+            let req = req.clone();
+            move || executor.execute(&req, &workspace)
         })
         .await;
 
@@ -149,7 +124,6 @@ pub async fn get_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobStatusResponse>, NotFound> {
-    // Snapshot under read lock, then release before constructing the response.
     let snapshot = {
         let store = state.store.read().await;
         store.get(&job_id).map(|job| {
@@ -198,7 +172,7 @@ pub async fn get_job(
         completed_at,
         error,
         tags: None,
-        hardware: None,
+        hardware: Some(state.executor.hardware_info()),
         metrics: metrics.unwrap_or_default(),
         output: None,
     }))

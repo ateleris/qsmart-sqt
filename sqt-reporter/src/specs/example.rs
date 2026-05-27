@@ -1,4 +1,4 @@
-use crate::api::types::WorkloadType;
+use sqt_api_types::WorkloadType;
 use crate::constraint::{Constraint, Op};
 use crate::metrics::Target;
 use crate::specs::{SpecFactory, TestSpec};

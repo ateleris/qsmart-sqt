@@ -115,6 +115,20 @@ pub struct HardwareInfo {
     pub os: Option<String>,
 }
 
+impl Default for HardwareInfo {
+    fn default() -> Self {
+        Self {
+            hw_type: "unknown".into(),
+            model: None,
+            cores: None,
+            memory_total_kb: None,
+            accelerator_model: None,
+            clock_mhz: None,
+            os: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unified metrics (all fields nullable; null = tool unavailable)
 // ---------------------------------------------------------------------------
