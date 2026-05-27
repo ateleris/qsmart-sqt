@@ -9,18 +9,13 @@ env:
 
 jobs:
   build:
-
     runs-on: self-hosted
-
-#    container:
-#      image: rust:1.95-trixie
+    container:
+      image: ghcr.io/ateleris/qsmart-sqt/ci:latest
 
     steps:
-    - uses: actions/checkout@v6
-    - uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: "1.95"
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v6
+      - name: Build
+        run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose
