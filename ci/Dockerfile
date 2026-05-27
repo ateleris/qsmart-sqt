@@ -20,3 +20,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain 1.95 --profile minimal --no-modify-path \
     && chmod -R a+w /usr/local/rustup /usr/local/cargo
+
+# Coverage tooling
+RUN rustup component add llvm-tools-preview \
+    && cargo install cargo-llvm-cov --locked
