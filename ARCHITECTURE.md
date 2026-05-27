@@ -642,9 +642,7 @@ The syntax is intentionally uniform: the user specifies `metric`, `operator`, an
 
 #### 4.5.3 Core Metric Catalogue
 
-The following built-in metrics ship with SQT Reporter. Each is implemented as an internal metric collector (same interface as plugins, but compiled in):
-
-These names correspond directly to keys in the `JobStatusResponse.metrics` object (see `job-api.openapi.yaml`). The Reporter evaluates constraints by looking up each key in the returned metrics map.
+These names correspond directly to keys in the `JobStatusResponse.metrics` object returned by the Runner (see `job-api.openapi.yaml`). The Runner collects and fills them; the Reporter evaluates constraints by looking up each key in the returned map.
 
 **Memory Metrics**
 
@@ -653,6 +651,8 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 | `memory.peak_rss_kb` | KB | Peak resident set size |
 | `memory.avg_rss_kb` | KB | Average resident set size across repetitions |
 | `memory.leaks_bytes` | bytes | Leaked bytes (Valgrind / ASan); 0 = no leaks |
+| `memory.stack_kb` | KB | Peak stack usage; critical on RTEMS/baremetal fixed-stack targets |
+| `memory.heap_allocations` | count | Total heap allocation calls; 0 required for post-init safety-critical code |
 
 **Timing Metrics**
 
@@ -692,6 +692,14 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 | `cpu.avg_normalized_pct` | % | CPU utilisation normalised to all available compute |
 | `binary.size_kb` | KB | On-disk binary size |
 
+**Power / Thermal Metrics**
+
+| Metric key | Unit | Description |
+|------------|------|-------------|
+| `power.avg_watts` | W | Average power draw during inference |
+| `power.peak_watts` | W | Peak power draw across all repetitions |
+| `hardware.temperature_celsius` | °C | Average die/board temperature during the run |
+
 **Phase 1 MVP** targets the most critical metrics: `memory.peak_rss_kb`, `memory.leaks_bytes`, `time.avg_ms`, `time.latency_p95_ms`, `return_code`, `static.critical_issues`, `coverage.line_pct`, `cpu.avg_normalized_pct`.
 
 #### 4.5.4 Execution Flow
@@ -699,26 +707,25 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 ```rust
 // Pseudo-code: API-driven orchestration
 
-// Collect all required task names from specs
-let tasks: Vec<TaskSpec> = specs.iter()
-    .flat_map(|s| s.constraints.iter())
-    .map(|c| TaskSpec { name: c.metric_name.clone(), config: c.config.clone() })
-    .collect();
-
-// Submit ONE job with all tasks
-let job_id = api_client.submit_job(&target, &tasks).await?;
+// Submit one job per testable requirement
+let job_id = api_client.submit_job(&JobRequest {
+    model: spec.workload_type,
+    input: spec.input.clone(),
+    repetitions: spec.repetitions,
+    instrumentation: spec.instrumentation,
+    mode: spec.mode,
+    tags: [("requirement_uid", &spec.requirement_uid)].into(),
+    ..Default::default()
+}).await?;
 
 // Poll until complete (exponential backoff)
 let job = api_client.wait_for_completion(&job_id).await?;
 
-// Evaluate constraints against task results
-for spec in &specs {
-    for constraint in &spec.constraints {
-        let task_result = job.tasks.get(&constraint.metric_name)?;
-        let actual = MetricValue::new(task_result.value, &task_result.unit);
-        let outcome = evaluate(&actual, constraint);
-        results.push(outcome);
-    }
+// Evaluate constraints against returned metrics (flat map)
+for constraint in &spec.constraints {
+    let actual = job.metrics.get(&constraint.metric);  // e.g. "time.avg_ms"
+    let outcome = evaluate(actual, constraint);
+    results.push(outcome);
 }
 ```
 
@@ -1705,7 +1712,7 @@ Every collector - built-in or user-added - implements the same trait:
 // src/metrics/mod.rs
 
 pub trait MetricCollector: Send + Sync {
-    /// Unique metric name, e.g. "memory.peak_rss" or "custom.model_drift"
+    /// Unique metric name, e.g. "memory.peak_rss_kb" or "custom.model_drift"
     fn name(&self) -> &str;
 
     /// Execute the measurement and return the value + evidence artifacts.
@@ -1744,7 +1751,7 @@ inventory::collect!(CollectorFactory);
 pub struct MemoryPeakRssCollector;
 
 impl MetricCollector for MemoryPeakRssCollector {
-    fn name(&self) -> &str { "memory.peak_rss" }
+    fn name(&self) -> &str { "memory.peak_rss_kb" }
     fn collect(&self, target: &Target, _config: &serde_yaml::Value) -> anyhow::Result<MetricValue> {
         // spawn /usr/bin/time -v, parse "Maximum resident set size"
     }

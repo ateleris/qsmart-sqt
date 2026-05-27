@@ -348,7 +348,7 @@ paths:
 
         The `metric` names correspond directly to keys in the
         `JobStatusResponse.metrics` object returned by `GET /api/v1/jobs/{id}`.
-        SQT submits a qualification job, waits for completion, then evaluates
+        SQT Reporter submits a qualification job, waits for completion, then evaluates
         each constraint against the returned metric value.
 
         ## Non-testable requirements
