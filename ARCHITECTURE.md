@@ -1,10 +1,10 @@
 # Q-SMART SQT Architecture Overview
 
 **Project**: Qualified Software Machine Learning Toolkit for Space Hardware
-**Component**: SQT Generic (Ateleris responsibility)
-**Technology**: Rust application
-**Version**: 1.0
-**Date**: 2026-02-13
+**Components**: SQT Runner + SQT Reporter (both Ateleris responsibility)
+**Technology**: Rust applications
+**Version**: 1.1
+**Date**: 2026-05-27
 
 ---
 
@@ -16,11 +16,11 @@
 - [4. Requirements Management](#4-requirements-management)
   - [4.5 Declarative Test Specifications](#45-declarative-test-specifications)
   - [4.6 Compliant Requirements (Non-Testable)](#46-compliant-requirements-non-testable)
-- [5. REST API Interface](#5-rest-api-interface)
+- [5. REST API Interface (SQT Runner)](#5-rest-api-interface-sqt-runner)
   - [5.10 Requirements Documents Endpoint](#510-requirements-documents-endpoint)
 - [6. Scope Definition](#6-scope-definition)
-- [7. Requirements to Code Flow](#7-requirements-to-code-flow)
-- [8. Hardware & Emulation Strategy](#8-hardware--emulation-strategy)
+- [7. Qualification Workflow](#7-qualification-workflow)
+- [8. SQT Runner Target Architecture](#8-sqt-runner-target-architecture)
 - [9. Report Generation](#9-report-generation)
 - [10. Metric Extensibility](#10-metric-extensibility)
 - [11. Technology Stack](#11-technology-stack)
@@ -32,20 +32,36 @@
 
 ## 1. Executive Summary
 
-The Software Qualification Toolkit (SQT) Generic is the open-source component of the Q-SMART qualification infrastructure. It orchestrates the qualification process for Machine Learning Libraries (ML-L) targeting space-grade hardware by:
+The Software Qualification Toolkit (SQT) is the Ateleris-developed component of the Q-SMART qualification infrastructure. It qualifies Machine Learning Libraries (ML-L) targeting space-grade hardware and consists of **two distinct Rust applications**:
 
-- **Parsing requirements** from Strictdoc format
-- **Orchestrating quality tools** (static analysis, unit testing, coverage)
-- **Interfacing with ML-L Specific** via REST API for hardware-specific validation
-- **Generating ECSS-compliant reports** (PDF, HTML) with requirements traceability
+### SQT Runner
+
+The SQT Runner is a REST API server deployed on **customer-provided hardware**. It is the component that actually executes tests against the AI system under qualification. It:
+
+- **Assembles the AI system** from the ML-L Provider's artifacts (inference engine, trained model, main program) into a fully runnable task
+- **Executes Space Profile tests** (functional tests defined by ESA and Klepsydra) and **Performance tests** (timing, memory, throughput) against the assembled system
+- **Serves static qualification artifacts** (ECSS documentation baseline, unit test results, validation test results) pre-placed on its filesystem by the ML-L Provider
+- **Exposes a REST API** (`job-api.openapi.yaml`) that the SQT Reporter calls to trigger and monitor test jobs
+- **Supports multiple execution targets** via a pluggable target layer (x86\_64/Linux native in scope; GR740 and GR765 planned for future extension)
+
+### SQT Reporter
+
+The SQT Reporter is a CLI application that **orchestrates the full qualification session**. It:
+
+- **Fetches and validates** the ECSS documentation baseline and static test results from the SQT Runner
+- **Checks requirements compliance** before allowing test execution to proceed
+- **Submits test jobs** to the SQT Runner via REST API and polls for results
+- **Evaluates metric constraints** against returned results (declarative test specifications)
+- **Generates ECSS-compliant reports** (PDF, HTML) and the QDP (Quality Data Package) with full requirements traceability
 
 ### Key Principles
 
-1. **Decoupling**: SQT Generic is completely decoupled from ML-L Specific (Klepsydra's closed-source component)
-2. **Configuration-driven**: All aspects configurable via YAML/JSON
-3. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment
-4. **Evidence-based**: Comprehensive traceability from requirements to test results
-5. **Automation-first**: CI/CD-ready with minimal manual intervention
+1. **Separation of concerns**: The SQT Runner handles test execution and artifact serving; the SQT Reporter handles orchestration, requirements checking, and reporting
+2. **Deployment flexibility**: The SQT Runner deploys on the customer's hardware (where access to the target systems exists); the SQT Reporter can run anywhere
+3. **Target extensibility**: The Runner's target abstraction layer allows adding new execution targets (GR740, GR765) without changing the Reporter or the REST API contract
+4. **Configuration-driven**: All aspects configurable via YAML
+5. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment
+6. **Evidence-based**: Comprehensive traceability from requirements to test results
 
 ---
 
@@ -53,97 +69,179 @@ The Software Qualification Toolkit (SQT) Generic is the open-source component of
 
 ### 2.1 High-Level Architecture
 
+The overall qualification process follows a three-tier swimlane model:
+
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         SQT Generic (Rust)                              │
-│                      [Ateleris Responsibility]                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌────────────────────┐         ┌──────────────────────────┐            │
-│  │  Configuration     │         │    Orchestrator          │            │
-│  │  Parser            │────────▶│  (API Client + Polling)  │            │
-│  │                    │         │                          │            │
-│  │  • YAML/JSON       │         │  • Group specs by target │            │
-│  │  • Strictdoc       │         │  • Submit jobs in parallel│            │
-│  │  • Validation      │         │  • Poll all until done   │            │
-│  └────────────────────┘         └────────────┬─────────────┘            │
-│                                              │                          │
-│  ┌───────────────────────────────────────────┼──────────────────────┐   │
-│  │          Constraint Evaluator             │                      │   │
-│  │  • Map RunMetrics/AnalysisMetrics fields  │                      │   │
-│  │    → MetricValue; null = failed constraint│                      │   │
-│  │  • Evaluate constraints against values    │                      │   │
-│  └───────────────────────────────────────────┼──────────────────────┘   │
-│                                              │                          │
-│  ┌───────────────────────────────────────────┼──────────────────────┐   │
-│  │          Evidence Collector & Traceability Manager               │   │
-│  │  • Requirements ↔ Tests mapping                                  │   │
-│  │  • Aggregate per-task evidence from job results                  │   │
-│  │  • Traceability matrix generation                                │   │
-│  └───────────────────────────────────────────┼──────────────────────┘   │
-│                                              │                          │
-│  ┌───────────────────────────────────────────┼──────────────────────┐   │
-│  │                  Report Generator         │                      │   │
-│  │  • PDF generation (ECSS-compliant templates)                     │   │
-│  │  • HTML reports (developer-friendly)                             │   │
-│  │  • JSON artifacts (machine-readable)                             │   │
-│  │  • Traceability matrices (HTML/PDF)                              │   │
-│  └───────────────────────────────────────────┼──────────────────────┘   │
-│                                              │                          │
-└──────────────────────────────────────────────┼──────────────────────────┘
-                                               │
-                           REST API (POST job, GET status)
-                                               │
-                                               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Job API Server                                │
-│             (ML-L Specific / Local Dev Server)                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Task Runners:                                                          │
-│  • return_code, time.execution                                          │
-│  • memory.peak_rss (via /usr/bin/time)                                  │
-│  • memory.leaks (via valgrind)                                          │
-│  • coverage.line_percent (via lcov)                                     │
-│  • sonar.critical_issues (via SonarQube API)                            │
-│  • (Klepsydra-specific tasks: PBF, hardware execution)                  │
-│                                                                         │
-│  Job Queue + Parallel Task Execution                                    │
-│                                                                         │
-└─────────────────────────────────┬───────────────────────────────────────┘
-                                  │
-                                  ▼
-                    Hardware / Emulation Layer
+╔══════════════════════════════════════════════════════════════════════════════╗
+║              ML-L Provider  (e.g. Klepsydra)  [Out of Scope]                ║
+║                                                                              ║
+║  Prepares and supplies (pre-placed on Runner filesystem before session):     ║
+║    • ECSS Documentation Baseline (Strictdoc)                                ║
+║    • Unit Test Results (static)                                              ║
+║    • Validation Test Results (static)                                        ║
+║    • Inference Engine binary/library                                         ║
+║    • Trained Model (e.g. ONNX)                                               ║
+║    • Main Program (host application)                                         ║
+║    • Input / Output reference data                                           ║
+╚═════════════════════════════╤════════════════════════════════════════════════╝
+                              │  Artifacts pre-placed on Runner filesystem
+                              │  (configurable paths; zero network transfer
+                              │   from Provider at qualification time)
+                              ▼
+╔══════════════════════════════════════════════════════════════════════════════╗
+║        SQT Runner  (Ateleris - Rust)  [Customer-provided hardware]          ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  ┌──────────────────────┐    ┌──────────────────────────────────────────┐   ║
+║  │  Document Store      │    │  AI System Assembly                      │   ║
+║  │  (configurable paths)│    │  • Links inference engine, trained model │   ║
+║  │                      │    │    and main program into a runnable task │   ║
+║  │  • ECSS baseline     │    │  • Exact mechanism TBD (depends on       │   ║
+║  │  • Unit test results │    │    ML-L Provider's delivery format)      │   ║
+║  │  • Validation results│    └────────────────┬─────────────────────────┘   ║
+║  └─────────┬────────────┘                     │                             ║
+║            │ GET /api/v1/docs           ┌─────▼───────────────────────┐     ║
+║            │                            │  Test Execution Engine      │     ║
+║  ┌─────────▼────────────────────────┐   │                             │     ║
+║  │  REST API Server                 │   │  ┌─────────────────────┐    │     ║
+║  │  (implements job-api.openapi)    │◄──┤  │ Space Profile Tests  │    │     ║
+║  │                                  │   │  │ (Ateleris-defined    │    │     ║
+║  │  POST /api/v1/jobs  → enqueue    │   │  │  functional tests)   │    │     ║
+║  │  GET  /api/v1/jobs/{id} → poll   │   │  └─────────────────────┘    │     ║
+║  │  GET  /api/v1/docs  → serve docs │   │  ┌─────────────────────┐    │     ║
+║  └──────────────────────────────────┘   │  │ Performance Tests    │    │     ║
+║                                         │  │ (timing, memory,     │    │     ║
+║                                         │  │  throughput)         │    │     ║
+║                                         │  └─────────────────────┘    │     ║
+║                                         └─────────────┬───────────────┘     ║
+║                                                       │                     ║
+║  ┌────────────────────────────────────────────────────▼─────────────────┐   ║
+║  │                      Target Abstraction Layer                         │   ║
+║  │                                                                       │   ║
+║  │   ┌──────────────────┐   ┌─────────────────────┐  ┌───────────────┐  │   ║
+║  │   │ x86_64 / Linux   │   │ GR740  [Out of Scope]│  │ GR765  [OOS] │  │   ║
+║  │   │ Native execution │   │ Remote attachment    │  │ Remote attach│  │   ║
+║  │   │ [In Scope]       │   │ (serial/network TBD) │  │ (TBD)        │  │   ║
+║  │   └──────────────────┘   └─────────────────────┘  └───────────────┘  │   ║
+║  └───────────────────────────────────────────────────────────────────────┘   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+                               │
+         REST API  (job-api.openapi.yaml)
+         • POST /api/v1/jobs      - submit test request
+         • GET  /api/v1/jobs/{id} - poll for results + metrics
+         • GET  /api/v1/docs      - fetch document baseline
+                               │
+                               ▼
+╔══════════════════════════════════════════════════════════════════════════════╗
+║        SQT Reporter  (Ateleris - Rust)  [Any x86_64 system]                 ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║  ┌──────────────────┐  ┌──────────────────────┐  ┌────────────────────────┐ ║
+║  │ Baseline Checker │  │  Orchestrator        │  │  Report Generator      │ ║
+║  │                  │  │                      │  │                        │ ║
+║  │ • GET /api/v1/   │  │ • Submit test jobs   │  │ • System Test Report   │ ║
+║  │   docs           │  │   via POST           │  │ • QDP                  │ ║
+║  │ • Parse ECSS     │  │ • Poll until done    │  │ • ECSS PDF / HTML      │ ║
+║  │   docs & static  │  │ • Evaluate metric    │  │ • Traceability matrix  │ ║
+║  │   test results   │  │   constraints        │  │                        │ ║
+║  │ • Gate: halt if  │  │ • Collect evidence   │  │                        │ ║
+║  │   not compliant  │  └──────────────────────┘  └────────────────────────┘ ║
+║  └──────────────────┘                                                        ║
+║  ┌──────────────────────────────────────────────────────────────────────┐    ║
+║  │  Requirements Manager + Traceability                                 │    ║
+║  │  • Parses Strictdoc requirements from fetched docs                   │    ║
+║  │  • Maps requirements to declarative test specs (.test.yaml)          │    ║
+║  │  • Builds traceability matrix (requirements ↔ evidence)              │    ║
+║  └──────────────────────────────────────────────────────────────────────┘    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+                               │
+                               ▼
+                      QDP + System Test Report
 ```
 
-### 2.2 Component Responsibilities
+### 2.2 Process Flow
 
-#### SQT Generic (Ateleris - Open Source)
-- Configuration management
-- Requirements parsing and traceability
-- Accepting the customer-supplied model ZIP (via CLI flag or config file) and forwarding it to the API
-- Job submission and polling via REST API
-- Metric extraction from job results
-- Constraint evaluation against extracted values
-- Evidence collection
-- Report generation
+The qualification session follows this sequence:
 
-#### ML-L Specific (Klepsydra - Closed Source)
-- Klepsydra AI testing
-- Performance benchmarking
-- Hardware binary generation
-- Target hardware execution
-- REST API server
-
-#### Clear Separation of Concerns
 ```
-Generic (SQT)                │  Server (ML-L Specific / Local)
-─────────────────────────────┼──────────────────────────────────
-YAML config parsing           │  Tool execution (valgrind, lcov…)
-Specs + constraint evaluation │  SonarQube integration
-Job submission + polling      │  Binary execution on hardware
-Evidence collection           │  Job queue + parallel task dispatch
-Report generation             │  REST API server
+SQT Reporter                            SQT Runner
+────────────────────────────────────────────────────────────────────
+1. GET /api/v1/docs
+                            ◄── ECSS baseline + static test results
+
+2. Parse docs; check ECSS compliance and static test results
+   Gate: if not compliant → halt with error report
+
+3. Parse Strictdoc requirements from fetched docs
+   Identify testable requirements (VERIFICATION: Test)
+
+4. For each testable requirement:
+   POST /api/v1/jobs  ─────────────────────────────────────────────►
+                            ◄── 202 Accepted { job_id, queue_position }
+   (poll with exponential backoff)
+   GET /api/v1/jobs/{id}  ─────────────────────────────────────────►
+                            ◄── status: "accepted" (queue_position: N)
+                            ◄── status: "running"
+                            ◄── status: "complete" | "failed"
+                                 + metrics, outputs, hardware descriptor
+
+5. Evaluate metric constraints against results
+
+6. Generate System Test Report + QDP
+```
+
+### 2.3 Component Responsibilities
+
+#### SQT Runner (Ateleris - new, generic implementation)
+
+| Responsibility | Detail |
+|---|---|
+| REST API server | Implements `job-api.openapi.yaml`; accepts jobs, returns metrics |
+| Document store | Serves pre-placed ML-L Provider artifacts via `GET /api/v1/docs` |
+| AI system assembly | Links inference engine + model + main program into runnable task |
+| Space Profile test execution | functional tests for space AI systems, defined by ESA and Klepsydra |
+| Performance test execution | Timing, memory, throughput benchmarks |
+| Target abstraction | Pluggable backend: x86\_64 native (in scope); GR740/GR765 (planned) |
+| Configuration | All artifact paths and target settings configurable via a config file; minimal changes needed to deploy |
+
+#### SQT Reporter (Ateleris - formerly "SQT Generic")
+
+| Responsibility | Detail |
+|---|---|
+| Configuration management | Parse and validate YAML config |
+| Document baseline check | Fetch docs from Runner, verify ECSS compliance before proceeding |
+| Requirements management | Parse Strictdoc from fetched docs; build traceability database |
+| Job orchestration | Submit test jobs; poll for results; evaluate metric constraints |
+| Evidence collection | Aggregate results; build traceability matrix |
+| Report generation | ECSS-compliant PDF/HTML; QDP |
+
+#### ML-L Provider (e.g. Klepsydra - out of scope / stubs during development)
+
+The ML-L Provider is responsible for producing the artifacts that are pre-placed on the SQT Runner's filesystem. No active API interaction occurs between the Reporter and the ML-L Provider; the Runner is the single point of contact for the Reporter.
+
+| Artifact | Description |
+|---|---|
+| ECSS Documentation Baseline | Requirements specification in Strictdoc format |
+| Unit Test Results (static) | Pre-existing unit test evidence |
+| Validation Test Results (static) | Pre-existing validation evidence |
+| Inference Engine | The ML-L binary/library (e.g. Klepsydra AI inference engine) |
+| Trained Model | The AI model to qualify (e.g. ONNX file) |
+| Main Program | The host application that drives the inference engine |
+| Input / Output Data | Reference datasets for test execution (configurable; Ateleris-supplied during development) |
+
+#### Separation of Concerns
+
+```
+SQT Reporter                    │  SQT Runner
+────────────────────────────────┼────────────────────────────────────────
+YAML config parsing             │  REST API server
+Requirements parsing            │  Document store (pre-placed artifacts)
+Baseline compliance check       │  AI system assembly
+Job submission + polling        │  Space Profile test execution
+Metric constraint evaluation    │  Performance test execution
+Evidence collection             │  Target abstraction (x64, GR740, GR765)
+Report generation (PDF/HTML)    │  Job queue + sequential execution
+QDP production                  │  Metric collection and reporting
 ```
 
 ---
@@ -154,7 +252,9 @@ Report generation             │  REST API server
 
 Primary configuration format: **YAML** (human-readable, widely supported)
 
-#### Main Configuration File: `sqt-config.yaml`
+Two separate configuration files exist: one for the **SQT Reporter** and one for the **SQT Runner**.
+
+#### SQT Reporter Configuration: `sqt-reporter.yaml`
 
 ```yaml
 # Project Metadata
@@ -163,189 +263,20 @@ project:
   version: "1.0.0"
   ecss_level: "D"                    # A, B, C, or D
   target_trl: 6                      # Technology Readiness Level
-  description: "ECSS qualification of Klepsydra AI inference engine"
 
-# Requirements Management
-requirements:
-  format: "strictdoc"                # strictdoc, yaml, json
-  source: "./requirements/ml-l-requirements.sdoc"
-  enable_traceability: true
-  traceability_output: "./reports/traceability-matrix.html"
+# SQT Runner connection
+runner:
+  url: "http://runner-host:8080"
+  auth:
+    type: "bearer"                   # bearer, none
+    token_env: "SQT_RUNNER_TOKEN"    # environment variable holding the token
+  poll_interval_initial_secs: 1
+  poll_interval_max_secs: 30
+  job_timeout_secs: 3600
 
-# Build System Configuration
-build:
-  system: "cmake"                    # cmake, cargo, make, meson
-  source_dir: "./src"
-  build_dir: "./build"
-
-  # Multiple target configurations
-  targets:
-    - name: "gr740-rtems6"
-      architecture: "leon4"
-      os: "rtems6"
-      toolchain: "sparc-rtems6-gcc"
-      compiler_flags:
-        - "-O2"
-        - "-Wall"
-        - "-Werror"
-        - "-mcpu=leon4"
-      linker_flags:
-        - "-Wl,--gc-sections"
-
-    - name: "rv32imac-baremetal"
-      architecture: "riscv32"
-      os: "baremetal"
-      toolchain: "riscv32-unknown-elf-gcc"
-      compiler_flags:
-        - "-O2"
-        - "-march=rv32imac"
-        - "-mabi=ilp32"
-
-    - name: "host-linux"
-      architecture: "x86_64"
-      os: "linux"
-      toolchain: "gcc"
-      compiler_flags: ["-O2", "-g"]
-
-# Static Analysis Configuration
-static_analysis:
-  enabled: true
-
-  tools:
-    sonarqube:
-      enabled: true
-      server_url: "http://localhost:9000"
-      project_key: "ml-l-qualification"
-      config_file: "./sonar-project.properties"
-      quality_gate: "strict"
-      fail_on_quality_gate: true
-
-    clang_tidy:
-      enabled: true
-      config_file: "./.clang-tidy"
-      checks:
-        - "modernize-*"
-        - "readability-*"
-        - "performance-*"
-        - "bugprone-*"
-        - "-modernize-use-trailing-return-type"
-      header_filter: ".*"
-
-    cppcheck:
-      enabled: true
-      enable: ["all"]
-      suppress: ["unusedFunction"]
-      inline_suppr: true
-
-    cpplint:
-      enabled: false
-      filters: ["-whitespace/indent"]
-
-# Unit Testing Configuration
-unit_tests:
-  enabled: true
-  framework: "googletest"            # googletest, catch2, cpputest, doctest
-  test_pattern: "tests/**/*_test.cpp"
-  timeout_per_test: 300              # seconds
-  parallel_execution: true
-  max_parallel_jobs: 4
-
-  coverage:
-    enabled: true
-    tool: "lcov"                     # lcov, gcov, llvm-cov
-    output_format: ["html", "cobertura"]
-    threshold:
-      line: 80                       # minimum line coverage %
-      function: 75                   # minimum function coverage %
-      branch: 70                     # minimum branch coverage %
-    exclude_patterns:
-      - "*/tests/*"
-      - "*/third_party/*"
-
-# Integration Testing Configuration
-integration_tests:
-  enabled: true
-
-  test_suites:
-    - name: "functional_validation"
-      description: "Functional correctness tests"
-      test_dir: "./tests/integration/functional"
-      timeout: 600
-
-    - name: "stress_testing"
-      description: "Load and stress tests"
-      test_dir: "./tests/integration/stress"
-      timeout: 1800
-
-    - name: "regression_suite"
-      description: "Regression test suite"
-      test_dir: "./tests/integration/regression"
-      timeout: 900
-
-# Hardware Testing (via Job API - see job-api.openapi.yaml)
-hardware_tests:
-  enabled: true
-  rest_api:
-    endpoint: "http://localhost:8080"
-    timeout: 3600                    # seconds
-    retry_attempts: 3
-    authentication:
-      type: "bearer"                 # bearer, basic, api_key
-      token_env: "ML_L_API_TOKEN"    # environment variable name
-
-  platforms:
-    # Physical hardware
-    - name: "gr740-eval-board"
-      type: "physical"
-      description: "GR740 evaluation board"
-      connection:
-        type: "ssh"
-        host: "gr740-board.local"
-        port: 22
-        user: "root"
-      binary_upload: "scp"
-      execution_method: "ssh_command"
-
-    # Emulators/Simulators
-    - name: "tsim-gr740"
-      type: "emulator"
-      description: "TSIM GR740 simulator"
-      command: "tsim-leon3 -gr740"
-      serial_output: true
-
-    - name: "qemu-riscv32"
-      type: "emulator"
-      description: "QEMU RISC-V 32-bit"
-      command: "qemu-system-riscv32 -M virt -nographic"
-
-    - name: "qemu-arm"
-      type: "emulator"
-      description: "QEMU ARM Cortex-A"
-      command: "qemu-system-arm -M virt"
-
-# Performance Benchmarking (via Job API - see job-api.openapi.yaml)
-performance_tests:
-  enabled: true
-  rest_api_endpoint: "http://localhost:8080"
-
-  benchmarks:
-    - name: "inference_latency"
-      description: "Measure inference latency"
-      metrics: ["latency_ms", "latency_std"]
-      threshold:
-        max_latency_ms: 100
-
-    - name: "throughput"
-      description: "Measure inference throughput"
-      metrics: ["fps", "throughput_std"]
-      threshold:
-        min_fps: 10
-
-    - name: "memory_usage"
-      description: "Memory consumption analysis"
-      metrics: ["heap_kb", "stack_kb", "static_kb"]
-      threshold:
-        max_heap_kb: 4096
+# Test specifications (declarative .test.yaml files)
+test_specs:
+  directory: "./specs"               # scanned recursively for *.test.yaml files
 
 # Report Generation
 reports:
@@ -355,99 +286,112 @@ reports:
   formats:
     pdf:
       enabled: true
-      template: "./templates/ecss-report-template.tex"
       engine: "typst"                # typst, pdflatex, xelatex
 
     html:
       enabled: true
-      template: "./templates/report-template.html"
-      interactive: true
 
     json:
       enabled: true
-      pretty_print: true
-
-  include:
-    - requirements_traceability
-    - test_results_summary
-    - detailed_test_results
-    - coverage_reports
-    - static_analysis_results
-    - performance_metrics
-    - build_artifacts_manifest
-
-# ML-L Specific Interface Configuration
-ml_l_interface:
-  enabled: true
-  base_url: "http://localhost:8080"
-  api_version: "v1"
-  timeout: 600
-
-  endpoints:
-    validate: "/api/v1/ml-l/validate"
-    job_status: "/api/v1/jobs/{job_id}"
-    job_results: "/api/v1/jobs/{job_id}/results"
-    hardware_execute: "/api/v1/hardware/execute"
-    performance_benchmark: "/api/v1/performance/benchmark"
 
 # CI/CD Integration
 ci_integration:
-  enabled: true
-  provider: "github_actions"         # github_actions, gitlab_ci, jenkins
-
-  on_failure:
-    create_issue: true
-    notify_email: ["team@ateleris.ch"]
+  provider: "github_actions"         # github_actions, gitlab_ci, jenkins, none
 
   artifacts:
     upload: true
     retention_days: 90
     paths:
       - "./reports/**"
-      - "./build/**/*.elf"
-      - "./coverage/**"
 
-# Logging Configuration
+# Logging
 logging:
   level: "info"                      # debug, info, warn, error
   output: "stdout"                   # stdout, file, both
-  file_path: "./logs/sqt.log"
-  format: "json"                     # json, text
-  timestamp: true
+  file_path: "./logs/sqt-reporter.log"
+  format: "json"
 ```
+
+#### SQT Runner Configuration: `sqt-runner.yaml`
+
+```yaml
+# Execution target
+runner:
+  target: x86_64-linux               # x86_64-linux | gr740 (planned) | gr765 (planned)
+
+  # Paths to ML-L Provider artifacts (pre-placed on filesystem before session)
+  artifacts:
+    inference_engine: ./artifacts/klepsydra-engine
+    trained_model:    ./artifacts/model.onnx
+    main_program:     ./artifacts/main
+    input_data:       ./artifacts/input/
+    output_reference: ./artifacts/reference_output/
+
+  # Qualification documents served via GET /api/v1/docs
+  docs:
+    ecss_baseline:           ./docs/ecss-baseline.sdoc
+    unit_test_results:       ./docs/unit-test-results.sdoc
+    validation_test_results: ./docs/validation-test-results.sdoc
+
+  # Tool configuration (all runner-side)
+  tools:
+    valgrind:       /usr/bin/valgrind
+    lcov:           /usr/bin/lcov
+    sonar_scanner:  /usr/local/bin/sonar-scanner
+    sonar_url:      "http://localhost:9000"
+    sonar_project:  "ml-l-qualification"
+
+# REST API server settings
+server:
+  host: "0.0.0.0"
+  port: 8080
+  auth:
+    type: "bearer"
+    token_env: "SQT_RUNNER_TOKEN"
+
+# Logging
+logging:
+  level: "info"
+  output: "stdout"
+  file_path: "./logs/sqt-runner.log"
+  format: "json"
+```
+
+The model and artifacts are configured at Runner startup, not per job. To qualify a different model version, restart the Runner with updated artifact paths (or override them via CLI flags, e.g. `--trained-model ./artifacts/model-v2.onnx`).
 
 ### 3.2 Configuration Validation
 
-The SQT must validate configuration files on startup:
+Both components validate their configuration files on startup:
 
 ```rust
-// Pseudocode for configuration validation
-fn validate_config(config: &Config) -> Result<(), ValidationError> {
-    // 1. Check required fields
+// Reporter: validate sqt-reporter.yaml
+fn validate_reporter_config(config: &ReporterConfig) -> Result<(), ValidationError> {
     if config.project.name.is_empty() {
         return Err(ValidationError::MissingField("project.name"));
     }
-
-    // 2. Validate file paths exist
-    if !Path::new(&config.requirements.source).exists() {
-        return Err(ValidationError::FileNotFound(config.requirements.source));
+    if !Path::new(&config.test_specs.directory).exists() {
+        return Err(ValidationError::FileNotFound(config.test_specs.directory));
     }
+    check_api_connectivity(&config.runner.url)?;
+    Ok(())
+}
 
-    // 3. Validate threshold ranges
-    if config.unit_tests.coverage.threshold.line > 100 {
-        return Err(ValidationError::InvalidValue("coverage threshold > 100%"));
+// Runner: validate sqt-runner.yaml
+fn validate_runner_config(config: &RunnerConfig) -> Result<(), ValidationError> {
+    for path in [&config.runner.artifacts.inference_engine,
+                 &config.runner.artifacts.trained_model,
+                 &config.runner.artifacts.main_program] {
+        if !Path::new(path).exists() {
+            return Err(ValidationError::FileNotFound(path));
+        }
     }
-
-    // 4. Validate tool availability
-    if config.static_analysis.tools.sonarqube.enabled {
-        check_tool_available("sonar-scanner")?;
+    for doc in [&config.runner.docs.ecss_baseline,
+                &config.runner.docs.unit_test_results,
+                &config.runner.docs.validation_test_results] {
+        if !Path::new(doc).exists() {
+            return Err(ValidationError::FileNotFound(doc));
+        }
     }
-
-    // 5. Validate REST API connectivity (if enabled)
-    if config.ml_l_interface.enabled {
-        check_api_connectivity(&config.ml_l_interface.base_url)?;
-    }
-
     Ok(())
 }
 ```
@@ -615,7 +559,7 @@ test_mappings:
   - requirement_uid: "REQ-ML-L-003"
     hardware_tests:
       - platform: "gr740-eval"
-        rest_endpoint: "/api/v1/performance/benchmark"
+        rest_endpoint: "/api/v1/jobs"
         config:
           model: "resnet50"
           input_size: [224, 224]
@@ -647,7 +591,7 @@ Generate comprehensive traceability matrix:
 
 ### 4.5 Declarative Test Specifications
 
-Rather than mapping requirements to hand-written test code for every case, SQT Generic supports a **declarative test specification** approach: testable traits (metrics/properties) are defined as built-in or plugin-provided capabilities, and requirements directly specify which constraints must hold - no boilerplate test code required.
+Rather than mapping requirements to hand-written test code for every case, SQT Reporter supports a **declarative test specification** approach: testable traits (metrics/properties) are defined as built-in or plugin-provided capabilities, and requirements directly specify which constraints must hold - no boilerplate test code required.
 
 #### 4.5.1 Concept
 
@@ -685,11 +629,11 @@ constraints:
     operator: ">="
     value: 95%
 
-  - metric: memory.peak_rss
+  - metric: memory.peak_rss_kb
     operator: <=
-    value: 512KB
+    value: 512
 
-  - metric: memory.leaks
+  - metric: memory.leaks_bytes
     operator: ==
     value: 0
 ```
@@ -698,58 +642,57 @@ The syntax is intentionally uniform: the user specifies `metric`, `operator`, an
 
 #### 4.5.3 Core Metric Catalogue
 
-The following built-in metrics ship with SQT Generic. Each is implemented as an internal metric collector (same interface as plugins, but compiled in):
+The following built-in metrics ship with SQT Reporter. Each is implemented as an internal metric collector (same interface as plugins, but compiled in):
+
+These names correspond directly to keys in the `JobStatusResponse.metrics` object (see `job-api.openapi.yaml`). The Reporter evaluates constraints by looking up each key in the returned metrics map.
 
 **Memory Metrics**
 
-| Metric | Unit | Description |
-|--------|------|-------------|
-| `memory.peak_rss` | bytes | Peak resident set size |
-| `memory.peak_percent` | % | Peak memory as % of available RAM |
-| `memory.allocations` | count | Number of heap allocations |
-| `memory.leaks` | bytes | Leaked bytes (Valgrind / ASan) |
+| Metric key | Unit | Description |
+|------------|------|-------------|
+| `memory.peak_rss_kb` | KB | Peak resident set size |
+| `memory.avg_rss_kb` | KB | Average resident set size across repetitions |
+| `memory.leaks_bytes` | bytes | Leaked bytes (Valgrind / ASan); 0 = no leaks |
 
 **Timing Metrics**
 
-| Metric | Unit | Description |
-|--------|------|-------------|
-| `time.execution` | ms | Total execution time |
-| `time.latency_p50` | ms | 50th percentile latency |
-| `time.latency_p95` | ms | 95th percentile latency |
-| `time.latency_p99` | ms | 99th percentile latency |
-| `time.startup` | ms | Initialization time |
-| `time.deadline_misses` | count | Real-time deadline violations |
+| Metric key | Unit | Description |
+|------------|------|-------------|
+| `time.avg_ms` | ms | Average wall-clock execution time per repetition |
+| `time.latency_p50_ms` | ms | 50th percentile latency |
+| `time.latency_p95_ms` | ms | 95th percentile latency |
+| `time.latency_p99_ms` | ms | 99th percentile latency |
+| `time.throughput_fps` | fps | Throughput mode only; null in latency mode |
+| `time.startup_ms` | ms | Model load + runtime init time |
+| `time.first_inference_ms` | ms | Time to first inference result |
 
 **Correctness Metrics**
 
-| Metric | Unit | Description |
-|--------|------|-------------|
-| `accuracy` | % | ML inference accuracy |
-| `output.matches_reference` | bool | Output matches reference file |
-| `return_code` | int | Process exit code |
-| `error_count` | count | Runtime errors / exceptions |
+| Metric key | Unit | Description |
+|------------|------|-------------|
+| `return_code` | int | Process exit code (0 = success) |
 
 **Code Quality Metrics**
 
-| Metric | Unit | Description |
-|--------|------|-------------|
-| `sonar.critical_issues` | count | Critical SonarQube violations |
-| `sonar.blocker_issues` | count | Blocker violations |
-| `sonar.code_smells` | count | Code smell count |
-| `coverage.line_percent` | % | Line coverage |
-| `coverage.branch_percent` | % | Branch coverage |
-| `complexity.cyclomatic_max` | int | Max cyclomatic complexity |
+| Metric key | Unit | Description |
+|------------|------|-------------|
+| `static.critical_issues` | count | CRITICAL-severity SonarQube issues |
+| `static.major_issues` | count | MAJOR-severity SonarQube issues |
+| `static.warnings` | count | Total static analyser warnings |
+| `coverage.line_pct` | % | Line coverage percentage |
+| `coverage.branch_pct` | % | Branch coverage percentage |
+| `coverage.function_pct` | % | Function coverage percentage |
+| `coverage.lines_covered` | count | Absolute covered source lines |
+| `coverage.lines_total` | count | Total instrumented source lines |
 
-**Hardware Metrics** (collected via Klepsydra API)
+**CPU / Binary Metrics**
 
-| Metric | Unit | Description |
-|--------|------|-------------|
-| `hardware.temperature` | °C | Operating temperature |
-| `hardware.power_draw` | W | Power consumption |
-| `hardware.cpu_utilization` | % | CPU usage |
-| `hardware.cache_misses` | count | Cache miss rate |
+| Metric key | Unit | Description |
+|------------|------|-------------|
+| `cpu.avg_normalized_pct` | % | CPU utilisation normalised to all available compute |
+| `binary.size_kb` | KB | On-disk binary size |
 
-**Phase 1 MVP** targets the 12 most critical metrics: `memory.peak_rss`, `memory.leaks`, `time.execution`, `time.latency_p95`, `accuracy`, `return_code`, `sonar.critical_issues`, `coverage.line_percent`, `hardware.temperature`, `hardware.power_draw`, `hardware.cpu_utilization`, `hardware.cache_misses`.
+**Phase 1 MVP** targets the most critical metrics: `memory.peak_rss_kb`, `memory.leaks_bytes`, `time.avg_ms`, `time.latency_p95_ms`, `return_code`, `static.critical_issues`, `coverage.line_pct`, `cpu.avg_normalized_pct`.
 
 #### 4.5.4 Execution Flow
 
@@ -785,7 +728,7 @@ The orchestrator never calls metric collectors directly - all tool execution hap
 
 Not all requirements can be verified by automated testing. Requirements verified
 by **inspection**, **review**, **analysis**, or **demonstration** cannot be
-expressed as SQT metric constraints — yet they must appear in the qualification
+expressed as SQT metric constraints - yet they must appear in the qualification
 report as verified.
 
 #### 4.6.1 The Problem
@@ -801,14 +744,14 @@ VERIFICATION: Inspection, Review
 ```
 
 There is no automated test that can check "was this standard followed?". The
-verification evidence consists of documents, design reviews, and audits —
-artefacts that exist on the server side (Klepsydra). SQT Generic has no way to
+verification evidence consists of documents, design reviews, and audits -
+artefacts pre-placed on the Runner by the ML-L Provider. SQT Reporter has no way to
 evaluate these directly.
 
 #### 4.6.2 Solution: Server-Provided Requirements via `GET /api/v1/docs`
 
 The server exposes its StrictDoc requirements documents through
-`GET /api/v1/docs`. SQT Generic fetches these once at session start and applies
+`GET /api/v1/docs`. SQT Reporter fetches these once at session start and applies
 the following rule:
 
 | Requirement `VERIFICATION` field | SQT treatment |
@@ -817,8 +760,8 @@ the following rule:
 | Does **not** include `Test` | Marked **compliant** on the server's authority |
 | Requirement absent from server docs | Not applicable (not owned by server) |
 
-Requirements in the second row — inspection-only, review-only, or
-analysis-only — are recorded in the report with:
+Requirements in the second row - inspection-only, review-only, or
+analysis-only - are recorded in the report with:
 
 - `status: compliant`
 - `evidence_source: server_declaration` (as opposed to `sqt_test`)
@@ -842,13 +785,14 @@ different verification modes.
 
 ---
 
-## 5. REST API Interface
+## 5. REST API Interface (SQT Runner)
 
 ### 5.1 API Contract (OpenAPI Specification)
 
 The full interface contract is defined in **`job-api.openapi.yaml`** at the root of the
-repository. The spec is generic - it is implemented both by the ML-L Specific server
-(Klepsydra) and by the local development API server binary.
+repository. The spec is implemented by the **SQT Runner**. The **SQT Reporter** is the
+API client. During development, the existing local dev-server stub can stand in for the
+Runner until the real implementation is ready.
 
 #### Base URL
 ```
@@ -863,17 +807,17 @@ Content-Type: application/json
 
 #### Design Principles
 
-The server is configured at startup with the hardware target and inference engine.
-The **model** (AI model + pre/post-processing code) is supplied by the client as a
-base64-encoded ZIP in the `model_zip` field of each job request.
+The Runner is configured at startup (via `sqt-runner.yaml` or CLI flags) with the
+hardware target, inference engine, trained model, and main program. These are
+**not** transmitted per job. The client (SQT Reporter) specifies only what workload
+to run and how; the Runner returns everything it can measure.
 
 A single job type covers all qualification activities: execution runs, instrumented
-runs (valgrind/asan/gprof), coverage collection, and static analysis. The client
-specifies what workload to run and how; the server returns everything it can measure.
+runs (valgrind/asan/gprof), coverage collection, and static analysis.
 
 ### 5.2 Predefined Workload Types
 
-The set of workload types is defined in SQT Generic and known to both sides of the
+The set of workload types is defined in SQT Reporter and known to both sides of the
 API. The server maps each workload type to the appropriate binary invocation,
 input handling, and output interpretation.
 
@@ -886,9 +830,9 @@ input handling, and output interpretation.
 | `regression` | Tabular ML | Feature vectors | Scalar prediction |
 | `time_series_forecasting` | Sequential ML | Time series sequences | Forecast sequence |
 
-**Default session**: when no specific workload is requested, SQT Generic submits jobs for
-all supported workload types in parallel (one job per type). All jobs execute concurrently;
-total wall-clock time is bounded by the slowest job.
+**Default session**: when no specific workload is requested, SQT Reporter submits jobs for
+all supported workload types. Jobs queue up in the Runner and execute sequentially;
+total wall-clock time is the sum of all job durations.
 
 ### 5.3 Measurement Modes
 
@@ -925,7 +869,6 @@ Results are embedded directly in the GET response; there is no separate `/result
 ```json
 {
   "model": "image_classification",
-  "model_zip": "<base64-encoded-zip>",
   "input": { "type": "images", "images": ["<base64-image>", "..."] },
   "repetitions": 10,
   "warmup_repetitions": 3,
@@ -936,21 +879,9 @@ Results are embedded directly in the GET response; there is no separate `/result
 }
 ```
 
-`model_zip` is a base64-encoded ZIP archive supplied by the customer. It contains
-the AI model (e.g. an ONNX file) and its accompanying pre-processing and
-post-processing code. Klepsydra unpacks this bundle on the server side and uses it
-for inference. When `null`, the server falls back to any model pre-configured
-server-side.
-
-SQT Generic reads the ZIP path from the CLI flag `--model-zip <path>` or from
-`sqt-config.yaml` (`model_zip_path`), encodes it as base64, and embeds it in
-every `POST /api/v1/jobs` request for the qualification session.
-
-The exact ZIP structure and naming conventions are defined by Klepsydra and are
-outside the scope of SQT Generic. A future revision may replace the inline
-base64 field with a dedicated model upload endpoint to avoid re-sending the ZIP
-with every job.
-```
+The Runner uses the model, inference engine, and main program configured at startup.
+The Reporter does not transmit the model - it only specifies the workload type and
+measurement parameters.
 
 For large image batches (hundreds or thousands of images), the request body will be
 proportionally large. The server's HTTP frontend must be configured to accept it
@@ -1048,7 +979,7 @@ output.result_consistent = true   → all N repetitions agreed
 output.result_consistent = false  → non-determinism detected (possible hardware fault)
 ```
 
-SQT Generic computes accuracy metrics (accuracy, F1, IoU, L2, etc.) client-side by
+SQT Reporter computes accuracy metrics (accuracy, F1, IoU, L2, etc.) client-side by
 comparing `output.outputs` against reference labels attached to the spec. An
 `outputs_checksum` (SHA-256 of the outputs array) enables cross-session
 reproducibility verification without re-transferring the data.
@@ -1091,7 +1022,7 @@ cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100
 
 ### 5.9 Polling Strategy
 
-SQT Generic implements exponential backoff for all polling. Results are embedded
+SQT Reporter implements exponential backoff for all polling. Results are embedded
 in the GET response - no separate fetch is needed:
 
 ```
@@ -1100,9 +1031,10 @@ backoff factor: x2 per poll
 maximum delay: 30 s
 ```
 
-All jobs for a qualification session are submitted in parallel; the orchestrator
-awaits them concurrently. Total wall-clock time is bounded by the slowest job,
-not the sum of all jobs.
+Jobs for a qualification session are submitted by the Reporter and queue up in
+the Runner. The Runner executes one job at a time. The Reporter polls each
+outstanding job ID sequentially (or interleaved with backoff); total wall-clock
+time is the sum of all job durations.
 
 ### 5.10 Requirements Documents Endpoint
 
@@ -1126,9 +1058,9 @@ once per qualification session before any jobs are submitted.
 
 - `documents` may be an empty array if the server has no requirements documents configured.
 - `content` is the full raw StrictDoc text, UTF-8 encoded with LF line endings.
-- `title` is provided as a convenience; SQT Generic parses `content` authoritatively.
+- `title` is provided as a convenience; SQT Reporter parses `content` authoritatively.
 
-**SQT Generic behaviour**:
+**SQT Reporter behaviour**:
 
 1. Fetch `GET /api/v1/docs`.
 2. Parse each `content` string as StrictDoc; extract all `[REQUIREMENT]` blocks.
@@ -1143,366 +1075,398 @@ See **Section 4.6** for the full rationale and report output format.
 
 ## 6. Scope Definition
 
-### 6.1 Ateleris Responsibility (SQT Generic)
+### 6.1 SQT Runner Scope (Ateleris)
 
-#### ✅ DO (Your Scope)
+#### ✅ IN SCOPE
+
+1. **REST API Server**
+   - Implement `job-api.openapi.yaml` endpoints (`POST /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `GET /api/v1/docs`)
+   - Job queue and sequential job execution (one job at a time)
+   - Configuration via YAML (artifact paths, target selection, etc.)
+
+2. **Document Store**
+   - Serve pre-placed ML-L Provider artifacts via `GET /api/v1/docs`
+   - Configurable paths so users need not modify source code
+
+3. **AI System Assembly**
+   - Assemble inference engine + trained model + main program into a runnable task
+   - Exact mechanism TBD (depends on ML-L Provider delivery format; see Section 8)
+
+4. **Space Profile Test Execution**
+   - Execute Space Profile functional tests (ESA/Klepsydra-defined) against the assembled AI system
+   - Collect and return results as job metrics
+
+5. **Performance Test Execution**
+   - Execute timing, memory, and throughput benchmarks
+   - Collect and return metrics in the standard job response schema
+
+6. **Target Abstraction Layer**
+   - x86\_64 / Linux native execution **[In Scope]**
+   - GR740 via remote attachment (serial/network) **[Planned - Out of Scope for now]**
+   - GR765 via remote attachment (serial/network) **[Planned - Out of Scope for now]**
+   - Architecture designed to add new targets without changing the Reporter or API contract
+
+#### ❌ OUT OF SCOPE for SQT Runner
+
+1. **Report Generation** - the Reporter produces all reports and the QDP
+2. **Requirements Management** - requirements are parsed and evaluated by the Reporter
+3. **ML model conversion / quantization** - the ML-L Provider supplies the model as-is
+4. **Cross-compilation of ML-L binaries** - the ML-L Provider supplies pre-built binaries
+5. **Direct GR740/GR765 hardware access for v1** - designed for, but deferred
+
+### 6.2 SQT Reporter Scope (Ateleris)
+
+#### ✅ IN SCOPE
 
 1. **Configuration Management**
-   - Parse YAML/JSON configuration files
+   - Parse YAML configuration files
    - Validate configuration correctness
    - Support configuration profiles (dev, ci, production)
 
-2. **Requirements Management**
-   - Parse Strictdoc requirements files
-   - Extract requirements metadata
-   - Build requirements database
+2. **Document Baseline Check**
+   - Fetch documents from the SQT Runner via `GET /api/v1/docs`
+   - Parse ECSS documentation baseline and static test results
+   - Gate the qualification session: halt if compliance criteria are not met
 
-3. **Static Analysis Orchestration**
-   - Submit tasks (e.g., `sonar.critical_issues`) via the job API
-   - Server handles tool invocation (SonarQube, clang-tidy, cppcheck)
-   - Parse and evaluate metric values from job results
+3. **Requirements Management**
+   - Parse Strictdoc requirements from fetched documents
+   - Extract requirements metadata and verification methods
+   - Build requirements database and traceability matrix
 
-4. **Unit Test Execution**
-   - Submit tasks (e.g., `return_code`, `coverage.line_percent`) via the job API
-   - Server handles test discovery, execution, and coverage collection
-   - Evaluate pass/fail from returned metric values
+4. **REST API Client (to SQT Runner)**
+   - Submit test jobs via `POST /api/v1/jobs`
+   - Poll for job status via `GET /api/v1/jobs/{id}`
+   - Extract metric values from results
 
-5. **Coverage Analysis**
-   - Submit `coverage.line_percent` (and related) tasks via the job API
-   - Server runs tests with coverage instrumentation and returns results
-   - Evaluate against configured thresholds
+5. **Metric Constraint Evaluation**
+   - Evaluate declarative test specs (`.test.yaml`) against job result metrics
+   - Map null metrics to failed constraints
 
-6. **REST API Client**
-   - Implement HTTP client for the job API (see `job-api.openapi.yaml`)
-   - Read customer-supplied model ZIP from CLI flag (`--model-zip`) or config (`model_zip_path`), base64-encode, and embed in every `POST /api/v1/jobs`
-   - Submit one job per spec with all required task names
-   - Poll for job status until complete
-   - Extract metric values from task results
-
-7. **Evidence Collection**
-   - Aggregate all tool outputs
+6. **Evidence Collection**
+   - Aggregate all job results and static documents
    - Build requirements traceability matrix
-   - Compute quality metrics
-   - Organize artifacts
+   - Organize qualification artifacts
 
-8. **Report Generation**
+7. **Report Generation**
    - Generate ECSS-compliant PDF reports
    - Create HTML developer reports
-   - Export JSON data for automation
+   - Produce QDP (Quality Data Package)
    - Include traceability matrices
 
-9. **CI/CD Integration**
+8. **CI/CD Integration**
    - Provide CLI interface
    - Return appropriate exit codes
    - Support common CI systems (GitHub Actions, GitLab CI)
 
-#### ❌ DON'T (Out of Scope)
+#### ❌ OUT OF SCOPE for SQT Reporter
 
-1. **ML-L Specific Testing**
-   - ❌ Implement Klepsydra AI unit tests
-   - ❌ Develop ML-L specific test cases
-   - ❌ Know internal Klepsydra AI architecture
+1. **Test execution** - the Runner handles all test execution
+2. **Hardware access** - the Runner abstracts all target hardware
+3. **ML-L artifact management** - the Reporter consumes artifacts already served by the Runner
+4. **REST API server** - the Reporter is a client only
 
-2. **Hardware Management**
-   - ❌ Flash binaries to hardware boards
-   - ❌ Manage JTAG/serial connections
-   - ❌ Control power cycling
-   - ❌ Hardware diagnostics
+### 6.3 ML-L Provider Responsibilities (Out of Scope / Stubs)
 
-3. **Binary Compilation**
-   - ❌ Build ML-L binaries for space targets
-   - ❌ Cross-compilation toolchain management
-   - ❌ Linker script generation
+The ML-L Provider (e.g. Klepsydra) is responsible for producing the qualification artifacts. From the SQT perspective, this side is out of scope and represented by stubs during development.
 
-4. **Performance Benchmarking**
-   - ❌ Implement PBF (Performance Benchmark Framework)
-   - ❌ Measure hardware-specific metrics
-   - ❌ Layer-wise latency profiling
+#### ✅ ML-L Provider DOES
 
-5. **ML Model Handling**
-   - ❌ Convert ML models (ONNX → proprietary)
-   - ❌ Optimize models for targets
-   - ❌ Quantization
+1. **Prepare ECSS Documentation Baseline** - Strictdoc requirements specification
+2. **Provide Static Test Evidence** - unit test results, validation test results
+3. **Supply Inference Engine** - compiled binary/library for the target
+4. **Supply Trained Model** - e.g. ONNX file
+5. **Supply Main Program** - host application driving the inference engine
+6. **Pre-place artifacts on the Runner filesystem** - before a qualification session begins
 
-### 6.2 Klepsydra Responsibility (ML-L Specific)
-
-#### ✅ Klepsydra DOES
-
-1. **ML-L Testing**
-   - Klepsydra AI unit tests
-   - Integration tests
-   - Hardware-specific validation
-   - Unpacking and running the customer-supplied model ZIP (model + pre/post-proc code) on target hardware
-
-2. **Performance Benchmarking**
-   - PBF implementation
-   - Latency measurements
-   - Throughput analysis
-   - Memory profiling
-
-3. **Binary Generation**
-   - Compile ML-L for target hardware
-   - Link with RTEMS/baremetal
-   - Generate .elf files
-
-4. **Hardware Execution**
-   - Upload binaries to boards
-   - Execute tests on hardware
-   - Collect results via serial/network
-
-5. **REST API Server**
-   - Implement API endpoints
-   - Job queue management
-   - Results storage
-
-### 6.3 Interface Contract
+### 6.4 Interface Contract
 
 ```
-SQT Generic                     ML-L Specific
-────────────────────────────────────────────────
-"Please validate ML-L v1.0.0    "OK, job queued"
- on GR740 with ResNet50"
+SQT Reporter                    SQT Runner
+────────────────────────────────────────────────────────────────────
+"Fetch the document baseline"   → ECSS docs + static test results
 
-"What's the status?"            "Running... 65%"
+"Are documents compliant?"      Gate in Reporter: proceed or halt
 
-"Are you done?"                 "Completed! Here are
-                                 the results: ..."
+"Execute test on x86_64"        → Assemble AI system
+                                  Run Space Profile + Performance tests
+                                  Return metrics
 
-"Here's my report with          (ML-L Specific doesn't
- your results integrated"        generate final report)
+"What's the status?"            → "Running… 65%"
+
+"Done - give me results"        → Metrics + hardware descriptor
+
+"Here is the qualification      (Runner does not generate reports)
+ report and QDP"
 ```
 
 ---
 
-## 7. Requirements to Code Flow
+## 7. Qualification Workflow
 
 ### 7.1 Complete Workflow
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. Requirements Definition (Strictdoc)                          │
-│                                                                 │
-│    [REQUIREMENT]                                                │
-│    UID: REQ-ML-L-001                                            │
-│    STATEMENT: Support multi-core inference                      │
-│    VERIFICATION: Test                                           │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. Fetch Document Baseline  [SQT Reporter → SQT Runner]          │
+│                                                                  │
+│    GET /api/v1/docs                                              │
+│    ← ECSS documentation baseline (.sdoc)                        │
+│    ← Unit test results (static, .sdoc)                          │
+│    ← Validation test results (static, .sdoc)                    │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 2. Parse Requirements                                           │
-│                                                                 │
-│    SQT reads .sdoc file → Extracts requirements → Builds DB     │
-│                                                                 │
-│    struct Requirement {                                         │
-│      uid: "REQ-ML-L-001",                                       │
-│      statement: "Support multi-core...",                        │
-│      verification: [Test]                                       │
-│    }                                                            │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 2. Baseline Compliance Check  [SQT Reporter]                     │
+│                                                                  │
+│    Parse fetched documents; verify required ECSS artefacts       │
+│    are present and structurally valid.                           │
+│                                                                  │
+│    Gate: if not compliant → halt, emit error report              │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 3. Map to Test Cases                                            │
-│                                                                 │
-│    Option A (Convention):                                       │
-│      REQ-ML-L-001 → tests/unit/test_multicore.cpp               │
-│                                                                 │
-│    Option B (Explicit):                                         │
-│      test_mappings.yaml:                                        │
-│        - req: REQ-ML-L-001                                      │
-│          tests: [test_multicore.cpp::test_parallel]             │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 3. Parse Requirements  [SQT Reporter]                            │
+│                                                                  │
+│    Parse Strictdoc from fetched documents.                       │
+│    For each [REQUIREMENT]:                                       │
+│      • VERIFICATION includes Test  → must have .test.yaml        │
+│      • VERIFICATION is non-Test    → mark compliant by server    │
+│        (Inspection / Review / Analysis)        declaration       │
+│                                                                  │
+│    REQ-ML-L-001  VERIFICATION: Test        → needs .test.yaml    │
+│    REQ-ML-L-NFR-001  VERIFICATION: Review  → compliant           │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 4. Test Discovery                                               │
-│                                                                 │
-│    • Scan test directories                                      │
-│    • Find matching test files                                   │
-│    • Parse test metadata (GoogleTest fixtures)                  │
-│    • Build test execution plan                                  │
-│                                                                 │
-│    Found: 150 unit tests, 45 integration tests                  │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 4. Load Test Specs  [SQT Reporter]                               │
+│                                                                  │
+│    Scan specs/ directory for *.test.yaml files.                  │
+│    Match each spec to a requirement by uid.                      │
+│    Unmatched testable requirements → UNCOVERED → halt            │
+│                                                                  │
+│    # specs/REQ-ML-L-001.test.yaml                                │
+│    requirement_uid: REQ-ML-L-001                                 │
+│    constraints:                                                  │
+│      - metric: return_code    op: eq   value: 0                  │
+│      - metric: time.avg_ms    op: lte  value: 100                │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 5. Test Execution                                               │
-│                                                                 │
-│    For each test:                                               │
-│      • Compile test binary                                      │
-│      • Execute test                                             │
-│      • Collect results (pass/fail/skip)                         │
-│      • Collect coverage data                                    │
-│      • Collect execution time                                   │
-│                                                                 │
-│    Unit tests:        ✓ 148 passed, ✗ 2 failed                  │
-│    Coverage:          87.5% line coverage                       │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 5. Submit Jobs  [SQT Reporter → SQT Runner]                      │
+│                                                                  │
+│    For each test spec, POST /api/v1/jobs.                        │
+│    Jobs are queued in the Runner; Reporter receives a job_id     │
+│    immediately (status: accepted, queue_position: N).            │
+│                                                                  │
+│    POST /api/v1/jobs  { model: "image_classification",          │
+│                         repetitions: 10, mode: "latency" }      │
+│    ← { job_id: "job-abc123", status: "accepted",                │
+│        queue_position: 1 }                                       │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 6. Hardware Tests (via REST API)                                │
-│                                                                 │
-│    For requirements needing hardware validation:                │
-│      • POST /api/v1/ml-l/validate                               │
-│      • Poll GET /api/v1/jobs/{id}                               │
-│      • Retrieve GET /api/v1/jobs/{id}/results                   │
-│                                                                 │
-│    Hardware test:     ✓ Passed (latency: 87ms < 100ms)          │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 6. Execute & Poll  [SQT Runner + SQT Reporter polling]           │
+│                                                                  │
+│  Runner (sequential, one job at a time):                         │
+│    • Assemble AI system (inference engine + model + main prog)   │
+│    • Execute Space Profile tests (ESA/Klepsydra-defined)         │
+│    • Execute Performance tests (timing, memory, throughput)      │
+│    • Collect all metrics; update job status → complete           │
+│                                                                  │
+│  Reporter polls with exponential backoff:                        │
+│    GET /api/v1/jobs/{id}                                         │
+│    ← status: "accepted" (queue_position: 1)                      │
+│    ← status: "running"                                           │
+│    ← status: "complete"  { metrics: { ... }, output: { ... } }  │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 7. Traceability Matrix Generation                               │
-│                                                                 │
-│    REQ-ML-L-001 → test_multicore.cpp → ✓ Passed → 100% coverage │
-│    REQ-ML-L-002 → test_onnx.cpp      → ✓ Passed → 95% coverage  │
-│    REQ-ML-L-003 → Hardware Test      → ✓ Passed → N/A           │
-│                                                                 │
-│    All 45 requirements verified: ✓                              │
-└────────────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 7. Evaluate Metric Constraints  [SQT Reporter]                   │
+│                                                                  │
+│    For each spec constraint, look up the metric in job result.   │
+│    null metric → FAILED (tool unavailable counts as failure).    │
+│                                                                  │
+│    REQ-ML-L-001:                                                 │
+│      return_code = 0   == 0  → ✓ PASS                           │
+│      time.avg_ms = 87.3 <= 100 → ✓ PASS                        │
+│    REQ-ML-L-002:                                                 │
+│      return_code = 1   == 0  → ✗ FAIL                           │
+└────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ 8. Report Generation                                            │
-│                                                                 │
-│    Generate ECSS-compliant report:                              │
-│      • Executive summary                                        │
-│      • Requirements traceability                                │
-│      • Test results                                             │
-│      • Coverage analysis                                        │
-│      • Static analysis results                                  │
-│      • Performance metrics                                      │
-│                                                                 │
-│    Output: validation-report.pdf                                │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ 8. Build Traceability Matrix  [SQT Reporter]                     │
+│                                                                  │
+│    REQ-ML-L-001  PASS  return_code=0 ✓  time=87ms ✓             │
+│    REQ-ML-L-002  FAIL  return_code=1 ✗                          │
+│    REQ-ML-L-NFR-001  COMPLIANT (Review - server declaration)     │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 9. Generate System Test Report + QDP  [SQT Reporter]             │
+│                                                                  │
+│    • Format job metrics + traceability into report structures    │
+│    • Render ECSS-compliant PDF (Typst) and HTML                  │
+│    • Produce QDP artefact                                        │
+│                                                                  │
+│    Output: system-test-report.pdf, report.html, qdp.zip          │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 7.2 Example: End-to-End Trace
 
-**Requirement**:
+**Requirement** (from fetched ECSS baseline):
 ```strictdoc
 [REQUIREMENT]
 UID: REQ-ML-L-003
-STATEMENT: Inference latency on GR740 shall be < 100ms for ResNet50
+STATEMENT: Inference latency shall be < 100ms for the configured model on the target.
 VERIFICATION: Test
 ```
 
-**Test Mapping** (explicit):
+**Test Spec** (`specs/REQ-ML-L-003.test.yaml`):
 ```yaml
-test_mappings:
-  - requirement_uid: "REQ-ML-L-003"
-    hardware_tests:
-      - platform: "gr740-eval"
-        rest_endpoint: "/api/v1/performance/benchmark"
-        config:
-          model: "resnet50"
-          iterations: 100
-        success_criteria:
-          latency_mean_ms: "<= 100"
+requirement_uid: REQ-ML-L-003
+constraints:
+  - metric: time.avg_ms
+    op: lte
+    value: 100
+  - metric: return_code
+    op: eq
+    value: 0
 ```
 
 **Execution**:
-1. SQT sends POST to `/api/v1/performance/benchmark`
-2. Klepsydra executes benchmark on GR740 hardware
-3. Returns result: `{ "latency_mean_ms": 87.3 }`
-4. SQT checks: `87.3 <= 100` → ✓ Pass
+1. Reporter submits `POST /api/v1/jobs` - Runner queues it, returns `job-12345`
+2. Runner executes the model on the configured target; measures latency
+3. Reporter polls; receives `complete` with `time.avg_ms: 87.3`, `return_code: 0`
+4. Reporter evaluates: `87.3 <= 100` ✓, `0 == 0` ✓ → **PASS**
 
 **Traceability Matrix Entry**:
 ```
-REQ-ML-L-003 | HW Test (GR740) | ✓ Passed | 87.3ms < 100ms
+REQ-ML-L-003 | job-12345 | ✓ PASS | time.avg_ms=87.3ms ≤ 100ms
 ```
 
 **Report Section**:
 ```
 Requirement REQ-ML-L-003: VERIFIED
-  Statement: Inference latency on GR740 shall be < 100ms
-  Test Method: Hardware benchmark on GR740 Eval Board
-  Result: PASS (measured: 87.3ms, threshold: 100ms)
-  Evidence: See Appendix A, Test Report job-12345
+  Statement: Inference latency shall be < 100ms
+  Evidence: job-12345 (x86_64-linux, model: model.onnx)
+  Result: PASS (time.avg_ms = 87.3ms, threshold ≤ 100ms)
 ```
 
 ---
 
-## 8. Hardware & Emulation Strategy
+## 8. SQT Runner Target Architecture
 
-### 8.1 Emulation for Generic Targets
+The SQT Runner is designed from the start to support multiple execution targets. The **Target Abstraction Layer** (TAL) isolates all target-specific logic so that new targets can be added without touching the REST API server, test execution engine, or the SQT Reporter.
 
-For **non-space-specific** targets (ARM, RISC-V, x86), the SQT can use emulation directly:
+### 8.1 Target Abstraction Layer Design
 
-```yaml
-# Direct emulation (SQT responsibility)
-emulation:
-  qemu:
-    riscv32:
-      command: "qemu-system-riscv32 -M virt -nographic -kernel {binary}"
-      timeout: 300
+Each target implements a common `Target` trait:
 
-    arm_cortex_a:
-      command: "qemu-system-arm -M virt -cpu cortex-a15 -kernel {binary}"
-      serial_output: true
+```rust
+pub trait Target: Send + Sync {
+    /// Unique identifier used in Runner config (e.g. "x86_64-linux", "gr740")
+    fn id(&self) -> &str;
+
+    /// Assemble the AI system (inference engine + model + main program)
+    /// into a state ready for test execution.
+    fn prepare(&self, config: &AiSystemConfig) -> anyhow::Result<PreparedSystem>;
+
+    /// Execute the given test run and return collected metrics.
+    fn execute(&self, system: &PreparedSystem, job: &JobRequest) -> anyhow::Result<JobMetrics>;
+
+    /// Clean up any resources allocated during prepare/execute.
+    fn teardown(&self, system: PreparedSystem) -> anyhow::Result<()>;
+}
 ```
 
-**Use Case**: Functional tests on generic architectures for portability validation.
-
-### 8.2 Hardware via ML-L API (Space-Specific)
-
-For **space-specific hardware** (GR740, GR765, LEON), delegate to ML-L Specific:
+The active target is selected by a single config key; no code changes are needed to switch targets.
 
 ```yaml
-# Hardware via Job API (Klepsydra responsibility - see job-api.openapi.yaml)
-hardware_tests:
-  rest_api_endpoint: "http://localhost:8080"
+# sqt-runner.yaml
+runner:
+  target: x86_64-linux        # or: gr740, gr765
 
-  platforms:
-    - name: "gr740-eval-board"
-      type: "physical"
-      # SQT doesn't know HOW to access the board
-      # It just sends a request to Klepsydra's API
+  artifacts:
+    inference_engine: ./artifacts/klepsydra-engine
+    trained_model:    ./artifacts/model.onnx
+    main_program:     ./artifacts/main
+    input_data:       ./artifacts/input/
+    output_reference: ./artifacts/reference_output/
+
+  docs:
+    ecss_baseline:          ./docs/ecss-baseline.sdoc
+    unit_test_results:      ./docs/unit-test-results.sdoc
+    validation_test_results: ./docs/validation-test-results.sdoc
 ```
 
-**Rationale**:
-- Hardware access is complex (JTAG, serial, network, power control)
-- Space hardware requires specialized tools (TSIM, GRMON)
-- Klepsydra has expertise and tooling for this
-- Clean separation of concerns
+### 8.2 AI System Assembly
 
-### 8.3 Decision Matrix
+Before test execution the Runner assembles the AI system. The exact mechanism depends on the ML-L Provider's delivery format, which is not yet fully defined. The assembly step may involve:
 
-| Target | Method | Who Handles | Rationale |
-|--------|--------|-------------|-----------|
-| GR740 (physical) | REST API | Klepsydra | Specialized hardware access |
-| GR765 (simulator) | REST API | Klepsydra | Requires TSIM license |
-| RISC-V (QEMU) | Direct emulation | SQT | Standard QEMU, simple |
-| ARM Cortex-A (QEMU) | Direct emulation | SQT | Standard QEMU, simple |
-| x86 Linux (host) | Direct execution | SQT | Native execution |
+- Copying artifacts into a working directory
+- Setting environment variables (paths to inference engine, model file, etc.)
+- Linking or composing components into a single runnable process
+- Compiling a thin wrapper that binds the engine and model (if required by the delivery format)
 
-### 8.4 Docker Containerization
+Assembly is performed once per qualification session (not per job) and cached for subsequent jobs. The `prepare()` method on the target trait encapsulates this step.
 
-SQT should support Docker for reproducible environments:
+### 8.3 Supported Targets
+
+| Target | Status | Execution Method | Notes |
+|--------|--------|-----------------|-------|
+| `x86_64-linux` | **In Scope (v1)** | Native process execution | Development and CI baseline |
+| `gr740` | **Planned - Out of Scope for v1** | Remote attachment (connection protocol TBD: serial / GDB server / network) | Customer provides the hardware; Runner connects to it |
+| `gr765` | **Planned - Out of Scope for v1** | Remote attachment (connection protocol TBD) | Same model as GR740 target |
+
+**Design constraint for GR740/GR765**: Ateleris does not have access to these processors. The Runner therefore operates in a "remote execution" mode: it transfers the assembled AI system to the customer-provided board over an attached link, triggers execution, and collects results back. The exact connection protocol (JTAG, GDB remote stub, serial, network) is TBD and will be defined once a concrete delivery from the ML-L Provider is available. The target abstraction ensures this can be added later without API changes.
+
+**Note on emulation**: Gaisler provides **TSIM** (Time-accurate SIMulator), a commercial tool that emulates LEON4 (GR740) and exposes a GDB remote stub interface. In principle, the GR740 Runner target could support TSIM as a sub-mode alongside physical hardware - the binary and execution model are identical, only the connection differs. TSIM3 covers LEON4/GR740; LEON5/GR765 support (TSIM5) should be verified with Gaisler. This route is not currently planned but the TAL design does not preclude it.
+
+### 8.4 Space Profile Tests and Performance Tests
+
+Both test types are executed by the Runner's Test Execution Engine for each job:
+
+**Space Profile Tests** (defined by ESA and Klepsydra; implemented in the Runner by Ateleris):
+- Functional correctness tests specific to space AI applications
+- Defined and maintained by Ateleris
+- Verify that the AI system behaves correctly on the target hardware (e.g. input/output format compliance, determinism, error handling)
+- Results reported as standard job metrics
+
+**Performance Tests**:
+- Timing benchmarks (latency, throughput)
+- Memory benchmarks (peak RSS, stack usage, heap allocations)
+- Power and temperature metrics (where the target exposes them)
+- Results reported as standard job metrics
+
+Both test types use the same job submission flow; the `model` (workload type) field in the job request determines which test suite is exercised.
+
+### 8.5 Docker Containerization
+
+The SQT Runner should support Docker for reproducible environments on x86\_64:
 
 ```yaml
 docker:
   enabled: true
-
-  images:
-    build_environment:
-      image: "ateleris/ml-l-build:latest"
-      volumes:
-        - "./src:/workspace/src"
-        - "./build:/workspace/build"
-
-    test_environment:
-      image: "ateleris/ml-l-test:latest"
-      network: "host"  # For REST API access
+  image: "ateleris/sqt-runner:latest"
+  volumes:
+    - "./artifacts:/runner/artifacts"
+    - "./docs:/runner/docs"
+  network: "host"   # Reporter and Runner on the same host during development
 ```
 
 **Benefits**:
-- Reproducible builds
-- Toolchain isolation
-- Easy CI/CD integration
+- Reproducible test environment
+- Toolchain isolation (valgrind, lcov, etc.)
+- Easy CI/CD integration for x86\_64 tests
 
 ---
 
@@ -1547,9 +1511,8 @@ A single qualification session may test the binary with multiple inputs
 (e.g. `reference.bin`, `edge_case.bin`, `stress.bin`). Each input produces one
 execution run. Each requirement's `TestSpec` references the input relevant to it.
 The orchestrator groups specs by input, submits one run job per unique input, and
-fans results back to each spec. The model bundle (ONNX model + pre/post-processing code) is sent by the client
-as `model_zip` in each job request; the server uses its configured inference
-engine and hardware target to execute it.
+fans results back to each spec. The Runner uses the model and inference engine
+configured at startup for all jobs in the session.
 
 The report table shows one row per requirement, citing its evidence source:
 
@@ -1702,7 +1665,25 @@ impl ReportGenerator {
 
 ## 10. Metric Extensibility
 
-SQT Generic ships with a set of built-in metric collectors (Section 4.5.3). When a project needs a metric that is not built-in, users extend the tool by adding Rust code directly to the source tree, then recompiling. There is no runtime plugin protocol, no dynamic loading, and no external process bridge.
+### 10.0 Where Metrics Live
+
+**All metric collection (tool execution) happens in the SQT Runner.** The Runner runs valgrind, lcov, sonar-scanner, and any other analysis tools on the target system and returns results as `JobMetrics` fields in the job response. The tools are configured in `sqt-runner.yaml` and run server-side; the Reporter never invokes them directly.
+
+**The SQT Reporter is responsible for consuming and formatting those metrics** for reports and constraint evaluation. On the Reporter side, the `MetricCollector` trait and the `inventory`-based registry described below are the extensibility mechanism for the **Runner** - not the Reporter. When someone adds a new tool to the Runner (e.g. a custom profiler), they add a new collector in the Runner's source tree. The Reporter side only needs a corresponding field in the `.test.yaml` spec schema and a label in the report template.
+
+To summarise:
+```
+SQT Runner                           SQT Reporter
+─────────────────────────────────────────────────────
+MetricCollector trait                Job response deserialization
+inventory-based registry             Constraint evaluation (metric vs. spec)
+Tool execution (valgrind, lcov, …)   Report formatting (metric → PDF/HTML row)
+Metric collection + JobMetrics fill  Traceability mapping
+```
+
+### Extensibility Decision: Compile-Time Only (Runner)
+
+The SQT Runner ships with a set of built-in metric collectors. When a project needs a metric that is not built-in, users extend the Runner by adding Rust code directly to its source tree, then recompiling. There is no runtime plugin protocol, no dynamic loading, and no external process bridge.
 
 **Architectural decision: compile-time extensibility only**
 
@@ -1714,7 +1695,7 @@ SQT Generic ships with a set of built-in metric collectors (Section 4.5.3). When
 | Embedded scripting (Rhai/Lua) | ❌ | Limited capability for real measurement work |
 | **Compile-time Rust (`inventory` crate)** | ✅ | Zero runtime overhead; full Rust type safety; no central registration file; trivial to add, trivial to test |
 
-The intended extensibility model is: **clone the repository, add a Rust file, compile**. SQT Generic is a qualification tool used by small, technically capable teams. Requiring a recompile is not a constraint - it is a feature, because it means every deployment is a single, auditable, statically-linked binary with a fixed set of collectors.
+The intended extensibility model is: **clone the Runner repository, add a Rust file, compile**. The Runner is a qualification tool used by small, technically capable teams. Requiring a recompile is not a constraint - it is a feature, because it means every deployment is a single, auditable, statically-linked binary with a fixed set of collectors.
 
 ### 10.1 The `MetricCollector` Trait
 
@@ -1871,9 +1852,6 @@ quick-xml = { version = "0.31", features = ["serialize"] }
 # Code Coverage Parsing
 lcov = "0.8"
 
-# Process Execution
-tokio-process = "0.2"
-
 # File System Operations
 walkdir = "2.4"
 glob = "0.3"
@@ -1910,7 +1888,7 @@ Tools that SQT orchestrates (must be installed separately):
 ### 11.3 Project Structure
 
 ```
-sqt/                              # Main SQT Generic application
+sqt-reporter/                     # SQT Reporter application (orchestration + reporting)
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
@@ -1937,28 +1915,9 @@ sqt/                              # Main SQT Generic application
 │   ├── orchestrator/             # Test orchestration
 │   │   ├── mod.rs
 │   │   ├── runner.rs             # Constraint-driven execution
-│   │   ├── scheduler.rs          # Job scheduling
-│   │   └── parallel.rs           # Parallel execution
+│   │   └── scheduler.rs          # Job scheduling (sequential queue)
 │   │
-│   ├── plugins/                  # Plugin system (Section 10)
-│   │   ├── mod.rs                # MetricCollector trait + registry
-│   │   ├── external.rs           # ExternalPluginCollector (child process)
-│   │   ├── discovery.rs          # Auto-discovery from plugin_dirs
-│   │   └── builtin/              # Built-in metric collectors
-│   │       ├── memory.rs         # memory.peak_rss, memory.leaks, ...
-│   │       ├── timing.rs         # time.execution, time.latency_*, ...
-│   │       ├── accuracy.rs       # accuracy, output.matches_reference, ...
-│   │       ├── sonarqube.rs      # sonar.* metrics
-│   │       └── coverage.rs       # coverage.line_percent, ...
-│   │
-│   ├── adapters/                 # Tool adapters (local execution)
-│   │   ├── mod.rs
-│   │   ├── clang_tidy.rs
-│   │   ├── googletest.rs
-│   │   ├── coverage.rs
-│   │   └── cmake.rs
-│   │
-│   ├── ml_l_api/                 # REST API client for Klepsydra
+│   ├── runner_api/               # REST API client for SQT Runner
 │   │   ├── mod.rs
 │   │   ├── client.rs             # HTTP client
 │   │   ├── types.rs              # API data structures
@@ -1995,25 +1954,6 @@ sqt/                              # Main SQT Generic application
     ├── basic_usage.rs
     └── ci_integration.rs
 
-sqt-plugin-sdk/                   # Rust plugin SDK (separate crate → crates.io)
-├── Cargo.toml
-└── src/
-    ├── lib.rs                    # Plugin trait, PluginInfo, CollectRequest/Result
-    └── main_macro.rs             # plugin_main!() macro
-
-sqt-plugin-sdk-python/            # Python plugin SDK (→ PyPI)
-└── sqt_plugin_sdk/
-    └── __init__.py
-
-plugins/                          # Official bundled plugins
-├── sqt-metric-valgrind/          # Memory leak detection
-├── sqt-metric-sonarqube-full/    # Extended SonarQube metrics
-└── sqt-metric-hw-power/          # Hardware power measurement
-
-examples/plugins/                 # Plugin authoring examples
-├── plugin_bash/                  # Minimal Bash plugin
-├── plugin_python/                # Python SDK example
-└── plugin_rust/                  # Rust SDK example
 ```
 
 ---
@@ -2028,7 +1968,7 @@ examples/plugins/                 # Plugin authoring examples
 | **AD-002** | YAML as primary config format | Human-readable, widely supported | JSON (verbose), TOML (less known) | 🟡 Proposed |
 | **AD-003** | REST API for ML-L interface | Language-agnostic, clear decoupling | gRPC (complex), direct linking (coupling) | ✅ Accepted |
 | **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based | ReqIF (complex), Excel (not traceable) | 🟡 Proposed |
-| **AD-005** | Delegate hardware testing to ML-L | Complexity, hardware expertise | Implement in SQT (too complex) | ✅ Accepted |
+| **AD-005** | Ateleris builds generic SQT Runner (not delegated to ML-L Provider) | ML-L Provider focuses on delivering artifacts; Ateleris controls the test execution layer, enabling a generic and open implementation | Delegate to ML-L Provider (Klepsydra) - rejected: closes the runner to third parties and ties test execution to a single vendor | ✅ Accepted |
 | **AD-006** | Use Typst for PDF generation | Modern, fast, programmable | LaTeX (complex), Pandoc (limited) | 🟡 Proposed |
 | **AD-007** | Convention-based req-to-test mapping | Simplicity, maintainability | Only explicit mapping (verbose) | 🟡 Proposed |
 | **AD-008** | Docker containerization | Reproducibility, isolation | VM (heavy), native (env issues) | ✅ Accepted |
@@ -2037,10 +1977,16 @@ examples/plugins/                 # Plugin authoring examples
 | **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
 | **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
 | **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
-| **AD-014** | Predefined workload types in SQT Generic | Workloads (object_detection, image_classification, etc.) are a closed, known set; both client and server reason over the same enum; no open-ended task dispatch needed | Open task-name dispatch (server accepts arbitrary task strings - fragile, hard to validate) | ✅ Accepted |
-| **AD-015** | CPU utilisation normalised server-side | Server knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (server would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
-| **AD-016** | ML accuracy metrics computed client-side | Server returns raw outputs; SQT Generic computes accuracy/F1/IoU/L2 etc. against reference labels; keeps server hardware-agnostic and reference-data-free | Server computes accuracy (requires server-side reference dataset per workload - complex, leaks qualification logic into the ML-L Specific component) | ✅ Accepted |
+| **AD-014** | Predefined workload types in SQT Reporter | Workloads (object_detection, image_classification, etc.) are a closed, known set; both Reporter and Runner reason over the same enum; no open-ended task dispatch needed | Open task-name dispatch (Runner accepts arbitrary task strings - fragile, hard to validate) | ✅ Accepted |
+| **AD-015** | CPU utilisation normalised Runner-side | Runner knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (Runner would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
+| **AD-016** | ML accuracy metrics computed Reporter-side | Runner returns raw outputs; SQT Reporter computes accuracy/F1/IoU/L2 etc. against reference labels; keeps Runner hardware-agnostic and reference-data-free | Runner computes accuracy (requires Runner-side reference dataset per workload - complex, leaks qualification logic into the Runner) | ✅ Accepted |
 | **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all workload types including segmentation masks. | Split `sample_output` / `all_outputs` per workload type (added complexity, inconsistent semantics) | ✅ Accepted |
+| **AD-018** | Model and artifacts configured on Runner at startup, not per job | No per-job model transfer; ONNX models can be hundreds of MB; re-sending per job is impractical. Runner is purpose-configured for one model version. To qualify a different version, restart Runner with updated config or CLI flags. | Per-job `model_zip` field (removed: inconsistent with session assembly model, impractical at production model sizes) | ✅ Accepted |
+| **AD-019** | ML-L Provider artifacts pre-placed on Runner filesystem | No network transfer from Provider at qualification time; configurable paths in `sqt-runner.yaml`; simplest possible delivery model | Pull artifacts from Provider API at session start (adds Provider-side API requirement, network dependency, latency) | ✅ Accepted |
+| **AD-020** | SQT Reporter fetches docs from Runner (not directly from ML-L Provider) | Runner is the single point of contact; Reporter need not know the Provider's delivery mechanism; consistent with Runner-as-data-source model | Reporter contacts Provider directly for docs (couples Reporter to Provider, breaks single-interface design) | ✅ Accepted |
+| **AD-021** | 1:1 Reporter:Runner deployment model | Simplest correct model for the current use case; no concurrent client complexity; job queue is sufficient | Multi-client with session isolation (deferred; revisit if needed) | ✅ Accepted |
+| **AD-022** | Job queue: sequential execution, one job at a time | Predictable resource usage on target hardware; simplest correct implementation; `queue_position` gives Reporter full visibility | Parallel job execution (complex resource management, especially on constrained space hardware) | ✅ Accepted |
+| **AD-023** | SQT Runner target abstraction layer (TAL) | Isolates target-specific code (x86\_64, GR740, GR765) behind a Rust trait; new targets can be added without touching the Reporter or the REST API; GR740/GR765 deferred but architecturally catered for | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
 
 ### Trade-offs
 
@@ -2061,150 +2007,130 @@ examples/plugins/                 # Plugin authoring examples
 
 ## 13. Open Questions
 
-### 12.1 Technical Questions
+### 13.0 Deployment Model - Decided
 
-1. **Strictdoc Parser Implementation**
-   - **Question**: Should we implement a full Strictdoc parser or use their Python tool?
+**1:1 Client:Runner** - The current design targets exactly one SQT Reporter talking to one SQT Runner at a time. Concurrent clients are not supported and not planned. The Runner's job queue ensures that multiple jobs submitted by a single Reporter session are executed sequentially; this is by design and not a limitation to work around. If multi-client support is ever needed, the session concept should be revisited first (see review notes on session isolation).
+
+---
+
+### 13.1 SQT Runner - Technical Questions
+
+1. **AI System Assembly Mechanism**
+   - **Question**: How exactly does the ML-L Provider package the inference engine, model, and main program? What does "linking them together" concretely mean?
+   - **Concern**: The `prepare()` step in the TAL cannot be fully specified until the ML-L Provider's delivery format is known
+   - **Action**: Obtain a sample delivery bundle from Klepsydra; define the assembly interface based on it
+
+2. **Space Profile Test Definition**
+   - **Question**: What exactly are the Space Profile tests? What functional properties do they verify?
+   - **Action**: Obtain the Space Profile test specification from ESA/Klepsydra; Ateleris implements it in the Runner
+
+3. **GR740/GR765 Connection Protocol**
+   - **Question**: What protocol connects the Runner to the GR740/GR765? (JTAG, GDB remote stub, UART serial, Ethernet?)
+   - **Concern**: The TAL design (Section 8.1) accommodates this, but the concrete implementation is blocked on the answer
+   - **Action**: Define with Klepsydra/customer when GR target support is scoped
+
+4. **Input/Output Data Format**
+   - **Question**: What is the format of the reference input/output datasets? How are they structured on the Runner filesystem?
+   - **Action**: Align with Klepsydra on dataset conventions; document in Runner config schema
+
+### 13.2 SQT Reporter - Technical Questions
+
+5. **Strictdoc Parser Implementation**
+   - **Question**: Should we implement a full Strictdoc parser in Rust or invoke the Python CLI tool?
    - **Options**:
-     - A) Write custom Rust parser (full control, no dependencies)
+     - A) Write custom Rust parser (full control, no dependency)
      - B) Use Strictdoc CLI tool (mature, but Python dependency)
    - **Recommendation**: Start with Option B, migrate to A if needed
 
-2. **REST API Authentication**
-   - **Question**: What authentication method should the API use?
-   - **Options**:
-     - A) Bearer token (simple, stateless)
-     - B) API key (simpler)
-     - C) mTLS (most secure, complex)
+6. **REST API Authentication**
+   - **Question**: What authentication method should the Reporter ↔ Runner API use?
+   - **Options**: Bearer token (simple), API key (simpler), mTLS (most secure)
    - **Recommendation**: Bearer token for development, mTLS for production
 
-3. **Report Template Engine**
+7. **Report Template Engine**
    - **Question**: Typst vs LaTeX for PDF generation?
-   - **Decision needed**: Verify Typst maturity for ECSS compliance
+   - **Decision needed**: Verify Typst maturity for ECSS report compliance
    - **Fallback**: LaTeX with Tectonic
 
-4. **Hardware Test Timeout**
-   - **Question**: What should be the default timeout for hardware tests?
-   - **Concern**: Space hardware tests can be slow (flashing, execution, collection)
-   - **Recommendation**: 10 minutes default, configurable per platform
+### 13.3 Clarifications Needed from ML-L Provider (Klepsydra)
 
-### 12.2 Process Questions
-
-5. **CI/CD Pipeline**
-   - **Question**: Which CI system will be primary?
-   - **Recommendation**: GitHub Actions (start), add GitLab CI if needed
-
-6. **Artifact Storage**
-   - **Question**: Where should large artifacts be stored (binaries, reports)?
-   - **Options**:
-     - A) Local filesystem
-     - B) S3-compatible storage
-     - C) GitLab artifacts
-   - **Recommendation**: Local + optional S3 for long-term storage
-
-7. **API Versioning**
-   - **Question**: How to handle API versioning (SQT ↔ ML-L)?
-   - **Recommendation**: Semantic versioning in URL (/api/v1/, /api/v2/)
-
-### 12.3 Clarifications Needed from Klepsydra
-
-- [ ] Confirm REST API contract (endpoints, authentication)
-- [ ] Provide example PBF output format
-- [ ] Define hardware platforms available for testing
-- [ ] Clarify binary upload mechanism (direct or via API)
-- [ ] Specify timeout expectations for hardware tests
-- [ ] Provide sample Strictdoc requirements file
+- [ ] Delivery format for inference engine, model, and main program (ZIP structure? directory layout?)
+- [ ] Definition of "Prepare AI System" - what does linking/assembling require from the Runner?
+- [ ] Sample Strictdoc requirements file for the ECSS documentation baseline
+- [ ] Example unit test results and validation test results (format, content)
+- [ ] Connection protocol to GR740/GR765 (for future Runner target implementation)
 
 ---
 
 ## 14. Next Steps
 
-### 13.1 Immediate Actions (Week 1-2)
+### 14.1 Immediate Actions
 
-1. **Validate Architecture with Klepsydra**
-   - Schedule architecture review meeting
-   - Confirm REST API contract
-   - Agree on responsibilities
+1. **Align on ML-L Provider delivery format**
+   - Obtain a sample artifact bundle from Klepsydra (inference engine + model + main program)
+   - Understand the "Prepare AI System" step concretely
+   - Document in Runner config schema and TAL design
 
-2. **Create Project Repository**
-   - Initialize Git repository
-   - Set up Cargo project structure
-   - Add CI/CD pipeline (GitHub Actions)
+2. **Obtain Space Profile Test Specification**
+   - ESA and Klepsydra define the Space Profile; Ateleris implements it in the Runner
+   - Obtain the formal Space Profile test specification from Klepsydra/ESA
+   - Agree on pass/fail criteria and metric mapping for the Runner's job response schema
 
-3. **Implement Configuration Parser**
-   - Define YAML schema
-   - Implement parser with serde_yaml
-   - Write validation logic
-   - Add unit tests
+3. **Validate REST API contract**
+   - Share `job-api.openapi.yaml` with Klepsydra for review
+   - Confirm document format for `GET /api/v1/docs`
 
-4. **Draft OpenAPI Specification**
-   - Document REST API endpoints
-   - Define request/response schemas
-   - Share with Klepsydra for approval
+### 14.2 Phase 1: SQT Runner - x86_64 Baseline (Rust)
 
-### 13.2 Phase 1: Proof of Concept (Week 3-4)
+4. **Runner: REST API server scaffold**
+   - Implement `POST /api/v1/jobs` and `GET /api/v1/jobs/{id}` (async, job queue)
+   - Implement `GET /api/v1/docs` serving configured document paths
 
-5. **Minimal Working Prototype**
-   - Parse simple YAML config
-   - Run one static analysis tool (clang-tidy)
-   - Generate simple text report
-   - Command-line interface
+5. **Runner: x86\_64 target**
+   - Implement `Target` trait for native Linux execution
+   - AI system assembly for x86\_64 (based on agreed delivery format)
+   - Basic Performance test execution (timing, memory via `/usr/bin/time` / valgrind)
 
-6. **REST API Client (Mock)**
-   - Implement HTTP client
-   - Create mock server for testing
-   - Test job submission and polling
+6. **Runner: Space Profile tests (first set)**
+   - Implement first Space Profile tests for x86\_64
+   - Map results to job metric schema
 
-### 13.3 Phase 2: Core Functionality (Week 5-8)
+### 14.3 Phase 2: SQT Reporter - Core Functionality
 
-7. **Tool Adapters**
-   - Implement SonarQube adapter
-   - Implement GoogleTest runner
-   - Implement coverage collector
+7. **Reporter: baseline check**
+   - Implement `GET /api/v1/docs` client
+   - Parse ECSS docs and static test results
+   - Implement compliance gate
 
-8. **Requirements Management**
-   - Implement Strictdoc parser
-   - Build traceability logic
-   - Test with sample requirements
+8. **Reporter: requirements management**
+   - Strictdoc parser (CLI wrapper or native Rust)
+   - Traceability matrix builder
 
-9. **Evidence Collection**
-   - Aggregate tool results
-   - Generate traceability matrix
-   - Basic HTML report
+9. **Reporter: orchestrator**
+   - Job submission and polling
+   - Metric constraint evaluation
+   - Evidence collector
 
-### 13.4 Phase 3: Integration (Week 9-12)
+### 14.4 Phase 3: Integration and Report Generation
 
-10. **ML-L API Integration**
-    - Integrate with real Klepsydra API
-    - Test on actual hardware platforms
-    - Validate results
+10. **End-to-end qualification session**
+    - Connect Reporter → Runner on x86\_64
+    - Full qualification workflow with real ML-L artifacts
 
-11. **Report Generation**
-    - Implement PDF generation
-    - Create ECSS-compliant templates
-    - Generate comprehensive reports
+11. **Report generation**
+    - System Test Report (PDF + HTML)
+    - QDP
+    - Traceability matrix
 
-12. **End-to-End Testing**
-    - Full qualification workflow
-    - Performance testing
-    - Error handling
-
-### 13.5 Phase 4: Refinement (Week 13-15)
-
-13. **Documentation**
-    - User guide
-    - API documentation
-    - Configuration examples
-
-14. **CI/CD Integration**
+12. **CI/CD integration**
     - GitHub Actions workflow
-    - Docker images
-    - Artifact management
+    - Docker images for Runner and Reporter
 
-15. **Handover & Training**
-    - Training session for Klepsydra
-    - Deployment guide
-    - Maintenance plan
+### 14.5 Phase 4: GR740/GR765 Target (Future)
+
+13. **Define connection protocol** (blocked on hardware availability and Klepsydra alignment)
+14. **Implement GR740 target** in the Runner TAL
+15. **Validate end-to-end** on customer hardware
 
 ---
 
@@ -2216,12 +2142,18 @@ examples/plugins/                 # Plugin authoring examples
 |------|------------|
 | **ECSS** | European Cooperation for Space Standardization |
 | **ML-L** | Machine Learning Library (inference engine) |
-| **SQT** | Software Qualification Toolkit |
-| **PBF** | Performance Benchmark Framework (Klepsydra's tool) |
+| **SQT** | Software Qualification Toolkit (collectively: SQT Runner + SQT Reporter) |
+| **SQT Runner** | Ateleris-developed REST API server that executes tests on the target hardware |
+| **SQT Reporter** | Ateleris-developed CLI that orchestrates qualification sessions and generates reports |
+| **TAL** | Target Abstraction Layer - pluggable backend in the SQT Runner for different execution targets |
+| **QDP** | Quality Data Package - the ECSS-compliant qualification output artifact |
+| **Space Profile Tests** | functional tests for space AI systems, defined by ESA and Klepsydra, executed by the SQT Runner |
+| **PBF** | Performance Benchmark Framework (Klepsydra's internal tool - not used by SQT Runner) |
 | **TRL** | Technology Readiness Level (1-9 scale) |
-| **Strictdoc** | Requirements management tool (text-based) |
+| **Strictdoc** | Requirements management tool (text-based format) |
 | **ONNX** | Open Neural Network Exchange (model format) |
-| **GR740** | Quad-core LEON4 space-grade processor |
+| **GR740** | Quad-core LEON4 space-grade processor (Cobham Gaisler) |
+| **GR765** | Octa-core LEON5 space-grade processor (Cobham Gaisler) |
 | **RTEMS** | Real-Time Executive for Multiprocessor Systems (RTOS) |
 
 ### Appendix B: References

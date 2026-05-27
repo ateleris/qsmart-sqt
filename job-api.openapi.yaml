@@ -5,22 +5,27 @@ info:
   description: |
     Generic REST API for submitting AI model qualification jobs and polling their results.
 
-    ## Single-Endpoint Design
+    ## Design Overview
 
     All qualification work - execution, instrumented runs, static analysis,
     and coverage - is submitted through a single job endpoint.
-    Clients supply:
+
+    The AI model, inference engine, and main program are configured on the
+    Runner at startup (via `sqt-runner.yaml` or CLI flags). They are **not**
+    transmitted per job. Clients supply only:
 
     - **Which workload** to run (`model` field - one of the predefined workload types)
     - **What input** to feed it (workload-specific: images, tabular data, time series,
       or a server-side dataset reference)
     - **How many times** to repeat (`repetitions`)
-    - **What instrumentation** to attach (`instrumentation`: none / asan / valgrind / gprof / to be refined)
+    - **What instrumentation** to attach (`instrumentation`: none / asan / valgrind / gprof)
     - **Which measurement mode** to use (`mode`: latency or throughput)
 
-    The server returns everything it can measure in a fixed schema; fields that
-    are unavailable are `null`. SQT Generic treats a null metric as a failed
-    constraint when a spec references it.
+    The Runner executes one job at a time. Submitted jobs queue up; the client
+    receives a `job_id` and `queue_position` immediately and polls until the job
+    completes. The server returns everything it can measure in a fixed schema;
+    fields that are unavailable are `null`. The SQT Reporter treats a null metric
+    as a failed constraint when a spec references it.
 
     ## Predefined Workload Types
 
@@ -35,7 +40,7 @@ info:
 
     Large outputs (e.g. segmentation masks) are handled specially: only one
     sample run output is transferred. For all other workloads, all run outputs
-    are transferred so that SQT Generic can compute accuracy metrics
+    are transferred so that SQT Reporter can compute accuracy metrics
     (accuracy, IoU, F1, L2, etc.) client-side.
 
     ## Measurement Modes
@@ -50,7 +55,7 @@ info:
     1. Submit → receive a job ID (202 Accepted)
     2. Poll `GET /api/v1/jobs/{job_id}` until `status` is `complete` or `failed`
 
-    SQT Generic uses exponential backoff when polling (initial 1 s, x2 per
+    SQT Reporter uses exponential backoff when polling (initial 1 s, x2 per
     poll, 30 s cap). Results are included directly in the GET response.
 
     ## CPU Utilisation Normalisation
@@ -91,16 +96,16 @@ paths:
       operationId: submitJob
       summary: Submit a qualification job
       description: |
-        Submits a qualification job. The client provides the AI model bundle
-        (ONNX model + pre/post-processing code) as a base64-encoded ZIP in
-        `model_zip`, along with the workload type, input data, repetition
-        count, instrumentation mode, and measurement mode.
+        Submits a qualification job. The client specifies the workload type,
+        input data, repetition count, instrumentation mode, and measurement
+        mode. The AI model and inference engine are configured on the Runner
+        at startup and are not transmitted per job.
 
-        The server returns a job ID for polling.
-
-        Static analysis (sonar, binary size, static warnings) is performed
-        once per session and included in the first `complete` response.
-        Subsequent jobs in the same session reuse the cached analysis result.
+        The job is placed in the Runner's queue. The client receives a job ID
+        immediately (status: `accepted`) and polls until the job reaches a
+        terminal state (`complete` or `failed`). Only one job executes at a
+        time; queued jobs wait with status `accepted` and a `queue_position`
+        indicating their place in the queue.
       tags: [Jobs]
       requestBody:
         required: true
@@ -113,7 +118,6 @@ paths:
                 summary: Image classification, 10 repetitions, latency mode
                 value:
                   model: image_classification
-                  model_zip: "<base64-encoded-zip>"
                   input:
                     type: images
                     images:
@@ -148,7 +152,7 @@ paths:
                   timeout_secs: 120
       responses:
         "202":
-          description: Job accepted and queued
+          description: Job accepted and added to queue
           content:
             application/json:
               schema:
@@ -156,6 +160,7 @@ paths:
               example:
                 job_id: "job-abc123"
                 status: "accepted"
+                queue_position: 1
                 created_at: "2026-03-06T10:00:00Z"
         "400":
           $ref: "#/components/responses/BadRequest"
@@ -297,9 +302,9 @@ paths:
       summary: Get requirements documents in StrictDoc format
       description: |
         Returns the requirements documents managed by the server, in StrictDoc
-        text format. This is the first call SQT Generic makes in every
+        text format. This is the first call SQT Reporter makes in every
         qualification session. The returned documents serve as the **canonical
-        requirement baseline** — the complete set of requirements the server
+        requirement baseline** - the complete set of requirements the server
         is responsible for, and against which the qualification report is
         measured.
 
@@ -311,9 +316,9 @@ paths:
 
         | Verification method(s) | SQT treatment |
         |---|---|
-        | Does **not** include `Test` (e.g. `Inspection`, `Review`, `Analysis`) | Mark **compliant** — server's authority accepted; no job submitted |
+        | Does **not** include `Test` (e.g. `Inspection`, `Review`, `Analysis`) | Mark **compliant** - server's authority accepted; no job submitted |
         | Includes `Test` **and** a matching `.test.yaml` spec exists | Evaluate via qualification jobs; pass/fail from metric constraints |
-        | Includes `Test` but **no** matching `.test.yaml` spec exists | Flag as **UNCOVERED** — qualification gap reported |
+        | Includes `Test` but **no** matching `.test.yaml` spec exists | Flag as **UNCOVERED** - qualification gap reported |
 
         An `UNCOVERED` requirement is treated as a failed qualification: the
         report records it with status `uncovered` and the session exits with a
@@ -323,7 +328,7 @@ paths:
 
         ## Test specifications (`.test.yaml`)
 
-        For every `VERIFICATION: Test` requirement, SQT Generic expects a
+        For every `VERIFICATION: Test` requirement, SQT Reporter expects a
         sidecar file that encodes the testable constraints in machine-readable
         form. Example for `REQ-ML-L-003` ("inference in < 100 ms"):
 
@@ -357,7 +362,7 @@ paths:
         ## Response format
 
         One entry per `.sdoc` file. Each entry carries the full raw StrictDoc
-        text; SQT Generic parses it client-side. The server may return an
+        text; SQT Reporter parses it client-side. The server may return an
         empty `documents` array if no requirements documents are configured.
       tags: [Docs]
       responses:
@@ -675,33 +680,14 @@ components:
     JobRequest:
       type: object
       required: [model]
+      description: |
+        A qualification job request. The AI model, inference engine, and main
+        program are configured on the Runner at startup (via `sqt-runner.yaml`
+        or CLI flags) and are not transmitted per job. The client specifies
+        only what to measure and how.
       properties:
         model:
           $ref: "#/components/schemas/WorkloadType"
-        model_zip:
-          type: string
-          format: byte
-          nullable: true
-          description: |
-            Base64-encoded ZIP archive provided by the customer. The archive
-            contains the AI model (e.g. an ONNX file) together with the
-            accompanying pre-processing and post-processing code. The server
-            (Klepsydra) unpacks this bundle and uses it for inference.
-
-            The exact ZIP structure and naming conventions are defined by the
-            server and are outside the scope of SQT Generic.
-
-            When `null`, the server uses whatever model is already configured
-            server-side. Providing the ZIP is required for customer-supplied
-            models that are not pre-loaded on the server.
-
-            Note: ONNX models can be large (tens to hundreds of MB). Ensure
-            the server's HTTP frontend is configured to accept the necessary
-            body size (e.g. `client_max_body_size 2g` in nginx).
-
-            Future revision may replace this inline field with a dedicated
-            model upload endpoint to avoid re-sending the ZIP with every job.
-          example: "<base64-encoded-zip>"
         input:
           $ref: "#/components/schemas/JobInput"
           description: |
@@ -771,7 +757,7 @@ components:
 
     JobAccepted:
       type: object
-      required: [job_id, status, created_at]
+      required: [job_id, status, queue_position, created_at]
       properties:
         job_id:
           type: string
@@ -781,6 +767,14 @@ components:
           type: string
           enum: [accepted]
           description: Always `accepted` in the 202 response.
+        queue_position:
+          type: integer
+          minimum: 1
+          description: |
+            Position in the execution queue. `1` means the job will execute
+            next (or is already executing if status transitions to `running`
+            before the client polls). Higher values mean more jobs are ahead.
+          example: 1
         created_at:
           type: string
           format: date-time
@@ -803,6 +797,15 @@ components:
           example: 10
         status:
           $ref: "#/components/schemas/JobStatusEnum"
+        queue_position:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: |
+            Current position in the execution queue. Present and non-null
+            only when `status == "accepted"`. Null once the job starts
+            running or reaches a terminal state.
+          example: 2
         created_at:
           type: string
           format: date-time
@@ -1169,7 +1172,7 @@ components:
         `result_consistent` records whether every repetition produced
         bit-identical results.
 
-        SQT Generic uses `outputs` to compute accuracy metrics (accuracy, F1,
+        SQT Reporter uses `outputs` to compute accuracy metrics (accuracy, F1,
         IoU, L2, etc.) client-side against reference labels attached to the spec.
 
         Output schema per entry depends on `type`:
@@ -1214,13 +1217,18 @@ components:
       type: string
       enum: [accepted, running, complete, failed]
       description: |
-        - `accepted`: Job received and queued, not yet started
-        - `running`: Job is executing (repetitions in progress)
-        - `complete`: All repetitions finished; metric and output fields
+        The Runner executes one job at a time. Jobs queue up in submission
+        order; `queue_position` indicates where a job sits in the queue.
+
+        - `accepted`: Job is queued, waiting for the current job to finish.
+          `queue_position` is non-null and reflects the job's place in line.
+        - `running`: Job is currently executing (repetitions in progress).
+          `queue_position` is null.
+        - `complete`: All repetitions finished. Metric and output fields
           reflect final values. Individual metric fields may still be `null`
-          if the corresponding tool was unavailable.
+          if the corresponding tool was unavailable or not configured.
         - `failed`: Infrastructure-level failure; the job could not run.
-          The `error` field contains a description.
+          The `error` field contains a human-readable description.
 
         Terminal states: `complete` and `failed`. Clients shall stop polling
         when the status is terminal.
@@ -1258,14 +1266,14 @@ components:
           nullable: true
           description: |
             Document title as declared in the `[DOCUMENT] TITLE:` field.
-            Provided as a convenience so that SQT Generic can display it
+            Provided as a convenience so that SQT Reporter can display it
             without parsing. `null` when the server does not pre-parse the
             document.
           example: "ML-L Software Requirements Specification"
         content:
           type: string
           description: |
-            Full raw StrictDoc document text. SQT Generic parses this
+            Full raw StrictDoc document text. SQT Reporter parses this
             client-side to extract `[REQUIREMENT]` blocks, UIDs, titles,
             statements, and `VERIFICATION` methods.
 
