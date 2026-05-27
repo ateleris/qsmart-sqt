@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use anyhow::Result;
 use futures::future::try_join_all;
 
 use crate::api::types::{Instrumentation, JobRequest, MeasurementMode, WorkloadType};
@@ -22,29 +21,15 @@ fn group_key(spec: &TestSpec) -> GroupKey {
     )
 }
 
-/// Read and base64-encode the model ZIP file from disk.
-///
-/// Returns `None` if no path is configured.
-fn read_model_zip(config: &SqtConfig) -> Result<Option<String>> {
-    let Some(ref path) = config.model_zip_path else {
-        return Ok(None);
-    };
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("failed to read model ZIP: {}", path.display()))?;
-    Ok(Some(BASE64.encode(&bytes)))
-}
-
 /// Build a `JobRequest` for a group of specs that share the same (workload_type, input).
 fn build_job_request(
     workload_type: &WorkloadType,
     input: &Option<String>,
     specs: &[&TestSpec],
-    model_zip: Option<String>,
 ) -> JobRequest {
     let max_timeout = specs.iter().map(|s| s.target.timeout.as_secs()).max().unwrap_or(30);
     JobRequest {
         model: workload_type.clone(),
-        model_zip,
         input: input.as_ref().map(|s| serde_json::Value::String(s.clone())),
         repetitions: 1,
         instrumentation: Instrumentation::default(),
@@ -83,8 +68,6 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
         });
     }
 
-    let model_zip = read_model_zip(config)?;
-
     // Group specs by (workload_type, input).
     let mut groups: HashMap<GroupKey, Vec<&TestSpec>> = HashMap::new();
     for spec in specs {
@@ -95,7 +78,7 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
     tracing::info!("Submitting {} job(s) to {}", groups.len(), config.api.url);
     let mut job_ids: HashMap<GroupKey, (String, u64)> = HashMap::new();
     for ((workload_type, input), group) in &groups {
-        let request = build_job_request(workload_type, input, group, model_zip.clone());
+        let request = build_job_request(workload_type, input, group);
         let timeout_secs = request.timeout_secs.unwrap_or(30);
         let job_id = client.submit_job(&request).await?;
         tracing::info!(job_id, workload = ?workload_type, input = ?input, "Job accepted");
@@ -229,7 +212,7 @@ mod tests {
         let spec60 = make_spec(WorkloadType::ImageClassification, None, 60);
         let spec45 = make_spec(WorkloadType::ImageClassification, None, 45);
         let refs: Vec<&TestSpec> = vec![&spec30, &spec60, &spec45];
-        let request = build_job_request(&WorkloadType::ImageClassification, &None, &refs, None);
+        let request = build_job_request(&WorkloadType::ImageClassification, &None, &refs);
         assert_eq!(request.timeout_secs, Some(60));
     }
 
@@ -277,21 +260,11 @@ mod tests {
     // --- JobRequest construction (T-042) -------------------------------------
 
     #[test]
-    fn build_job_request_embeds_model_zip() {
-        // T-042: model ZIP read once and embedded in every JobRequest.
-        let spec = make_spec(WorkloadType::ImageClassification, None, 30);
-        let refs = vec![&spec];
-        let zip = Some("base64encodedzip==".to_string());
-        let req = build_job_request(&WorkloadType::ImageClassification, &None, &refs, zip.clone());
-        assert_eq!(req.model_zip, zip, "model_zip must be passed through to the request");
-    }
-
-    #[test]
     fn build_job_request_workload_type_propagates() {
         // The workload type from the group key must appear in the request body.
         let spec = make_spec(WorkloadType::ObjectDetection, None, 30);
         let refs = vec![&spec];
-        let req = build_job_request(&WorkloadType::ObjectDetection, &None, &refs, None);
+        let req = build_job_request(&WorkloadType::ObjectDetection, &None, &refs);
         assert_eq!(req.model, WorkloadType::ObjectDetection);
     }
 
@@ -301,7 +274,7 @@ mod tests {
         let spec = make_spec(WorkloadType::Regression, Some("data.csv"), 30);
         let refs = vec![&spec];
         let input = Some("data.csv".to_string());
-        let req = build_job_request(&WorkloadType::Regression, &input, &refs, None);
+        let req = build_job_request(&WorkloadType::Regression, &input, &refs);
         assert_eq!(
             req.input,
             Some(serde_json::Value::String("data.csv".into())),

@@ -59,10 +59,6 @@ impl JobStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRequest {
     pub model: WorkloadType,
-    /// Base64-encoded ZIP containing the customer's AI model and
-    /// pre/post-processing code. `None` falls back to server-configured model.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_zip: Option<String>,
     /// Workload-specific input data (images, tabular rows, time series, or
     /// dataset reference). `None` when the server has a default dataset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,6 +89,7 @@ fn default_repetitions() -> u32 {
 pub struct JobAccepted {
     pub job_id: String,
     pub status: String,
+    pub queue_position: u32,
     pub created_at: String,
 }
 
@@ -302,11 +299,11 @@ mod tests {
 
     #[test]
     fn job_accepted_deserializes() {
-        let json =
-            r#"{"job_id":"job-abc123","status":"accepted","created_at":"2026-03-06T10:00:00Z"}"#;
+        let json = r#"{"job_id":"job-abc123","status":"accepted","queue_position":0,"created_at":"2026-03-06T10:00:00Z"}"#;
         let accepted: JobAccepted = serde_json::from_str(json).unwrap();
         assert_eq!(accepted.job_id, "job-abc123");
         assert_eq!(accepted.status, "accepted");
+        assert_eq!(accepted.queue_position, 0);
     }
 
     #[test]
@@ -391,17 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn job_request_model_zip_optional() {
-        let json = r#"{"model":"image_classification"}"#;
-        let req: JobRequest = serde_json::from_str(json).unwrap();
-        assert!(req.model_zip.is_none());
-
-        let with_zip = r#"{"model":"image_classification","model_zip":"abc123=="}"#;
-        let req2: JobRequest = serde_json::from_str(with_zip).unwrap();
-        assert_eq!(req2.model_zip.as_deref(), Some("abc123=="));
-    }
-
-    #[test]
     fn error_response_deserializes() {
         let json = r#"{"error":{"code":"NOT_FOUND","message":"Job not found","timestamp":"2026-03-06T10:00:00Z"}}"#;
         let err: ErrorResponse = serde_json::from_str(json).unwrap();
@@ -410,7 +396,7 @@ mod tests {
     }
 
     // ----- Wire-name tests (ARCH §5.2, §5.3, §5.4) --------------------------
-    // These pin the exact JSON strings that the Klepsydra API server expects.
+    // These pin the exact JSON strings that the SQT Runner API expects.
     // A changed `rename_all` attribute would silently break the contract.
 
     #[test]
@@ -483,50 +469,7 @@ mod tests {
         assert_eq!(req.repetitions, 1, "default repetitions must be 1");
         assert_eq!(req.instrumentation, Instrumentation::None, "default instrumentation must be none");
         assert_eq!(req.mode, MeasurementMode::Latency, "default mode must be latency");
-        assert!(req.model_zip.is_none());
         assert!(req.input.is_none());
-    }
-
-    #[test]
-    fn job_request_absent_model_zip_omitted_from_json() {
-        // ARCH §5.5.1: `model_zip` must NOT appear in the request body when None
-        // (skip_serializing_if). Sending `"model_zip": null` would be a protocol error.
-        let req = JobRequest {
-            model: WorkloadType::Classification,
-            model_zip: None,
-            input: None,
-            repetitions: 1,
-            instrumentation: Instrumentation::default(),
-            mode: MeasurementMode::default(),
-            warmup_repetitions: None,
-            timeout_secs: None,
-            tags: None,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(
-            !json.contains("model_zip"),
-            "absent model_zip must be omitted from JSON, got: {json}"
-        );
-    }
-
-    #[test]
-    fn job_request_model_zip_present_serializes_correctly() {
-        // model_zip must appear as a base64 string when present.
-        let req = JobRequest {
-            model: WorkloadType::ImageClassification,
-            model_zip: Some("aGVsbG8=".into()), // base64("hello")
-            input: None,
-            repetitions: 1,
-            instrumentation: Instrumentation::default(),
-            mode: MeasurementMode::default(),
-            warmup_repetitions: None,
-            timeout_secs: None,
-            tags: None,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"model_zip\":\"aGVsbG8=\""), "model_zip missing in: {json}");
-        let back: JobRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.model_zip.as_deref(), Some("aGVsbG8="));
     }
 
     // ----- JobStatusResponse edge cases (ARCH §5.5.2) -----------------------

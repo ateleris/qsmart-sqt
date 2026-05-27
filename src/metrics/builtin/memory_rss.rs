@@ -7,7 +7,7 @@ pub struct MemoryPeakRssCollector;
 
 impl MetricCollector for MemoryPeakRssCollector {
     fn name(&self) -> &'static str {
-        "memory.peak_rss"
+        "memory.peak_rss_kb"
     }
 
     fn collect(&self, target: &Target, _config: &serde_yaml::Value) -> Result<MetricValue> {
@@ -37,7 +37,7 @@ fn create() -> Box<dyn MetricCollector> {
 }
 
 inventory::submit! {
-    CollectorFactory { name: "memory.peak_rss", create }
+    CollectorFactory { name: "memory.peak_rss_kb", create }
 }
 
 #[cfg(test)]
@@ -45,8 +45,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn name_is_memory_peak_rss() {
-        assert_eq!(MemoryPeakRssCollector.name(), "memory.peak_rss");
+    fn name_is_memory_peak_rss_kb() {
+        assert_eq!(MemoryPeakRssCollector.name(), "memory.peak_rss_kb");
     }
 
     #[test]

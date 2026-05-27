@@ -7,7 +7,7 @@ pub struct MemoryLeaksCollector;
 
 impl MetricCollector for MemoryLeaksCollector {
     fn name(&self) -> &'static str {
-        "memory.leaks"
+        "memory.leaks_bytes"
     }
 
     fn collect(&self, target: &Target, _config: &serde_yaml::Value) -> Result<MetricValue> {
@@ -46,7 +46,7 @@ fn create() -> Box<dyn MetricCollector> {
 }
 
 inventory::submit! {
-    CollectorFactory { name: "memory.leaks", create }
+    CollectorFactory { name: "memory.leaks_bytes", create }
 }
 
 #[cfg(test)]
@@ -73,8 +73,8 @@ mod tests {
 </valgrindoutput>"#;
 
     #[test]
-    fn name_is_memory_leaks() {
-        assert_eq!(MemoryLeaksCollector.name(), "memory.leaks");
+    fn name_is_memory_leaks_bytes() {
+        assert_eq!(MemoryLeaksCollector.name(), "memory.leaks_bytes");
     }
 
     #[test]

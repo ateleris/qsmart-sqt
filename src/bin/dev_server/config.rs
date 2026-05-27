@@ -71,7 +71,7 @@ pub struct ToolsConfig {
     /// Docker image for running the binary (required for run jobs).
     pub run: Option<RunToolConfig>,
 
-    /// Valgrind configuration (optional; enables `memory.leaks`).
+    /// Valgrind configuration (optional; enables `memory.leaks_bytes`).
     pub valgrind: Option<ValgrindToolConfig>,
 
     /// Coverage configuration (optional; enables `coverage.line_pct`).

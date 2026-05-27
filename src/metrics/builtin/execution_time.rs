@@ -7,7 +7,7 @@ pub struct ExecutionTimeCollector;
 
 impl MetricCollector for ExecutionTimeCollector {
     fn name(&self) -> &'static str {
-        "time.execution"
+        "time.avg_ms"
     }
 
     fn collect(&self, target: &Target, _config: &serde_yaml::Value) -> Result<MetricValue> {
@@ -23,7 +23,7 @@ fn create() -> Box<dyn MetricCollector> {
 }
 
 inventory::submit! {
-    CollectorFactory { name: "time.execution", create }
+    CollectorFactory { name: "time.avg_ms", create }
 }
 
 #[cfg(test)]
@@ -46,8 +46,8 @@ mod tests {
     }
 
     #[test]
-    fn name_is_time_execution() {
-        assert_eq!(ExecutionTimeCollector.name(), "time.execution");
+    fn name_is_time_avg_ms() {
+        assert_eq!(ExecutionTimeCollector.name(), "time.avg_ms");
     }
 
     #[test]

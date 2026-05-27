@@ -7,7 +7,7 @@ pub struct CoverageLineCollector;
 
 impl MetricCollector for CoverageLineCollector {
     fn name(&self) -> &'static str {
-        "coverage.line_percent"
+        "coverage.line_pct"
     }
 
     fn collect(&self, target: &Target, config: &serde_yaml::Value) -> Result<MetricValue> {
@@ -49,7 +49,7 @@ fn create() -> Box<dyn MetricCollector> {
 }
 
 inventory::submit! {
-    CollectorFactory { name: "coverage.line_percent", create }
+    CollectorFactory { name: "coverage.line_pct", create }
 }
 
 #[cfg(test)]
@@ -57,8 +57,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn name_is_coverage_line_percent() {
-        assert_eq!(CoverageLineCollector.name(), "coverage.line_percent");
+    fn name_is_coverage_line_pct() {
+        assert_eq!(CoverageLineCollector.name(), "coverage.line_pct");
     }
 
     #[test]

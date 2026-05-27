@@ -12,26 +12,17 @@ use crate::tools::{binary_size, coverage, run_binary, sonarqube, static_analysis
 /// Combines what was previously `run_job` and `analysis_job` — the single
 /// `/api/v1/jobs` endpoint covers both execution and analysis metrics.
 ///
-/// `model_zip` is the base64-encoded customer model ZIP.  The dev-server stub
-/// logs its presence but does not unpack it; real inference engines handle
-/// unpacking server-side.
-///
 /// Individual tool failures set that metric to `None` rather than aborting
 /// the entire job.
 pub fn execute(
     binary_config: &BinaryConfig,
     input: Option<&str>,
-    model_zip: Option<&str>,
     timeout_secs: u64,
     workspace: &Path,
     config: &ToolConfig,
 ) -> Result<JobMetrics> {
     let timeout = Duration::from_secs(timeout_secs);
     let mut metrics = JobMetrics::default();
-
-    if let Some(zip) = model_zip {
-        tracing::info!(zip_len = zip.len(), "model_zip received (stub: not applied)");
-    }
 
     // --- Execution metrics ---------------------------------------------------
 

@@ -10,7 +10,7 @@ pub struct SonarCriticalIssuesCollector;
 
 impl MetricCollector for SonarCriticalIssuesCollector {
     fn name(&self) -> &'static str {
-        "sonar.critical_issues"
+        "static.critical_issues"
     }
 
     fn collect(&self, target: &Target, config: &serde_yaml::Value) -> Result<MetricValue> {
@@ -56,7 +56,7 @@ fn create() -> Box<dyn MetricCollector> {
 }
 
 inventory::submit! {
-    CollectorFactory { name: "sonar.critical_issues", create }
+    CollectorFactory { name: "static.critical_issues", create }
 }
 
 #[cfg(test)]
@@ -64,8 +64,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn name_is_sonar_critical_issues() {
-        assert_eq!(SonarCriticalIssuesCollector.name(), "sonar.critical_issues");
+    fn name_is_static_critical_issues() {
+        assert_eq!(SonarCriticalIssuesCollector.name(), "static.critical_issues");
     }
 
     #[test]

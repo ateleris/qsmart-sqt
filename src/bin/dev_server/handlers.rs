@@ -54,13 +54,11 @@ pub async fn create_job(
         }
         v.as_str().map(|s| s.to_string())
     });
-    let model_zip = req.model_zip.clone();
 
     tracing::info!(
         job_id = %job_id,
         model = ?req.model,
         input = ?input,
-        has_model_zip = model_zip.is_some(),
         timeout_secs,
         "POST /api/v1/jobs - accepted"
     );
@@ -87,12 +85,10 @@ pub async fn create_job(
             let config = config.clone();
             let binary_config = binary_config.clone();
             let input = input.clone();
-            let model_zip = model_zip.clone();
             move || {
                 crate::run_job::execute(
                     &binary_config,
                     input.as_deref(),
-                    model_zip.as_deref(),
                     timeout_secs,
                     &workspace,
                     &config,
@@ -137,6 +133,7 @@ pub async fn create_job(
         Json(JobAccepted {
             job_id,
             status: "accepted".into(),
+            queue_position: 0,
             created_at,
         }),
     )
