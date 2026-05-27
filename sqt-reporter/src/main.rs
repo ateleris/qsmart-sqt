@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use sqt::{api, config, orchestrator, report, specs};
+use sqt_reporter::{api, config, orchestrator, report, specs};
 
 #[derive(Parser)]
 #[command(name = "sqt", version, about = "Software Qualification Toolkit")]

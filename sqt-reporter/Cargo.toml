@@ -1,0 +1,36 @@
+[package]
+name = "sqt-reporter"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sqt_reporter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sqt"
+path = "src/main.rs"
+
+[dependencies]
+sqt-api-types = { path = "../sqt-api-types" }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+inventory = "0.3"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

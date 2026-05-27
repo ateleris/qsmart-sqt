@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use sqt::api::types::{
+use sqt_api_types::{
     ApiError as ApiErrorBody, ErrorResponse, JobAccepted, JobRequest, JobStatus,
     JobStatusResponse, MeasurementMode,
 };

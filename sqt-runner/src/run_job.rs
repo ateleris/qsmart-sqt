@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
-use sqt::api::types::JobMetrics;
+use sqt_api_types::JobMetrics;
 
 use crate::config::{BinaryConfig, ToolConfig};
 use crate::tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind};

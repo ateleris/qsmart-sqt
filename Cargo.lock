@@ -1467,12 +1467,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqt"
+name = "sqt-api-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "sqt-reporter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
- "base64",
  "chrono",
  "clap",
  "futures",
@@ -1481,8 +1487,28 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sqt-api-types",
  "tempfile",
  "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sqt-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sqt-api-types",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
