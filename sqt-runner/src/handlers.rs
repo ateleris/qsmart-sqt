@@ -39,7 +39,7 @@ pub async fn create_job(
 ) -> (StatusCode, Json<JobAccepted>) {
     let job_id = Uuid::new_v4().to_string();
 
-    let job = store::JobState::new(job_id.clone(), req.model.clone());
+    let job = store::JobState::new(job_id.clone(), &req);
     let created_at = job.created_at.clone();
 
     {
@@ -157,6 +157,8 @@ pub async fn get_job(
             (
                 job.id.clone(),
                 job.workload_type.clone(),
+                job.repetitions,
+                job.tags.clone(),
                 job.status.clone(),
                 job.created_at.clone(),
                 job.started_at.clone(),
@@ -167,7 +169,7 @@ pub async fn get_job(
         })
     }; // read lock released here
 
-    let (id, workload_type, status, created_at, started_at, completed_at, error, metrics) =
+    let (id, workload_type, repetitions, tags, status, created_at, started_at, completed_at, error, metrics) =
         snapshot.ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -197,14 +199,14 @@ pub async fn get_job(
         job_id: id,
         model: workload_type,
         mode: MeasurementMode::default(),
-        repetitions: 1,
+        repetitions,
         status,
         queue_position,
         created_at,
         started_at,
         completed_at,
         error,
-        tags: None,
+        tags,
         hardware,
         metrics: metrics.unwrap_or_default(),
         output: None,
