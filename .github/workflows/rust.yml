@@ -12,6 +12,9 @@ jobs:
 
     runs-on: self-hosted
 
+    container:
+      image: rust:1.95-trixie
+
     steps:
     - uses: actions/checkout@v4
     - name: Build
