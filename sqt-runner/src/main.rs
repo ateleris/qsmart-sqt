@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::routing::{get, post};
 use clap::Parser;
+use tokio::sync::Semaphore;
 
 mod config;
 mod docker;
@@ -72,6 +73,12 @@ async fn main() {
         tracing::info!("build engine_lib: {}", build.engine_lib);
     }
 
+    if let Some(ref docs) = server_config.docs {
+        tracing::info!("docs zip: {}", docs.zip_path.display());
+    } else {
+        tracing::info!("docs zip: not configured (GET /api/v1/docs will return 404)");
+    }
+
     if let Some(ref img) = tool_config.run_image {
         tracing::info!("run image: {img}");
     }
@@ -124,9 +131,21 @@ async fn main() {
         }
     }
 
+    // Check docs zip exists if configured
+    if let Some(ref docs) = server_config.docs {
+        if !docs.zip_path.exists() {
+            panic!(
+                "preflight: docs zip not found: {} — \
+                 ensure the ML-L Provider has pre-placed the file",
+                docs.zip_path.display()
+            );
+        }
+        tracing::info!("docs zip OK: {}", docs.zip_path.display());
+    }
+
     tracing::info!("preflight checks passed");
 
-    // Create workspace directory
+    // Create workspace root directory (per-job subdirs are created at job start)
     std::fs::create_dir_all(&server_config.workspace)
         .expect("failed to create workspace directory");
 
@@ -141,11 +160,14 @@ async fn main() {
         store: store::new_store(),
         workspace: server_config.workspace,
         executor,
+        job_semaphore: Arc::new(Semaphore::new(1)),
+        docs_zip: server_config.docs.map(|d| d.zip_path),
     };
 
     let app = Router::new()
         .route("/api/v1/jobs", post(handlers::create_job))
         .route("/api/v1/jobs/{job_id}", get(handlers::get_job))
+        .route("/api/v1/docs", get(handlers::get_docs))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port)

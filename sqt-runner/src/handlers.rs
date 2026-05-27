@@ -4,12 +4,14 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use sqt_api_types::{
     ApiError as ApiErrorBody, ErrorResponse, JobAccepted, JobRequest, JobStatus,
     JobStatusResponse, MeasurementMode,
 };
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::executor::JobExecutor;
@@ -21,6 +23,10 @@ pub struct AppState {
     pub store: JobStore,
     pub workspace: PathBuf,
     pub executor: Arc<dyn JobExecutor>,
+    /// Limits concurrent job execution to one at a time (sequential queue).
+    pub job_semaphore: Arc<Semaphore>,
+    /// Path to the qualification documents zip file (served by GET /api/v1/docs).
+    pub docs_zip: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -49,13 +55,19 @@ pub async fn create_job(
         "POST /api/v1/jobs - accepted"
     );
 
-    // Spawn background execution
+    // Spawn background execution.  The task waits for the semaphore before
+    // running so jobs execute one at a time (sequential queue per AD-022).
     let store = state.store.clone();
-    let workspace = state.workspace.clone();
+    let workspace = state.workspace.join(&job_id); // per-job subdirectory
     let executor = state.executor.clone();
+    let semaphore = state.job_semaphore.clone();
     let id = job_id.clone();
 
     tokio::spawn(async move {
+        // Wait for an execution slot.  The permit is held for the duration of
+        // the job and dropped automatically when this block exits.
+        let _permit = semaphore.acquire().await.expect("semaphore closed");
+
         {
             let mut s = store.write().await;
             if let Some(job) = s.get_mut(&id) {
@@ -64,6 +76,18 @@ pub async fn create_job(
             }
         }
         tracing::info!(job_id = %id, "job started");
+
+        // Create the per-job workspace directory.
+        if let Err(e) = std::fs::create_dir_all(&workspace) {
+            tracing::error!(job_id = %id, error = %e, "failed to create workspace");
+            let mut s = store.write().await;
+            if let Some(job) = s.get_mut(&id) {
+                job.status = JobStatus::Failed;
+                job.completed_at = Some(crate::now_iso());
+                job.error = Some(format!("failed to create workspace: {e}"));
+            }
+            return;
+        }
 
         let result = tokio::task::spawn_blocking({
             let workspace = workspace.clone();
@@ -101,6 +125,7 @@ pub async fn create_job(
                 }
             }
         }
+        // _permit dropped here — next queued job can acquire the semaphore.
     });
 
     (
@@ -184,4 +209,67 @@ pub async fn get_job(
         metrics: metrics.unwrap_or_default(),
         output: None,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/docs
+// ---------------------------------------------------------------------------
+
+pub async fn get_docs(State(state): State<AppState>) -> Response {
+    let Some(ref zip_path) = state.docs_zip else {
+        tracing::warn!("GET /api/v1/docs - no docs configured");
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: ApiErrorBody {
+                    code: "DOCS_NOT_CONFIGURED".into(),
+                    message: "no qualification documents configured on this runner".into(),
+                    details: None,
+                    timestamp: crate::now_iso(),
+                },
+            }),
+        )
+            .into_response();
+    };
+
+    let path = zip_path.clone();
+    let read_result =
+        tokio::task::spawn_blocking(move || std::fs::read(&path)).await;
+
+    match read_result {
+        Ok(Ok(bytes)) => {
+            tracing::info!(bytes = bytes.len(), "GET /api/v1/docs - serving docs zip");
+            ([(header::CONTENT_TYPE, "application/zip")], bytes).into_response()
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "GET /api/v1/docs - failed to read zip");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: ApiErrorBody {
+                        code: "DOCS_READ_ERROR".into(),
+                        message: format!("failed to read docs zip: {e}"),
+                        details: None,
+                        timestamp: crate::now_iso(),
+                    },
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "GET /api/v1/docs - task panicked");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: ApiErrorBody {
+                        code: "INTERNAL_ERROR".into(),
+                        message: format!("internal error: {e}"),
+                        details: None,
+                        timestamp: crate::now_iso(),
+                    },
+                }),
+            )
+                .into_response()
+        }
+    }
 }

@@ -159,6 +159,17 @@ fn default_compiler() -> String {
     "g++".into()
 }
 
+/// Configuration for the `GET /api/v1/docs` endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DocsConfig {
+    /// Path to the qualification documents zip file served to the Reporter.
+    ///
+    /// The file is served verbatim as `application/zip`. It is expected to
+    /// contain the ML-L Provider's ECSS documentation baseline, unit test
+    /// results, and validation test results (as Strictdoc `.sdoc` files).
+    pub zip_path: PathBuf,
+}
+
 /// Top-level server configuration loaded from a YAML file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -187,6 +198,13 @@ pub struct ServerConfig {
     /// record which device produced each result.
     #[serde(default)]
     pub hardware: sqt_api_types::HardwareInfo,
+
+    /// Qualification documents served via `GET /api/v1/docs`.
+    ///
+    /// When absent the endpoint returns 404. Configure this to point to the
+    /// zip file pre-placed by the ML-L Provider before a qualification session.
+    #[serde(default)]
+    pub docs: Option<DocsConfig>,
 }
 
 fn default_workspace() -> PathBuf {
@@ -216,6 +234,13 @@ impl ServerConfig {
         // Resolve workspace to absolute.
         if config.workspace.is_relative() {
             config.workspace = cwd.join(&config.workspace);
+        }
+
+        // Resolve docs zip path to absolute.
+        if let Some(ref mut docs) = config.docs {
+            if docs.zip_path.is_relative() {
+                docs.zip_path = cwd.join(&docs.zip_path);
+            }
         }
 
         // Resolve build paths to absolute (Docker bind mounts require absolute paths).
