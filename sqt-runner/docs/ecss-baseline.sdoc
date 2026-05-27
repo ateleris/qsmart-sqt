@@ -1,0 +1,86 @@
+[DOCUMENT]
+TITLE: ML-L Software Requirements Specification
+VERSION: 1.0.0
+DATE: 2026-01-01
+
+[SECTION]
+TITLE: Functional Requirements
+
+[REQUIREMENT]
+UID: REQ-ML-L-001
+STATUS: Active
+TITLE: Inference execution
+STATEMENT: >>>
+The ML-L shall execute inference on the configured input and produce a
+result within the defined timeout.
+<<<
+VERIFICATION: Test
+RELATIONS:
+- TYPE: Parent
+  VALUE: SYS-REQ-001
+
+[REQUIREMENT]
+UID: REQ-ML-L-002
+STATUS: Active
+TITLE: Deterministic output
+STATEMENT: >>>
+The ML-L shall produce bit-identical output across repeated inferences on
+the same input, given the same model and runtime configuration.
+<<<
+VERIFICATION: Test
+RELATIONS:
+- TYPE: Parent
+  VALUE: SYS-REQ-002
+
+[REQUIREMENT]
+UID: REQ-ML-L-003
+STATUS: Active
+TITLE: Inference latency
+STATEMENT: >>>
+The ML-L shall execute inference within the latency budget defined for the
+target platform and workload type.
+<<<
+VERIFICATION: Test
+
+[REQUIREMENT]
+UID: REQ-ML-L-004
+STATUS: Active
+TITLE: Memory footprint
+STATEMENT: >>>
+The ML-L runtime shall not exceed the peak resident memory limit defined
+for the target platform during inference execution.
+<<<
+VERIFICATION: Test, Analysis
+
+[SECTION]
+TITLE: Non-Functional Requirements
+
+[REQUIREMENT]
+UID: REQ-ML-L-NFR-001
+STATUS: Active
+TITLE: ECSS compliance
+STATEMENT: >>>
+The ML-L shall be developed and qualified in accordance with
+ECSS-E-ST-40C and ECSS-Q-ST-80C.
+<<<
+VERIFICATION: Inspection, Review
+
+[REQUIREMENT]
+UID: REQ-ML-L-NFR-002
+STATUS: Active
+TITLE: Code coverage
+STATEMENT: >>>
+Unit test coverage shall achieve a minimum of 80% line coverage and
+75% function coverage across all ML-L source modules.
+<<<
+VERIFICATION: Test
+
+[REQUIREMENT]
+UID: REQ-ML-L-NFR-003
+STATUS: Active
+TITLE: Static analysis
+STATEMENT: >>>
+The ML-L source code shall contain no CRITICAL-severity issues as reported
+by the configured static analysis tool.
+<<<
+VERIFICATION: Test

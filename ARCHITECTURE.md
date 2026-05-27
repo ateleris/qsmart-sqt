@@ -362,16 +362,11 @@ hardware:
   os: null
 
 # Qualification documents served via GET /api/v1/docs
-# Each entry is a path to a StrictDoc (.sdoc) file pre-placed by the ML-L Provider.
-# The runner reads and serves these as JSON document objects.
+# The runner scans this directory:
+#   *.sdoc -> documents[] (text, parsed client-side by Reporter)
+#   *.*    -> attachments[] (base64, included verbatim in QDP)
 docs:
-  documents:
-    - path: ./docs/ecss-baseline.sdoc
-      filename: ecss-baseline.sdoc
-    - path: ./docs/unit-test-results.sdoc
-      filename: unit-test-results.sdoc
-    - path: ./docs/validation-test-results.sdoc
-      filename: validation-test-results.sdoc
+  directory: ./docs
 ```
 
 The binary and artifacts are configured at Runner startup, not per job. To qualify a different version, restart the Runner with an updated config file.

@@ -1,0 +1,39 @@
+[DOCUMENT]
+TITLE: ML-L Unit Test Results
+VERSION: 1.0.0
+DATE: 2026-01-01
+
+[FREETEXT]
+This document contains the static unit test results for the ML-L software.
+These results are pre-placed on the SQT Runner by the ML-L Provider before a
+qualification session and are served verbatim to the SQT Reporter.
+
+Replace this file with the actual unit test results from the ML-L Provider's
+test execution prior to each qualification session.
+[/FREETEXT]
+
+[SECTION]
+TITLE: Test Suite Summary
+
+[REQUIREMENT]
+UID: UT-SUMMARY-001
+STATUS: Active
+TITLE: Unit test pass rate
+STATEMENT: >>>
+All unit tests in the ML-L test suite shall pass. A minimum pass rate of
+100% is required for qualification.
+<<<
+VERIFICATION: Test
+
+[FREETEXT]
+Results (replace with actual output from ML-L Provider test run):
+
+  Test suite:  ml-l-unit-tests
+  Total:       0
+  Passed:      0
+  Failed:      0
+  Skipped:     0
+  Pass rate:   N/A
+
+  Status: PLACEHOLDER - replace with actual results
+[/FREETEXT]

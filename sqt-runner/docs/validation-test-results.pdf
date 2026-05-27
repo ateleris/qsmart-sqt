@@ -1,0 +1,4 @@
+PLACEHOLDER - replace with the actual validation test results PDF from the ML-L Provider.
+
+This file is served verbatim by GET /api/v1/docs as an attachment and included
+in the QDP. It is not parsed by SQT Reporter.

@@ -361,20 +361,27 @@ paths:
 
         ## Response format
 
-        One entry per `.sdoc` file. Each entry carries the full raw StrictDoc
-        text; SQT Reporter parses it client-side. The server may return an
-        empty `documents` array if no requirements documents are configured.
+        The response contains two arrays:
+
+        - `documents`: one entry per `.sdoc` file. Each carries the full raw
+          StrictDoc text; SQT Reporter parses it client-side. May be empty.
+        - `attachments`: one entry per non-StrictDoc file (PDFs, spreadsheets,
+          etc.). Contents are base64-encoded. SQT Reporter writes these verbatim
+          into the QDP without parsing. May be empty.
+
+        The server scans its configured docs directory: `.sdoc` files go into
+        `documents`; everything else goes into `attachments`.
       tags: [Docs]
       responses:
         "200":
-          description: Requirements documents
+          description: Requirements documents and supporting attachments
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocsResponse"
               example:
                 documents:
-                  - filename: "ml-l-requirements.sdoc"
+                  - filename: "ecss-baseline.sdoc"
                     title: "ML-L Software Requirements Specification"
                     content: |
                       [DOCUMENT]
@@ -394,6 +401,10 @@ paths:
                       TITLE: ECSS compliance
                       STATEMENT: The ML-L shall be developed and qualified according to ECSS-E-ST-40C and ECSS-Q-ST-80C.
                       VERIFICATION: Inspection, Review
+                attachments:
+                  - filename: "validation-test-results.pdf"
+                    content_type: "application/pdf"
+                    data: "JVBERi0xLjQK..."
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1239,15 +1250,26 @@ components:
 
     DocsResponse:
       type: object
-      required: [documents]
+      required: [documents, attachments]
       properties:
         documents:
           type: array
           description: |
-            All StrictDoc documents known to the server. May be empty if the
-            server has no requirements documents configured.
+            StrictDoc (`.sdoc`) files containing requirements. SQT Reporter
+            parses these client-side to extract `[REQUIREMENT]` blocks, UIDs,
+            and `VERIFICATION` fields. May be empty if no `.sdoc` files are
+            configured.
           items:
             $ref: "#/components/schemas/StrictdocDocument"
+        attachments:
+          type: array
+          description: |
+            Additional evidence files (PDFs, spreadsheets, etc.) that are not
+            StrictDoc requirements documents. These are not parsed by SQT
+            Reporter - they are included verbatim in the QDP as supporting
+            evidence. May be empty.
+          items:
+            $ref: "#/components/schemas/Attachment"
 
     StrictdocDocument:
       type: object
@@ -1280,6 +1302,29 @@ components:
             The string is UTF-8 encoded and uses LF line endings. It may
             be large for documents with many requirements; no size limit is
             mandated by this spec.
+
+    Attachment:
+      type: object
+      required: [filename, content_type, data]
+      properties:
+        filename:
+          type: string
+          description: |
+            Original filename of the attachment (e.g. `validation-test-results.pdf`).
+            Used as the filename when writing the file into the QDP.
+          example: "validation-test-results.pdf"
+        content_type:
+          type: string
+          description: |
+            MIME type of the file. The server sets this based on the file
+            extension; SQT Reporter uses it when writing the QDP manifest.
+          example: "application/pdf"
+        data:
+          type: string
+          format: byte
+          description: |
+            Base64-encoded file contents (standard encoding, no line breaks).
+            SQT Reporter decodes this and writes the raw bytes into the QDP.
 
     # -------------------------------------------------------------------------
     # Error
