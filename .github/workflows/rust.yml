@@ -13,7 +13,47 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-      - name: Build
-        run: cargo build --verbose
-      - name: Run tests
-        run: cargo test --verbose
+
+      - name: Build and test with coverage
+        run: |
+          cargo llvm-cov --workspace --json --output-path coverage.json 2>&1 | tee test_output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Write job summary
+        if: always()
+        run: |
+          PASSED=$(grep -E "^test result:" test_output.txt | awk '{sum += $4} END {print sum+0}')
+          FAILED=$(grep -E "^test result:" test_output.txt | awk '{sum += $6} END {print sum+0}')
+
+          if [ -f coverage.json ]; then
+            LINE_PCT=$(node -e "
+              const d = require('./coverage.json');
+              const t = d.data[0].totals.lines;
+              process.stdout.write(t.percent.toFixed(1) + '%');
+            ")
+            LINE_COV=$(node -e "
+              const d = require('./coverage.json');
+              const t = d.data[0].totals.lines;
+              process.stdout.write(t.covered + ' / ' + t.count + ' lines');
+            ")
+          else
+            LINE_PCT="n/a"
+            LINE_COV="n/a"
+          fi
+
+          if [ "$FAILED" = "0" ]; then ICON="✅"; else ICON="❌"; fi
+
+          {
+            echo "## ${ICON} Test Results"
+            echo ""
+            echo "| | Count |"
+            echo "|---|---|"
+            echo "| ✅ Passed | ${PASSED} |"
+            echo "| ❌ Failed | ${FAILED} |"
+            echo ""
+            echo "## 📊 Coverage"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Lines | ${LINE_PCT} (${LINE_COV}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
