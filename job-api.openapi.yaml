@@ -80,12 +80,148 @@ security:
   - bearerAuth: []
 
 tags:
+  - name: Health
+    description: Liveness and readiness probes
+  - name: Version
+    description: API version and session-start compatibility check
   - name: Jobs
     description: AI model qualification jobs
   - name: Docs
     description: Requirements documents (StrictDoc format)
 
 paths:
+
+  # ---------------------------------------------------------------------------
+  # Health / liveness probe
+  # ---------------------------------------------------------------------------
+
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      summary: Liveness and readiness probe
+      description: |
+        Lightweight liveness and readiness probe for infrastructure tooling
+        (load balancers, Docker `HEALTHCHECK`, Kubernetes liveness/readiness
+        probes, CI scripts).
+
+        **This endpoint is NOT part of the SQT session-start protocol.**
+        SQT Reporter uses `GET /api/v1/version` for API compatibility gating
+        (SRS-IF-008). `/health` is for operational monitoring only.
+
+        ## Status semantics
+
+        | `status` | HTTP code | Meaning |
+        |---|---|---|
+        | `healthy` | 200 | All checks passed; ready to accept jobs |
+        | `degraded` | 200 | Core functionality operational; non-critical check failed (e.g. docs directory missing or not configured) |
+        | `unhealthy` | 503 | Critical check failed; do not submit jobs |
+
+        ## Checks performed
+
+        | Check key | Critical? | Description |
+        |---|---|---|
+        | `job_store` | Yes | In-memory job store is accessible |
+        | `workspace` | Yes | Configured workspace directory exists on the filesystem |
+        | `docs_dir` | No | Configured docs directory exists; `"not_configured"` when no docs directory is set |
+
+        ## Authentication
+
+        This endpoint does **not** require a Bearer token. Monitoring probes
+        must be able to reach it without qualification credentials. Restrict
+        access at the network layer if needed.
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: Runner is healthy or degraded (core functionality operational)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                healthy:
+                  summary: All checks passed
+                  value:
+                    status: "healthy"
+                    runner_version: "1.2.3"
+                    target_id: "x86_64-linux"
+                    checks:
+                      job_store: "ok"
+                      workspace: "ok"
+                      docs_dir: "ok"
+                degraded_no_docs:
+                  summary: Docs directory not configured (non-critical)
+                  value:
+                    status: "degraded"
+                    runner_version: "1.2.3"
+                    target_id: "x86_64-linux"
+                    checks:
+                      job_store: "ok"
+                      workspace: "ok"
+                      docs_dir: "not_configured"
+                degraded_docs_missing:
+                  summary: Docs directory configured but missing on disk
+                  value:
+                    status: "degraded"
+                    runner_version: "1.2.3"
+                    target_id: "x86_64-linux"
+                    checks:
+                      job_store: "ok"
+                      workspace: "ok"
+                      docs_dir: "missing"
+        "503":
+          description: Runner is unhealthy — do not submit jobs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: "unhealthy"
+                runner_version: "1.2.3"
+                target_id: "x86_64-linux"
+                checks:
+                  job_store: "ok"
+                  workspace: "missing"
+                  docs_dir: "ok"
+
+  # ---------------------------------------------------------------------------
+  # Version / session-start compatibility check
+  # ---------------------------------------------------------------------------
+
+  /api/v1/version:
+    get:
+      operationId: getVersion
+      summary: Get Runner version and API compatibility info
+      description: |
+        Called by SQT Reporter before any job submission to verify the Runner's
+        API version is within the set declared by the Reporter binary
+        (SRS-IF-008). An incompatible version causes an immediate non-zero exit
+        before any job is submitted.
+
+        The fields `runner_version`, `target_id`, `os`, and
+        `toolchain_versions` are stamped into every qualification report for
+        provenance (SRS-DATA-003).
+      tags: [Version]
+      responses:
+        "200":
+          description: Runner version and toolchain info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+              example:
+                api_version: "1.0"
+                runner_version: "1.2.3"
+                target_id: "x86_64-linux"
+                os: "Ubuntu 22.04"
+                toolchain_versions:
+                  gcc: "12.3.0"
+                  valgrind: "3.21.0"
+                  lcov: "1.16"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   # ---------------------------------------------------------------------------
   # Job submission
@@ -485,6 +621,118 @@ components:
               timestamp: "2026-03-06T10:00:00Z"
 
   schemas:
+
+    # -------------------------------------------------------------------------
+    # Health
+    # -------------------------------------------------------------------------
+
+    HealthCheckValue:
+      type: string
+      description: |
+        Result of an individual health check.
+
+        - `ok`: check passed.
+        - `missing`: the checked resource (directory, etc.) is absent.
+        - `not_configured`: the resource is optional and not configured on this runner.
+        - `error`: check could not be completed (unexpected error).
+      enum:
+        - ok
+        - missing
+        - not_configured
+        - error
+
+    HealthStatus:
+      type: string
+      description: |
+        Overall health of the Runner.
+
+        - `healthy`: all checks passed; ready to accept jobs.
+        - `degraded`: core functionality operational but a non-critical check
+          failed (e.g. docs directory not configured or missing).
+        - `unhealthy`: a critical check failed; do not submit jobs.
+      enum:
+        - healthy
+        - degraded
+        - unhealthy
+
+    HealthResponse:
+      type: object
+      required: [status, runner_version, target_id, checks]
+      properties:
+        status:
+          $ref: "#/components/schemas/HealthStatus"
+        runner_version:
+          type: string
+          description: Crate version of the running Runner binary.
+          example: "1.2.3"
+        target_id:
+          type: string
+          description: Hardware target identifier configured in the Runner.
+          example: "x86_64-linux"
+        checks:
+          type: object
+          required: [job_store, workspace, docs_dir]
+          description: Per-subsystem check results.
+          properties:
+            job_store:
+              $ref: "#/components/schemas/HealthCheckValue"
+              description: |
+                In-memory job store is accessible and writable.
+                Critical: `unhealthy` if not `ok`.
+            workspace:
+              $ref: "#/components/schemas/HealthCheckValue"
+              description: |
+                Configured workspace directory exists on the filesystem.
+                Critical: `unhealthy` if not `ok`.
+            docs_dir:
+              $ref: "#/components/schemas/HealthCheckValue"
+              description: |
+                Configured docs directory exists and is readable.
+                `not_configured` when no docs directory is set in the Runner config.
+                Non-critical: contributes to `degraded`, not `unhealthy`.
+
+    # -------------------------------------------------------------------------
+    # Version
+    # -------------------------------------------------------------------------
+
+    VersionResponse:
+      type: object
+      required: [api_version, runner_version, target_id, os, toolchain_versions]
+      description: |
+        Runner identity and toolchain inventory. Returned by `GET /api/v1/version`.
+        Used by SQT Reporter for API compatibility gating (SRS-IF-008) and
+        stamped into every qualification report for provenance (SRS-DATA-003).
+      properties:
+        api_version:
+          type: string
+          description: |
+            API major.minor version string. SQT Reporter checks this against its
+            declared supported version set; mismatches cause immediate exit.
+          example: "1.0"
+        runner_version:
+          type: string
+          description: Crate version of the Runner binary (from `CARGO_PKG_VERSION`).
+          example: "1.2.3"
+        target_id:
+          type: string
+          description: Hardware target identifier configured in the Runner.
+          example: "x86_64-linux"
+        os:
+          type: string
+          description: Operating system name on the Runner host.
+          example: "linux"
+        toolchain_versions:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Versions of key tools available on this Runner (e.g. gcc, valgrind,
+            lcov). Keys and format are Runner-defined; SQT Reporter records them
+            verbatim in the qualification report.
+          example:
+            gcc: "12.3.0"
+            valgrind: "3.21.0"
+            lcov: "1.16"
 
     # -------------------------------------------------------------------------
     # Enumerations

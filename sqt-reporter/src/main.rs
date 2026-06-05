@@ -14,6 +14,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run a full qualification session against the SQT Runner.
     Run {
         #[arg(short, long, env = "SQT_CONFIG")]
         config: PathBuf,
@@ -21,6 +22,15 @@ enum Commands {
         output: Option<PathBuf>,
         #[arg(long, help = "Validate config and Runner connectivity; exit without submitting jobs")]
         preflight: bool,
+    },
+    /// Validate config, check Runner connectivity and auth, load spec files —
+    /// without submitting any jobs (SRS-OPS-007).
+    ///
+    /// Equivalent to `sqt run --preflight` but available as a first-class
+    /// subcommand for CI pipelines that want a dedicated pre-flight step.
+    Preflight {
+        #[arg(short, long, env = "SQT_CONFIG", help = "Path to sqt-reporter.yaml")]
+        config: PathBuf,
     },
 }
 
@@ -36,6 +46,34 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Preflight { config } => {
+            let cfg = config::load_config(&config)?;
+            cfg.print_summary();
+
+            let token_val = cfg
+                .runner
+                .token_env
+                .as_ref()
+                .and_then(|var| std::env::var(var).ok());
+            let client = api::ApiClient::new(
+                &cfg.runner.url,
+                token_val.as_deref(),
+                cfg.runner.retry_max,
+                cfg.runner.retry_backoff_initial_secs,
+            )?;
+
+            use sqt_reporter::preflight;
+            match preflight::preflight(&cfg, &client).await {
+                Ok(()) => {
+                    tracing::info!("Pre-flight OK");
+                }
+                Err(e) => {
+                    eprintln!("Pre-flight FAILED: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         Commands::Run { config, output, preflight: do_preflight } => {
             let cfg = config::load_config(&config)?;
             cfg.print_summary();

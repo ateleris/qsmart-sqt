@@ -20,7 +20,7 @@ use handlers::get_version;
 
 #[derive(Parser)]
 #[command(
-    name = "sqt-dev-server",
+    name = "sqt-runner",
     version,
     about = "Local job runner for SQT development (executes tools in Docker containers)"
 )]
@@ -167,7 +167,7 @@ async fn main() {
         .parse()
         .expect("invalid host:port");
 
-    tracing::info!("sqt-dev-server listening on {addr}");
+    tracing::info!("sqt-runner listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

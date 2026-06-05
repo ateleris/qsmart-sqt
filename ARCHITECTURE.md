@@ -19,6 +19,7 @@
 - [5. REST API Interface (SQT Runner)](#5-rest-api-interface-sqt-runner)
   - [5.2 APCO Space Profile Use Cases](#52-apco-space-profile-use-cases)
   - [5.5 API Endpoints](#55-api-endpoints)
+  - [5.5.3 Health Check](#553-health-check)
   - [5.10 Requirements Documents Endpoint](#510-requirements-documents-endpoint)
 - [6. Scope Definition](#6-scope-definition)
 - [7. Qualification Workflow](#7-qualification-workflow)
@@ -110,9 +111,10 @@ The overall qualification process follows a three-tier swimlane model:
 ║  │  (implements job-api.openapi)    │◄──┤  │ Space Profile Tests  │    │     ║
 ║  │                                  │   │  │ (Ateleris-defined    │    │     ║
 ║  │  GET  /api/v1/version → compat   │   │  │  functional tests)   │    │     ║
-║  │  POST /api/v1/jobs  → enqueue    │   │  └─────────────────────┘    │     ║
-║  │  GET  /api/v1/jobs/{id} → poll   │   │  ┌─────────────────────┐    │     ║
-║  │  GET  /api/v1/docs  → serve docs │   │  │ Performance Tests    │    │     ║
+║  │  GET  /api/v1/health → liveness  │   │  └─────────────────────┘    │     ║
+║  │  POST /api/v1/jobs  → enqueue    │   │  ┌─────────────────────┐    │     ║
+║  │  GET  /api/v1/jobs/{id} → poll   │   │  │ Performance Tests    │    │     ║
+║  │  GET  /api/v1/docs  → serve docs │   │  │ (timing, memory,     │    │     ║
 ║  └──────────────────────────────────┘   │  │ (timing, memory,     │    │     ║
 ║                                         │  │ (timing, memory,     │    │     ║
 ║                                         │  │  throughput)         │    │     ║
@@ -131,6 +133,7 @@ The overall qualification process follows a three-tier swimlane model:
 ╚══════════════════════════════════════════════════════════════════════════════╝
                                │
          REST API  (job-api.openapi.yaml)
+         • GET  /api/v1/health    - liveness / readiness probe
          • POST /api/v1/jobs      - submit test request
          • GET  /api/v1/jobs/{id} - poll for results + metrics
          • GET  /api/v1/docs      - fetch document baseline
@@ -1054,6 +1057,92 @@ terminal state. A `complete` job may have `null` metric fields - those indicate
 unavailable tools, not infrastructure failure. A `failed` status means the job could not
 run at all; the `error` field provides a description.
 
+#### 5.5.3 Health Check
+
+**Endpoint**: `GET /api/v1/health`
+
+A lightweight liveness and readiness probe intended for load balancers, Docker
+health checks, Kubernetes probes, and CI scripts that need to confirm the Runner
+process is up and accepting requests before submitting jobs.
+
+Unlike `GET /api/v1/version` (which is part of the session-start protocol and
+performs API-version compatibility verification), `/health` is a pure operational
+probe: it does not carry version semantics and must never be used to gate API
+compatibility. Its contract is deliberately minimal so that monitoring
+infrastructure can call it without understanding the SQT API.
+
+**What "healthy" means** (all conditions must hold):
+
+| Condition | Check |
+|---|---|
+| Process is alive and the HTTP server is accepting connections | The endpoint is reachable at all |
+| Job queue is operational | In-memory `JobStore` is readable without error |
+| Execution semaphore is available | Semaphore has not been permanently closed |
+| Workspace directory exists | The configured `workspace` path is present on the filesystem |
+
+If the docs directory is configured, the health check additionally verifies that
+it exists and is readable. A missing docs directory is reported as `degraded`
+rather than `unhealthy` because it does not prevent job execution.
+
+**Response** (200 OK — healthy):
+```json
+{
+  "status": "healthy",
+  "runner_version": "1.2.3",
+  "target_id": "x86_64-linux",
+  "checks": {
+    "job_store": "ok",
+    "workspace": "ok",
+    "docs_dir": "ok"
+  }
+}
+```
+
+**Response** (200 OK — degraded, docs directory missing or unreadable):
+```json
+{
+  "status": "degraded",
+  "runner_version": "1.2.3",
+  "target_id": "x86_64-linux",
+  "checks": {
+    "job_store": "ok",
+    "workspace": "ok",
+    "docs_dir": "missing"
+  }
+}
+```
+
+**Response** (503 Service Unavailable — unhealthy, workspace missing):
+```json
+{
+  "status": "unhealthy",
+  "runner_version": "1.2.3",
+  "target_id": "x86_64-linux",
+  "checks": {
+    "job_store": "ok",
+    "workspace": "missing",
+    "docs_dir": "ok"
+  }
+}
+```
+
+**Status semantics:**
+
+| `status` | HTTP code | Meaning |
+|---|---|---|
+| `healthy` | 200 | All checks passed; ready to accept jobs |
+| `degraded` | 200 | Core functionality operational; non-critical check failed (e.g. docs directory missing) |
+| `unhealthy` | 503 | Critical check failed; do not submit jobs |
+
+**SQT Reporter behaviour:** The Reporter does **not** call `/health` during a
+qualification session. The session-start protocol uses `GET /api/v1/version`
+(SRS-IF-008). The `/health` endpoint is for infrastructure tooling only.
+
+**Authentication:** The `/health` endpoint does **not** require a Bearer token. It
+must be reachable by monitoring probes that have no knowledge of qualification
+credentials. Operators who wish to restrict access should do so at the network
+layer (e.g. allow-list the monitoring subnet in a firewall or reverse proxy).
+
 ### 5.6 Output Handling and Accuracy Metrics
 
 The server returns model outputs directly in the job response. `output.outputs`
@@ -1198,7 +1287,7 @@ See **Section 4.6** for the full rationale and report output format.
 #### ✅ IN SCOPE
 
 1. **REST API Server**
-   - Implement `job-api.openapi.yaml` endpoints (`GET /api/v1/version`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `GET /api/v1/docs`)
+   - Implement `job-api.openapi.yaml` endpoints (`GET /api/v1/health`, `GET /api/v1/version`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `GET /api/v1/docs`)
    - Job queue and sequential job execution (one job at a time)
    - Configuration via YAML (artifact paths, target selection, etc.)
 

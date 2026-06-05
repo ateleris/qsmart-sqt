@@ -8,7 +8,7 @@ name = "sqt_reporter"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sqt"
+name = "sqt-reporter"
 path = "src/main.rs"
 
 [dependencies]

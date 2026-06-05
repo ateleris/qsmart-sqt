@@ -85,7 +85,12 @@ fn default_repetitions() -> u32 {
 // Accepted response
 // ---------------------------------------------------------------------------
 
+/// Response body for `POST /api/v1/jobs` (202 Accepted).
+///
+/// `deny_unknown_fields` implements SRS-IF-007: unknown fields in a Runner
+/// response are rejected as a schema violation rather than silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobAccepted {
     pub job_id: String,
     pub status: String,
@@ -97,7 +102,11 @@ pub struct JobAccepted {
 // Hardware descriptor
 // ---------------------------------------------------------------------------
 
+/// Hardware descriptor embedded in `JobStatusResponse`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareInfo {
     #[serde(rename = "type")]
     pub hw_type: String,
@@ -133,8 +142,18 @@ impl Default for HardwareInfo {
 // Unified metrics (all fields nullable; null = tool unavailable)
 // ---------------------------------------------------------------------------
 
+/// Aggregated metrics returned in `JobStatusResponse`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007: an unrecognised metric key in
+/// a Runner response is treated as a schema violation (the affected job is
+/// recorded as infrastructure-failed) rather than silently dropped.
+///
+/// Note: this means adding a new metric field to the Runner without a
+/// corresponding update to this struct will fail deserialization. This is
+/// intentional — it enforces that both sides of the API contract are kept
+/// in sync.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct JobMetrics {
     pub return_code: Option<i64>,
 
@@ -238,7 +257,11 @@ impl JobMetrics {
 // Model output
 // ---------------------------------------------------------------------------
 
+/// Model output block embedded in `JobStatusResponse`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobOutput {
     #[serde(rename = "type")]
     pub output_type: String,
@@ -253,7 +276,13 @@ pub struct JobOutput {
 // Status response
 // ---------------------------------------------------------------------------
 
+/// Response body for `GET /api/v1/jobs/{job_id}`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007: unknown fields from the Runner
+/// cause deserialization to fail, which the API client maps to an
+/// infrastructure-failed outcome for the affected job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobStatusResponse {
     pub job_id: String,
     pub use_case: WorkloadType,
@@ -285,7 +314,10 @@ pub struct JobStatusResponse {
 // ---------------------------------------------------------------------------
 
 /// Response body for `GET /api/v1/version`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VersionResponse {
     /// API major.minor version string, e.g. `"1.0"`.
     pub api_version: String,
@@ -300,19 +332,24 @@ pub struct VersionResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Error types
-// ---------------------------------------------------------------------------
 // GET /api/v1/docs
 // ---------------------------------------------------------------------------
 
+/// Response body for `GET /api/v1/docs`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct DocsResponse {
     pub documents: Vec<StrictdocDocument>,
     pub attachments: Vec<Attachment>,
 }
 
 /// A StrictDoc `.sdoc` file served as raw text for client-side parsing.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrictdocDocument {
     pub filename: String,
     /// Title extracted from `[DOCUMENT] TITLE:` as a convenience; `null` if
@@ -325,7 +362,10 @@ pub struct StrictdocDocument {
 
 /// A non-StrictDoc evidence file (PDF, spreadsheet, etc.) included verbatim
 /// in the QDP. Not parsed by SQT Reporter.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Attachment {
     pub filename: String,
     pub content_type: String,
@@ -334,13 +374,23 @@ pub struct Attachment {
 }
 
 // ---------------------------------------------------------------------------
+// Error response
+// ---------------------------------------------------------------------------
 
+/// Standard error envelope returned by the Runner on 4xx/5xx responses.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ErrorResponse {
     pub error: ApiError,
 }
 
+/// Detail block inside `ErrorResponse`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiError {
     pub code: String,
     pub message: String,
