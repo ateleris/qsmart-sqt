@@ -202,6 +202,12 @@ sqt-reporter/
 
 Tasks are ordered by dependency. Complete each phase before starting the next.
 
+> **Architecture alignment note (2026-06-05)**: After a full ARCHITECTURE.md ↔ SRS.sdoc
+> alignment pass, a code vs. architecture gap analysis identified eight independent work
+> streams (Phase 6, T-070–T-076 + T-044 correction). These are non-negotiable for SRS
+> conformance; implementation of Phase 4 open items must incorporate them. See Phase 6
+> for task details and the dependency graph at the bottom of this document.
+
 ---
 
 ### Phase 0 - Project Scaffold
@@ -448,14 +454,10 @@ at the bottom of the file. No other file needs to change.
   - All fields `Deserialize` + `Serialize`; `Option` fields use
     `#[serde(skip_serializing_if = "Option::is_none")]`
 
-- [ ] **T-041** Update `JobApiClient` for single-endpoint model (`src/runner_api/client.rs`)
-  - `submit_job(&JobRequest) -> Result<String>` (job_id)
-  - `get_job_status(job_id) -> Result<JobStatusResponse>`
-  - `wait_for_job(job_id) -> Result<JobStatusResponse>`
-  - `get_docs() -> Result<DocsResponse>` - fetches `GET /api/v1/docs`
-  - Remove `submit_run`, `get_run_status`, `wait_for_run`,
-    `submit_analysis`, `get_analysis_status`, `wait_for_analysis`
-  - Exponential backoff unchanged (1 s, x2, 30 s cap)
+- [x] **T-041** Update `JobApiClient` for single-endpoint model (`src/api/client.rs`)
+  - `submit_job`, `get_job_status`, `wait_for_job` — **done**
+  - `get_docs()`, `get_version()`, transient retry, credential redaction — **moved to T-073**
+    (Phase 6, Stream E; requires `VersionResponse` from T-071)
 
 - [ ] **T-043** Implement baseline checker (`src/baseline/mod.rs`)
   - Called at session start before any jobs are submitted
@@ -472,19 +474,15 @@ at the bottom of the file. No other file needs to change.
     the fields needed for the compliance gate and traceability matrix are extracted here
   - Prerequisite of T-042 and T-044
 
-- [ ] **T-044** Implement `.test.yaml` spec loader (`src/specs/loader.rs`)
-  - Scans `config.test_specs.directory` for `*.test.yaml` files at runtime
-  - Deserializes each file into a `TestSpec` struct:
-    `requirement_uid`, `constraints: Vec<Constraint>` (metric key + op + value),
-    optional `workload`, `input`, `repetitions`, `instrumentation`, `mode`, `reference`
-  - Matches each spec to a requirement UID from `RequirementSet.testable`
-  - Detects UNCOVERED requirements (testable with no matching spec): records them as
-    failed and exits non-zero after reporting all uncovered UIDs
-  - Supersedes the compile-time `all_specs()` approach (T-032) for the Reporter's primary
-    workflow; T-032 remains valid for the dev server (T-063)
-  - Prerequisite of T-042
+- [ ] **T-044** *(corrected — see Phase 6 Stream B for full spec)*
+  Implement YAML spec loader (`src/specs/loader.rs`)
+  - **Reads only the files listed in `config.test_specs.files`** — does NOT scan a
+    directory (SRS-MAINT-002 prohibits auto-discovery)
+  - See T-044 in Phase 6 (Stream B) for the complete task description including
+    unit-aware value parsing, `use_case` field name, and per-spec `timeout_secs`
+  - Prerequisite of T-042 and T-043
 
-- [ ] **T-042** Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
+- [x] **T-042** *(partial)* Rewrite `Orchestrator` for workload-based grouping (`src/orchestrator/mod.rs`)
   - Group specs by `(workload_type, input_key)` → deduplicated `Vec<JobRequest>`
   - No `model_zip` - omit entirely from `JobRequest`
   - No metric routing by prefix - all constraints reference fields of `JobMetrics` directly
@@ -736,6 +734,330 @@ targeted `#[allow(dead_code)]` attributes on specific public API items and impl 
 that are not yet wired to `main()` (will be connected in Phase 3 by the orchestrator).
 `constraint/mod.rs` and `constraint/evaluator.rs` retain their broad suppression until
 Phase 3 (T-032) when the orchestrator starts calling into them.
+
+---
+
+---
+
+### Phase 6 — Architecture Alignment (SRS Conformance)
+
+> These tasks close the gaps identified in the 2026-06-05 architecture ↔ code gap
+> analysis. They are organized into **eight independent streams** that can be assigned
+> and reviewed in parallel. Stream dependencies are noted per task. The architecture
+> document (ARCHITECTURE.md) is the source of truth; the SRS supersedes where the two
+> are ambiguous.
+>
+> Cross-cutting constraint: every task in this phase must keep `cargo test` green and
+> `cargo clippy -- -D warnings` clean on completion.
+
+---
+
+#### Stream A — Config Schema Overhaul (SRS-MAINT-002, SRS-PERF-002/003/004, SRS-IF-006/009)
+
+**Files changed**: `sqt-reporter/src/config/schema.rs`, `sqt-reporter/src/config/mod.rs`,
+any fixture YAML files used in tests.
+
+- [ ] **T-070** Overhaul `SqtConfig` to match ARCHITECTURE.md §3.2
+  - **Remove** the `build_dir` field entirely (legacy from auto-discovery design)
+  - **Add** `test_specs.files: Vec<PathBuf>` — explicit list of spec YAML paths; required
+    field, empty list is a validation error (SRS-MAINT-002)
+  - **Add** under `runner:` (extend the existing `ApiConfig` or a new sub-section):
+    - `max_concurrent_jobs: u32` — default 8; controls Reporter-side semaphore
+      (SRS-PERF-002)
+    - `job_timeout_secs: u64` — default 300; project-level timeout, overridable per spec
+      (SRS-PERF-004)
+    - `retry_max: u32` — default 3; transient error retry ceiling (SRS-IF-009)
+    - `retry_backoff_initial_secs: u64` — default 1; first retry delay (SRS-IF-009)
+    - `poll_interval_initial_secs: u64` — default 1; first polling interval (SRS-PERF-003)
+    - `poll_interval_max_secs: u64` — default 30; polling cap (SRS-PERF-003)
+  - **Add** validation rule: if `runner.auth.token_env` is set (not None), the named env
+    var must be present and non-empty at startup; if it is absent or empty, exit non-zero
+    with: `"bearer token env var '$VAR' is set but empty or unset — check your environment"`
+    (SRS-IF-006)
+  - Update T-002 note in this document to reflect the corrected schema
+  - Tests: update existing config tests; add test for empty token-env validation
+
+---
+
+#### Stream B — YAML Spec Loader Correction (SRS-MAINT-002, SRS-PERF-004, SRS-FUNC-004)
+
+**Files changed**: `sqt-reporter/src/specs/loader.rs` (create), `sqt-reporter/src/specs/mod.rs`.
+**Depends on**: Stream A (needs `test_specs.files` from config).
+
+- [ ] **T-044** *(corrected)* Implement YAML spec loader (`src/specs/loader.rs`)
+  - **Correction from original T-044**: do NOT scan a directory. Read only the files listed
+    in `config.test_specs.files`. Auto-discovery from the filesystem is prohibited
+    (SRS-MAINT-002)
+  - Each file deserialises into `TestSpec`:
+    ```yaml
+    requirement_uid: REQ-ML-001
+    use_case: image_classification          # APCO Use Case name (see WorkloadType)
+    input: datasets/reference.bin           # optional
+    repetitions: 5                          # optional, default 1
+    timeout_secs: 120                       # optional; overrides runner.job_timeout_secs
+    constraints:
+      - metric: time.avg_ms
+        operator: lte
+        value: 100ms                        # unit-suffixed OR bare number
+      - metric: memory.peak_rss_kb
+        operator: lte
+        value: 512 KB
+      - metric: return_code
+        operator: eq
+        value: 0
+      - metric: output.result_consistent
+        operator: eq
+        value: true
+    ```
+  - **Unit-aware value parsing** (SRS-FUNC-004): `value` field accepts `<number><unit>`
+    strings (e.g., `100ms`, `2MB`, `512 KB`, `1.5s`). Normalise to the canonical unit
+    of the target metric before storing (ms→ms, s→ms×1000; KB→KB, MB→KB×1024;
+    bare number → metric's canonical unit). Parse error → non-zero exit.
+  - **Terminology**: use `use_case` field (not `workload_type`) in the YAML schema
+  - **Per-spec timeout**: deserialise optional `timeout_secs`; fall back to
+    `config.runner.job_timeout_secs` when absent
+  - **UNCOVERED requirements gate**: after matching specs to requirement UIDs from the
+    baseline (T-043), any testable requirement with no matching spec is reported and exits
+    non-zero (this gate runs in T-043, but the loader must return enough information for it)
+  - Unit tests: parse minimal spec, parse full spec, parse unit-suffixed values, bad-unit
+    parse error, missing required fields error, `output.result_consistent` constraint
+
+---
+
+#### Stream C — Runner: GET /api/v1/version Endpoint (SRS-IF-008)
+
+**Files changed**: `sqt-types/src/lib.rs`, `sqt-runner/src/handlers.rs`,
+`sqt-runner/src/main.rs`, `sqt-runner/src/config.rs`.
+**Independent** — no Reporter dependency.
+
+- [ ] **T-071** Add `VersionResponse` to `sqt-types` and wire the Runner endpoint
+  - **`sqt-types`**: add `VersionResponse` struct:
+    ```rust
+    pub struct VersionResponse {
+        pub api_version: String,       // e.g. "1.0"
+        pub runner_version: String,    // from build-time env!("CARGO_PKG_VERSION")
+        pub target_id: String,         // hardware descriptor key, e.g. "gr740-leon4"
+        pub os: String,                // uname or cfg! info
+        pub toolchain_versions: HashMap<String, String>,  // e.g. {"onnxruntime": "1.17"}
+    }
+    ```
+  - **Runner config**: add `hardware.target_id: String` and
+    `hardware.toolchain_versions: HashMap<String,String>` to the runner config struct so
+    the handler can read them at startup (not hardcoded)
+  - **Handler** (`sqt-runner/src/handlers.rs`): add `get_version(State<AppState>) -> Json<VersionResponse>`
+    - `runner_version`: `env!("CARGO_PKG_VERSION")` baked in at compile time
+    - `api_version`: `"1.0"` (match `job-api.openapi.yaml` major version)
+    - `target_id`, `os`, `toolchain_versions`: read from `AppState` (populated at startup
+      from config + runtime `uname`)
+  - **Router** (`sqt-runner/src/main.rs`): add `GET /api/v1/version` → `get_version`
+  - Tests: `GET /api/v1/version` returns 200 with all required fields; version string
+    matches the Cargo.toml version
+
+---
+
+#### Stream D — Use Case Terminology Fix (ARCHITECTURE.md §5.5.1, §5.8)
+
+**Files changed**: `sqt-types/src/lib.rs`, `sqt-reporter/src/orchestrator/mod.rs`,
+`sqt-runner/src/handlers.rs` (any references to the field name in serialisation).
+**Note**: this is a **breaking wire-format change** — Reporter and Runner must be updated
+together; do not merge partial.
+
+- [ ] **T-072** Rename `model` → `use_case` in the REST wire format
+  - In `sqt-types`: rename `JobRequest.model: WorkloadType` → `use_case: WorkloadType`
+    (the Rust field name changes; `serde(rename)` was not in use so the JSON key changes
+    from `"model"` to `"use_case"`)
+  - In `sqt-types`: rename `JobStatusResponse.model: WorkloadType` → `use_case`
+  - In `sqt-reporter/src/orchestrator/mod.rs`: update `build_job_request` to set
+    `req.use_case` instead of `req.model`; update `GroupKey` type if `WorkloadType` is
+    still the right key (it is — just the struct field name changes)
+  - In `sqt-runner`: update any handler code that reads/writes `model` from
+    `JobRequest`/`JobStatusResponse`
+  - Update all test fixtures that embed `"model":` JSON strings to `"use_case":`
+  - Clippy + full test suite must pass on both crates after this change
+
+---
+
+#### Stream E — API Client Hardening (SRS-IF-008/009, SRS-OPS-005, SRS-IF-004)
+
+**Files changed**: `sqt-reporter/src/api/client.rs`, `sqt-types/src/lib.rs` (VersionResponse
+already added in C), `sqt-reporter/Cargo.toml` (no new deps expected).
+**Depends on**: Stream C (VersionResponse type).
+
+- [ ] **T-073** Harden `ApiClient` with version check, docs fetch, transient retry, and credential redaction
+  - **Add `get_version() -> Result<VersionResponse>`**: `GET /api/v1/version`, deserialise
+    into `VersionResponse`. Used by the orchestrator at session start
+  - **Complete `get_docs() -> Result<DocsResponse>`**: this was listed in original T-041
+    but the current `client.rs` lacks it. Fetch `GET /api/v1/docs` and return
+    `DocsResponse`. Emit a `tracing::warn!` when `documents` is empty (SRS-IF-004
+    empty-discovery diagnostic)
+  - **Transient error retry** (SRS-IF-009): for `submit_job`, `get_version`, `get_docs`,
+    and individual `get_job_status` calls, wrap each in a retry loop:
+    - Retry on: `reqwest::Error::is_connect()`, `reqwest::Error::is_timeout()`,
+      HTTP 500–504
+    - Use config values `retry_max` and `retry_backoff_initial_secs` (exponential, same
+      backoff formula as polling but separate counter)
+    - After `retry_max` consecutive transient failures, return an `Err(...)` with the
+      last error — the orchestrator maps this to an `INFRA_ERROR` outcome (T-074)
+    - Do **not** retry on 401, 403, 422 (non-transient errors)
+  - **Credential redaction** (SRS-OPS-005): the Bearer token must never appear in any
+    `tracing` event, log line, `Display` output, or persisted report. Apply at the
+    construction site:
+    - `ApiClient` must NOT store the raw token in any field that derives `Debug`
+      (wrap it in a `Redacted(String)` newtype with `Debug` impl that prints `"[REDACTED]"`)
+    - Ensure no `format!("{:?}", client)` or equivalent leaks the token
+  - Tests: mock server with `axum` (or `httpmock`); verify empty-docs warning; verify
+    retry fires on 503 and stops after `retry_max`; verify token does not appear in
+    `format!("{client:?}")`
+
+---
+
+#### Stream F — Orchestrator Session Protocol + INFRA_ERROR + SIGTERM (SRS-IF-008, SRS-PERF-002, SRS-OPS-006/008, SRS-FUNC-012, SRS-REL-003)
+
+**Files changed**: `sqt-reporter/src/orchestrator/mod.rs`, `sqt-reporter/src/specs/mod.rs`,
+`sqt-reporter/src/main.rs`, `Cargo.toml` (add `tokio-util` or use `tokio::signal`).
+**Depends on**: Streams C (VersionResponse) and E (get_version, INFRA_ERROR retry).
+
+- [ ] **T-074** Orchestrator: session start, concurrency cap, INFRA_ERROR, SIGTERM, progress
+  - **Session start protocol** (SRS-IF-008): before submitting any job, call
+    `client.get_version()`. Parse the returned `api_version`. If the major version does not
+    match the Reporter's compiled `SUPPORTED_API_VERSION` constant, exit non-zero with:
+    `"Runner API version {runner} incompatible with Reporter's supported {supported}"`
+    Emit version details in the terminal at INFO level.
+  - **Concurrency semaphore** (SRS-PERF-002): wrap job submission inside a
+    `tokio::sync::Semaphore::new(config.runner.max_concurrent_jobs)` guard. Acquire before
+    `submit_job`, release after the submission `await` returns. This limits how many
+    in-flight submissions the Reporter holds at once. Polling continues concurrently for
+    all submitted jobs regardless.
+  - **INFRA_ERROR outcome** (SRS-OPS-006): when `client.wait_for_job` returns `Err(_)` OR
+    when the `JobStatusResponse.status == JobStatus::Failed`, do NOT `bail!`. Instead,
+    insert a synthetic `SpecResult` with `outcome = OutcomeKind::InfraError` and
+    `message` containing the `error.code` + `error.message` from the `ErrorResponse`
+    (or the transport error text). Continue evaluating remaining specs. The final exit
+    code is non-zero if any outcome is non-PASS (including INFRA_ERROR).
+  - **Error surfacing** (SRS-REL-003): on INFRA_ERROR, insert into
+    `ConstraintOutcome::evidence` the keys: `error_code`, `error_message`,
+    `error_details` from the Runner's `ErrorResponse`. These appear in both terminal
+    summary and JSON report.
+  - **Per-step progress signals** (SRS-FUNC-012): emit a `tracing::info!` at each of:
+    1. Session start (after version check): `"SQT Reporter {sqt_ver} — Runner {runner_ver} at {url}"`
+    2. Document fetch start/result
+    3. Spec load: `"Loaded {n} specs from {m} files"`
+    4. Each job submission: `"[{i}/{total}] Submitting use_case={uc} input={input} → job_id={id}"`
+    5. Each job completion: `"[job_id={id}] {status} in {elapsed}s"`
+    6. Constraint evaluation: `"Evaluating {n} constraints for {uid}"`
+    7. Report write: `"Report written to {path}"`
+    Signals must be sufficient for an operator to determine current step, prior outcome,
+    and any intervention required — without consulting an external runbook (SRS-FUNC-012).
+  - **SIGTERM graceful shutdown** (SRS-OPS-008): install a `tokio::signal::ctrl_c` /
+    `tokio::signal::unix::signal(SIGTERM)` handler at session start. On signal:
+    1. Stop accepting new submission slots (drop the semaphore permits to 0)
+    2. Await completion of all already-submitted jobs (up to `job_timeout_secs` drain timeout)
+    3. Persist the partial `RunResult` (jobs that completed) with `interrupted: true` in
+       the report metadata
+    4. Exit with code **2** (distinct from 0=all-pass, 1=any-fail)
+  - Tests: unit-test that INFRA_ERROR does not propagate as `Err(…)` to the caller;
+    test that zero-constraint spec → FAIL (vacuous pass prevention, already in SpecResult::new
+    but verify the orchestrator path); test concurrency semaphore does not deadlock on
+    `max_concurrent_jobs: 1`
+
+---
+
+#### Stream G — Report Hardening (SRS-DATA-001/003, SRS-OPS-006, SRS-REL-003/004)
+
+**Files changed**: `sqt-reporter/src/report.rs` (and/or `src/report/`),
+`sqt-reporter/src/specs/mod.rs`.
+**Depends on**: Stream F (INFRA_ERROR type, interrupted flag, provenance from version check).
+
+- [ ] **T-075** Harden report DTOs: schema_version, provenance, INFRA_ERROR, result_consistent
+  - **`schema_version`** (SRS-DATA-001): add `pub schema_version: &'static str` = `"1.0"` to
+    the top-level `Report` struct; always serialise it as the first JSON field. Emit a
+    deprecation warning if the consumer sends back a report with a different `schema_version`
+    (not needed now but reserve the field)
+  - **Runner provenance** (SRS-DATA-003): add `pub provenance: RunProvenance` to `Report`:
+    ```rust
+    pub struct RunProvenance {
+        pub sqt_version: String,          // env!("CARGO_PKG_VERSION")
+        pub runner_version: String,        // from VersionResponse
+        pub runner_target_id: String,
+        pub runner_os: String,
+        pub runner_toolchain_versions: HashMap<String, String>,
+        pub config_summary: ConfigSummary, // sanitised: token_env shown as name only, no value
+    }
+    ```
+    Populate from the `VersionResponse` received at session start (pass it through from
+    orchestrator → report builder)
+  - **`INFRA_ERROR` outcome** (SRS-OPS-006): add `InfraError` variant to the outcome
+    category enum (wherever `PASS`/`FAIL` are defined). JSON key: `"INFRA_ERROR"`.
+    Terminal summary: print in yellow, distinct from red (FAIL) and green (PASS)
+  - **Error surfacing** (SRS-REL-003): `OutcomeReport` must carry the forwarded
+    `error_code`, `error_message`, `error_details` from the Runner when the outcome is
+    INFRA_ERROR. Shown in terminal summary one line below the outcome row
+  - **`result_consistent` recording** (SRS-REL-004): for every completed job, record
+    `output.result_consistent` (true/false/null) in the per-job evidence — regardless of
+    whether the spec declares a reproducibility constraint. A `null` or absent field is
+    recorded as `"result_consistent": null`. This field appears in both JSON report and
+    terminal evidence section
+  - **`interrupted` flag**: add `pub interrupted: bool` to `Report` metadata; set `true`
+    when the run was terminated by SIGTERM (SRS-OPS-008)
+  - Tests: JSON roundtrip includes `schema_version`; INFRA_ERROR serialises correctly;
+    `result_consistent` null/true/false all appear in evidence
+
+---
+
+#### Stream H — Pre-flight CLI Mode (SRS-OPS-007)
+
+**Files changed**: `sqt-reporter/src/main.rs`, `sqt-reporter/src/orchestrator/mod.rs`
+(or a new `src/preflight.rs`).
+**Depends on**: Streams D+E (get_version, get_docs).
+
+- [ ] **T-076** Add `--preflight` flag and preflight logic
+  - Add `--preflight` boolean flag to `Commands::Run` in the CLI (or as a separate
+    subcommand `sqt preflight --config <path>` — either is acceptable; `--preflight` on
+    `run` is simpler)
+  - **Preflight steps** (SRS-OPS-007):
+    1. Parse and validate config (same as `run`)
+    2. Call `get_version()` — check compatibility; print result
+    3. Call `get_docs()` — print document count and titles; warn if empty
+    4. Verify bearer auth: if `token_env` is configured, confirm the env var is non-empty
+       and that the version call succeeded (auth failures surface as 401 here)
+    5. Load spec files from `test_specs.files`, report count and any parse errors
+    6. Exit 0 if all steps pass; exit non-zero with a summary of which steps failed
+  - **No jobs are submitted** during preflight under any circumstance
+  - Terminal output must be sufficient for an operator to confirm the setup is correct
+    without a full qualification run (SRS-OPS-007)
+  - Exit code 2 for preflight interrupted by SIGTERM (same handler as full run)
+  - Tests: preflight with valid config exits 0; preflight with unreachable URL exits
+    non-zero with a clear message; preflight does NOT call `submit_job`
+
+---
+
+#### Updated Dependency Graph (Phase 6)
+
+```
+Stream A (T-070: config schema)
+  └─► Stream B (T-044: YAML spec loader)
+
+Stream C (T-071: Runner version endpoint)    [independent]
+
+Stream D (T-072: use_case rename)            [independent, breaking wire change]
+
+Stream E (T-073: API client)
+  └─ needs Stream C for VersionResponse type
+
+Stream F (T-074: orchestrator)
+  └─ needs Stream C (VersionResponse)
+  └─ needs Stream E (get_version, transient retry)
+
+Stream G (T-075: report hardening)
+  └─ needs Stream F (provenance, INFRA_ERROR, result_consistent)
+
+Stream H (T-076: preflight)
+  └─ needs Stream E (get_version, get_docs)
+  └─ needs Stream A (config, test_specs.files)
+```
+
+**Parallel tracks**: Streams A+B, C, and D can start simultaneously.
+Streams E and F can start as soon as C is merged. Streams G and H follow E+F.
 
 ---
 
