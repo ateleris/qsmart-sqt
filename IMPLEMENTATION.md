@@ -1068,7 +1068,7 @@ Streams E and F can start as soon as C is merged. Streams G and H follow E+F.
 cargo build
 
 # Run against a local binary with an example spec
-cargo run -- run --config examples/basic.sqt.yaml
+cargo run -- run --config examples/sqt-reporter.example.yaml
 
 # Run tests
 cargo test

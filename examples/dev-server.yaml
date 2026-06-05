@@ -1,7 +1,0 @@
-binary:
-  path: target/debug/sqt-test-binary
-  args: ["--busy", "3000", "--exit", "42"]
-
-tools:
-  run:
-    image: sqt-run:latest

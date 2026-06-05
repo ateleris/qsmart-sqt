@@ -1,0 +1,27 @@
+# sqt-reporter configuration
+# Usage:
+#   sqt-reporter run      -c sqt-reporter.example.yaml
+#   sqt-reporter preflight -c sqt-reporter.example.yaml
+
+project:
+  name: "AI ML-L Qualification"
+  version: "1.0.0"
+
+test_specs:
+  files:
+    - ./specs/example.sqt.yaml      # one or more test spec files; relative paths resolved against this file
+
+runner:
+  url: http://localhost:3000        # sqt-runner base URL (http:// or https://)
+  # token_env: SQT_API_TOKEN        # optional: name of env var holding the bearer token
+
+  # Optional tuning (values shown are the defaults):
+  # max_concurrent_jobs: 8
+  # job_timeout_secs: 300
+  # retry_max: 3
+  # retry_backoff_initial_secs: 1
+  # poll_interval_initial_secs: 1
+  # poll_interval_max_secs: 30
+
+report:
+  output_dir: ./reports             # relative paths resolved against this file
