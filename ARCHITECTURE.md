@@ -17,6 +17,8 @@
   - [4.5 Declarative Test Specifications](#45-declarative-test-specifications)
   - [4.6 Compliant Requirements (Non-Testable)](#46-compliant-requirements-non-testable)
 - [5. REST API Interface (SQT Runner)](#5-rest-api-interface-sqt-runner)
+  - [5.2 APCO Space Profile Use Cases](#52-apco-space-profile-use-cases)
+  - [5.5 API Endpoints](#55-api-endpoints)
   - [5.10 Requirements Documents Endpoint](#510-requirements-documents-endpoint)
 - [6. Scope Definition](#6-scope-definition)
 - [7. Qualification Workflow](#7-qualification-workflow)
@@ -50,8 +52,8 @@ The SQT Reporter is a CLI application that **orchestrates the full qualification
 
 - **Fetches and validates** the ECSS documentation baseline and static test results from the SQT Runner
 - **Checks requirements compliance** before allowing test execution to proceed
-- **Submits test jobs** to the SQT Runner via REST API and polls for results
-- **Evaluates metric constraints** against returned results (declarative test specifications)
+- **Submits all test jobs concurrently** to the SQT Runner via REST API (receives job IDs immediately; a configurable concurrency bound limits in-flight submissions) and polls all outstanding jobs concurrently until completion
+- **Evaluates metric constraints** against returned results (declarative test specifications), with unit-aware comparison
 - **Generates ECSS-compliant reports** (PDF, HTML) and the QDP (Quality Data Package) with full requirements traceability
 
 ### Key Principles
@@ -59,9 +61,10 @@ The SQT Reporter is a CLI application that **orchestrates the full qualification
 1. **Separation of concerns**: The SQT Runner handles test execution and artifact serving; the SQT Reporter handles orchestration, requirements checking, and reporting
 2. **Deployment flexibility**: The SQT Runner deploys on the customer's hardware (where access to the target systems exists); the SQT Reporter can run anywhere
 3. **Target extensibility**: The Runner's target abstraction layer allows adding new execution targets (GR740, GR765) without changing the Reporter or the REST API contract
-4. **Configuration-driven**: All aspects configurable via YAML
-5. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment
+4. **Configuration-driven**: All aspects configurable via YAML; test specifications registered by explicit declaration (no auto-discovery)
+5. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment; Use Cases per the APCO Space Profile (RD-5 / ML-TN-T1)
 6. **Evidence-based**: Comprehensive traceability from requirements to test results
+7. **Concurrent orchestration**: The Reporter submits all jobs and polls all outcomes concurrently, bounded by a configurable concurrency limit; the Runner queues and executes jobs sequentially (initial implementation: one at a time)
 
 ---
 
@@ -106,10 +109,11 @@ The overall qualification process follows a three-tier swimlane model:
 ║  │  REST API Server                 │   │  ┌─────────────────────┐    │     ║
 ║  │  (implements job-api.openapi)    │◄──┤  │ Space Profile Tests  │    │     ║
 ║  │                                  │   │  │ (Ateleris-defined    │    │     ║
-║  │  POST /api/v1/jobs  → enqueue    │   │  │  functional tests)   │    │     ║
-║  │  GET  /api/v1/jobs/{id} → poll   │   │  └─────────────────────┘    │     ║
-║  │  GET  /api/v1/docs  → serve docs │   │  ┌─────────────────────┐    │     ║
-║  └──────────────────────────────────┘   │  │ Performance Tests    │    │     ║
+║  │  GET  /api/v1/version → compat   │   │  │  functional tests)   │    │     ║
+║  │  POST /api/v1/jobs  → enqueue    │   │  └─────────────────────┘    │     ║
+║  │  GET  /api/v1/jobs/{id} → poll   │   │  ┌─────────────────────┐    │     ║
+║  │  GET  /api/v1/docs  → serve docs │   │  │ Performance Tests    │    │     ║
+║  └──────────────────────────────────┘   │  │ (timing, memory,     │    │     ║
 ║                                         │  │ (timing, memory,     │    │     ║
 ║                                         │  │  throughput)         │    │     ║
 ║                                         │  └─────────────────────┘    │     ║
@@ -166,28 +170,38 @@ The qualification session follows this sequence:
 ```
 SQT Reporter                            SQT Runner
 ────────────────────────────────────────────────────────────────────
-1. GET /api/v1/docs
-                            ◄── ECSS baseline + static test results
+0. [Pre-flight mode only] Validate config, GET /api/v1/docs, verify
+   endpoint reachability and auth. Exit without submitting any job.
 
-2. Parse docs; check ECSS compliance and static test results
+1. GET /api/v1/version  ──────────────────────────────────────────►
+                            ◄── { api_version, runner_version, ... }
+   Verify API version compatibility; exit non-zero if mismatched.
+
+2. GET /api/v1/docs  ─────────────────────────────────────────────►
+                            ◄── ECSS baseline + static test results
+   If empty → proceed with project-declared specs + emit diagnostic.
+
+3. Parse docs; check ECSS compliance and static test results
    Gate: if not compliant → halt with error report
 
-3. Parse Strictdoc requirements from fetched docs
+4. Parse Strictdoc requirements from fetched docs
    Identify testable requirements (VERIFICATION: Test)
 
-4. For each testable requirement:
+5. Submit ALL jobs concurrently (up to max_concurrent_jobs in flight):
    POST /api/v1/jobs  ─────────────────────────────────────────────►
                             ◄── 202 Accepted { job_id, queue_position }
-   (poll with exponential backoff)
+   (Repeat for each spec; Runner queues them, executes one at a time)
+
+6. Poll ALL outstanding job IDs concurrently with exponential backoff:
    GET /api/v1/jobs/{id}  ─────────────────────────────────────────►
                             ◄── status: "accepted" (queue_position: N)
                             ◄── status: "running"
                             ◄── status: "complete" | "failed"
                                  + metrics, outputs, hardware descriptor
 
-5. Evaluate metric constraints against results
+7. Evaluate metric constraints against results (unit-aware)
 
-6. Generate System Test Report + QDP
+8. Generate System Test Report + QDP
 ```
 
 ### 2.3 Component Responsibilities
@@ -269,14 +283,21 @@ runner:
   url: "http://runner-host:8080"
   auth:
     type: "bearer"                   # bearer, none
-    token_env: "SQT_RUNNER_TOKEN"    # environment variable holding the token
+    token_env: "SQT_RUNNER_TOKEN"    # environment variable holding the token; redacted from all output
   poll_interval_initial_secs: 1
   poll_interval_max_secs: 30
-  job_timeout_secs: 3600
+  job_timeout_secs: 3600             # project-default per-job timeout; overridable per spec
+  max_concurrent_jobs: 8             # SRS-PERF-002: max jobs in flight at once
+  retry_max: 3                       # SRS-IF-009: max retries on transient errors
+  retry_backoff_initial_secs: 1      # SRS-IF-009: initial retry backoff
 
 # Test specifications (declarative .test.yaml files)
+# Registered by explicit declaration — no directory scanning (SRS-MAINT-002)
 test_specs:
-  directory: "./specs"               # scanned recursively for *.test.yaml files
+  files:
+    - "./specs/REQ-ML-L-001.test.yaml"
+    - "./specs/REQ-ML-L-003.test.yaml"
+    - "./specs/REQ-ML-L-004.test.yaml"
 
 # Report Generation
 reports:
@@ -381,8 +402,10 @@ fn validate_reporter_config(config: &ReporterConfig) -> Result<(), ValidationErr
     if config.project.name.is_empty() {
         return Err(ValidationError::MissingField("project.name"));
     }
-    if !Path::new(&config.test_specs.directory).exists() {
-        return Err(ValidationError::FileNotFound(config.test_specs.directory));
+    for spec_path in &config.test_specs.files {
+        if !Path::new(spec_path).exists() {
+            return Err(ValidationError::FileNotFound(spec_path.clone()));
+        }
     }
     check_api_connectivity(&config.runner.url)?;
     Ok(())
@@ -543,40 +566,37 @@ pub enum RelationType {
 
 ### 4.3 Requirements-to-Tests Mapping
 
-Two approaches:
+Qualification specifications are registered by **explicit declaration** in
+`sqt-reporter.yaml` (SRS-MAINT-002). Auto-discovery from filesystem state
+(directory scanning, naming conventions) is not performed.
 
-#### Approach 1: Convention-based (Automatic)
-```
-Requirements UID pattern → Test file pattern
+Each `.test.yaml` file is listed explicitly in the config:
 
-REQ-ML-L-001  →  tests/unit/test_multicore.cpp
-REQ-ML-L-002  →  tests/unit/test_onnx_loader.cpp
-REQ-ML-L-003  →  tests/performance/test_inference_latency.cpp
-```
-
-#### Approach 2: Explicit Mapping (Configuration)
 ```yaml
-# test-mappings.yaml
-test_mappings:
-  - requirement_uid: "REQ-ML-L-001"
-    test_cases:
-      - "tests/unit/test_multicore.cpp::TestMulticoreInference::test_parallel_execution"
-      - "tests/integration/test_gr740_multicore.cpp::TestGR740Multicore::test_quad_core"
-
-  - requirement_uid: "REQ-ML-L-002"
-    test_cases:
-      - "tests/unit/test_onnx_loader.cpp::TestONNXLoader::test_load_resnet50"
-      - "tests/unit/test_onnx_loader.cpp::TestONNXLoader::test_onnx_version_support"
-
-  - requirement_uid: "REQ-ML-L-003"
-    hardware_tests:
-      - platform: "gr740-eval"
-        rest_endpoint: "/api/v1/jobs"
-        config:
-          model: "resnet50"
-          input_size: [224, 224]
-          iterations: 100
+# sqt-reporter.yaml
+test_specs:
+  files:
+    - "./specs/REQ-ML-L-001.test.yaml"
+    - "./specs/REQ-ML-L-003.test.yaml"
 ```
+
+Each spec file names the requirement it covers:
+
+```yaml
+# specs/REQ-ML-L-001.test.yaml
+requirement_uid: REQ-ML-L-001
+use_case: image_classification      # APCO Space Profile Use Case
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+  - metric: time.avg_ms
+    operator: lte
+    value: 100ms                    # unit-aware: ms accepted, compared to ms from Runner
+```
+
+Testable requirements not covered by any listed spec are reported as UNCOVERED
+and cause a non-zero exit.
 
 ### 4.4 Traceability Matrix Generation
 
@@ -586,18 +606,18 @@ Generate comprehensive traceability matrix:
 ┌──────────────┬─────────────────────────────┬─────────────┬────────────┐
 │ Requirement  │ Test Cases                  │ Status      │ Coverage   │
 ├──────────────┼─────────────────────────────┼─────────────┼────────────┤
-│ REQ-ML-L-001 │ • test_multicore.cpp::L45   │ ✓ Passed    │ 100%       │
-│              │ • test_gr740_multicore::L12 │ ✓ Passed    │            │
+│ REQ-ML-L-001 │ • Job job-12340             │ ✓ Passed    │ N/A        │
+│              │   return_code=0, t=74ms     │             │            │
 ├──────────────┼─────────────────────────────┼─────────────┼────────────┤
-│ REQ-ML-L-002 │ • test_onnx_loader.cpp::L23 │ ✓ Passed    │ 95%        │
-│              │ • test_onnx_loader.cpp::L67 │ ✓ Passed    │            │
+│ REQ-ML-L-002 │ • Job job-12341             │ ✓ Passed    │ N/A        │
+│              │   return_code=0             │             │            │
 ├──────────────┼─────────────────────────────┼─────────────┼────────────┤
-│ REQ-ML-L-003 │ • Hardware Test (GR740)     │ ✓ Passed    │ N/A        │
-│              │   Job ID: job-12345         │ (87ms)      │            │
+│ REQ-ML-L-003 │ • Job job-12342             │ ✓ Passed    │ N/A        │
+│              │   time.avg_ms=87 ≤ 100ms   │             │            │
 ├──────────────┼─────────────────────────────┼─────────────┼────────────┤
-│ REQ-ML-L-004 │ • test_memory.cpp::L89      │ ✓ Passed    │ 100%       │
-│              │ • Hardware Test (Memory)    │ ✓ Passed    │            │
-│              │   Job ID: job-12346         │ (1.8MB)     │            │
+│ REQ-ML-L-004 │ • Job job-12343             │ ✓ Passed    │ N/A        │
+│              │   memory.peak_rss_kb=1843   │             │            │
+│              │   ≤ 2 MB                   │             │            │
 └──────────────┴─────────────────────────────┴─────────────┴────────────┘
 ```
 
@@ -617,40 +637,45 @@ The declarative approach is:
 Requirement + Constraint spec → Auto-executed metric collection → Results
 ```
 
-This is similar to property-based testing and contract testing. Strictdoc's custom grammar feature (see Notes section) can be used to embed these specs directly in `.sdoc` files, or they can live in sidecar YAML files alongside requirements.
+This is similar to property-based testing and contract testing. Strictdoc's custom grammar feature (see Notes section) can be used to embed these specs directly in `.sdoc` files, or they can live in sidecar YAML files alongside requirements. Regardless of location, each spec file must be explicitly listed in `sqt-reporter.yaml` — no auto-discovery from filesystem state is performed (SRS-MAINT-002).
 
-#### 4.5.2 Sidecar YAML Format (Recommended)
+#### 4.5.2 Spec YAML Format
 
-Test specs live in `tests/<req-uid>.test.yaml` alongside the requirements:
+Test spec files are listed explicitly in the Reporter config (see §3.1):
 
 ```yaml
-# tests/REQ-ML-L-003.test.yaml
+# specs/REQ-ML-L-003.test.yaml
 requirement_uid: REQ-ML-L-003
-test_type: performance
-target:
-  binary: ml_l_inference
-  platform: gr740
-  input: datasets/reference_mnist.bin
+use_case: image_classification        # APCO Space Profile Use Case (SRS-IF-005)
+input: datasets/reference_mnist.bin
+timeout_secs: 120                     # optional; overrides project-default (SRS-PERF-004)
 
 constraints:
-  - metric: time.execution
-    operator: <=
-    value: 100ms
-
-  - metric: accuracy
-    operator: ">="
-    value: 95%
+  - metric: time.avg_ms
+    operator: lte
+    value: 100ms                      # unit-aware: "100ms" or bare 100 (unit inferred from metric)
 
   - metric: memory.peak_rss_kb
-    operator: <=
-    value: 512
+    operator: lte
+    value: 2 MB                       # reconciled to KB automatically (SRS-FUNC-004)
 
   - metric: memory.leaks_bytes
-    operator: ==
+    operator: eq
     value: 0
+
+# Optional: numerical output precision comparison (SRS-FUNC-016)
+# Compares raw inference outputs against reference values within tolerance.
+# Distinct from accuracy metric computation (SRS-FUNC-017).
+precision_reference:
+  file: datasets/reference_output.bin
+  tolerance: 1e-4
 ```
 
-The syntax is intentionally uniform: the user specifies `metric`, `operator`, and `value`. Whether the metric is built-in or provided by a plugin makes no difference to the user.
+The `value` field accepts `<number><unit>` strings. The evaluator reconciles
+compatible units (ms↔s, KB↔MB↔bytes, etc.) before comparison (SRS-FUNC-004).
+Irreconcilable units (e.g. ms vs bytes) cause the constraint to fail with an
+explanatory message. A spec with zero constraints at evaluation time is recorded
+as FAIL — vacuous passes are rejected (SRS-REL-001).
 
 #### 4.5.3 Core Metric Catalogue
 
@@ -721,11 +746,12 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 
 // Submit one job per testable requirement
 let job_id = api_client.submit_job(&JobRequest {
-    model: spec.workload_type,
+    use_case: spec.use_case,           // APCO Space Profile Use Case
     input: spec.input.clone(),
     repetitions: spec.repetitions,
     instrumentation: spec.instrumentation,
     mode: spec.mode,
+    timeout_secs: spec.timeout_secs.unwrap_or(config.runner.job_timeout_secs),
     tags: [("requirement_uid", &spec.requirement_uid)].into(),
     ..Default::default()
 }).await?;
@@ -828,34 +854,54 @@ Content-Type: application/json
 
 The Runner is configured at startup (via `sqt-runner.yaml` or CLI flags) with the
 hardware target, inference engine, trained model, and main program. These are
-**not** transmitted per job. The client (SQT Reporter) specifies only what workload
-to run and how; the Runner returns everything it can measure.
+**not** transmitted per job. The client (SQT Reporter) specifies only the Use Case
+(§5.2) and measurement parameters; the Runner returns everything it can measure.
 
 A single job type covers all qualification activities: execution runs, instrumented
 runs (valgrind/asan/gprof), coverage collection, and static analysis.
 
-### 5.2 Predefined Workload Types
+**Session start protocol (SRS-IF-008):** Before submitting any job, the Reporter
+calls `GET /api/v1/version` to verify the Runner's API version is within the set
+declared by the Reporter binary. An incompatible version causes an immediate
+non-zero exit with a clear mismatch message.
 
-The set of workload types is defined in SQT Reporter and known to both sides of the
-API. The server maps each workload type to the appropriate binary invocation,
-input handling, and output interpretation.
+**Response schema validation (SRS-IF-007):** Every Runner response is validated
+against the published contract schema before consumption. A non-conformant response
+causes the affected job to be recorded as infrastructure-failed.
 
-| Workload | Domain | Typical Input | Typical Output |
+**Transient error retry (SRS-IF-009):** Network resets, connection timeouts, and
+recoverable 5xx responses trigger bounded retries with exponential backoff (up to
+`runner.retry_max` attempts). After exhausting retries, the affected job is
+recorded as infrastructure-failed. This is distinct from the steady-state polling
+backoff in §5.9.
+
+**Credential redaction (SRS-OPS-005):** Bearer tokens are redacted from all
+operational output (log lines, terminal summary, persisted evidence, verbose
+request/response traces) at every verbosity level without exception.
+
+### 5.2 APCO Space Profile Use Cases
+
+The set of supported Use Cases is defined by the **APCO Space Profile** (RD-5 /
+ML-TN-T1) and enumerated in the SQT Reporter. Both Reporter and Runner reason over
+the same closed set; the Runner maps each Use Case to the appropriate binary
+invocation, input handling, and output interpretation (SRS-IF-005).
+
+| Use Case | Domain | Typical Input | Typical Output |
 |---|---|---|---|
 | `object_detection` | Computer vision | Images | Bounding boxes + class labels |
 | `image_classification` | Computer vision | Images | Class label + confidence score |
-| `pixel_segmentation` | Computer vision | Images | Per-pixel class mask (large output) |
+| `pixel_segmentation` | Computer vision | Images | Per-pixel class mask |
 | `classification` | Tabular ML | Feature vectors | Class label |
 | `regression` | Tabular ML | Feature vectors | Scalar prediction |
 | `time_series_forecasting` | Sequential ML | Time series sequences | Forecast sequence |
 
-**Default session**: when no specific workload is requested, SQT Reporter submits jobs for
-all supported workload types. Jobs queue up in the Runner and execute sequentially;
-total wall-clock time is the sum of all job durations.
+**Default session**: when a spec does not declare a Use Case, the SQT Reporter
+submits one job per supported Use Case (SRS-IF-005). Jobs are queued on the Runner
+side and polled concurrently by the Reporter.
 
 ### 5.3 Measurement Modes
 
-Each job runs in one of two modes, set by the `mode` field:
+Each job runs in one of two modes, set by the `mode` field. The Use Case is set by the `use_case` field (§5.2):
 
 | Mode | Behaviour | Populated metrics |
 |---|---|---|
@@ -876,9 +922,34 @@ instrumented execution when active and should not be compared to bare baselines.
 
 ### 5.5 API Endpoints
 
-Two endpoints; both follow the same asynchronous pattern:
-submit → receive a job ID (202 Accepted) → poll until `status` is terminal.
-Results are embedded directly in the GET response; there is no separate `/results` endpoint.
+Three endpoints for qualification work, plus a version/health endpoint called once
+at session start.
+
+#### 5.5.0 Version / Health Check
+
+**Endpoint**: `GET /api/v1/version`
+
+Called before any job submission to verify API contract compatibility (SRS-IF-008).
+
+**Response** (200 OK):
+```json
+{
+  "api_version": "1.0",
+  "runner_version": "1.2.3",
+  "target_id": "x86_64-linux",
+  "os": "Ubuntu 22.04",
+  "toolchain_versions": {
+    "gcc": "12.3.0",
+    "valgrind": "3.21.0",
+    "lcov": "1.16"
+  }
+}
+```
+
+The Reporter declares its supported `api_version` set at compile time. A mismatch
+causes immediate non-zero exit before any job is submitted. The Runner-supplied
+fields (`runner_version`, `target_id`, `os`, `toolchain_versions`) are stamped
+into every report for provenance (SRS-DATA-003).
 
 #### 5.5.1 Submit Job
 
@@ -887,7 +958,7 @@ Results are embedded directly in the GET response; there is no separate `/result
 **Request Body**:
 ```json
 {
-  "model": "image_classification",
+  "use_case": "image_classification",
   "input": { "type": "images", "images": ["<base64-image>", "..."] },
   "repetitions": 10,
   "warmup_repetitions": 3,
@@ -899,8 +970,8 @@ Results are embedded directly in the GET response; there is no separate `/result
 ```
 
 The Runner uses the model, inference engine, and main program configured at startup.
-The Reporter does not transmit the model - it only specifies the workload type and
-measurement parameters.
+The Reporter does not transmit the model — it only specifies the APCO Space Profile
+Use Case and measurement parameters.
 
 For large image batches (hundreds or thousands of images), the request body will be
 proportionally large. The server's HTTP frontend must be configured to accept it
@@ -920,7 +991,7 @@ pre-loaded dataset via `input.type = "dataset_ref"` with a server-assigned ident
 ```json
 {
   "job_id": "job-abc123",
-  "model": "image_classification",
+  "use_case": "image_classification",
   "mode": "latency",
   "repetitions": 10,
   "status": "complete",
@@ -989,7 +1060,7 @@ The server returns model outputs directly in the job response. `output.outputs`
 always contains **one entry per input item** - never one per repetition.
 Repetitions exist for statistical measurement only.
 
-For all workload types (including `pixel_segmentation`), the server executes all
+For all Use Cases (including `pixel_segmentation`), the server executes all
 `repetitions` and transfers the output batch once. `result_consistent` records
 whether every repetition produced bit-identical results:
 
@@ -1002,6 +1073,19 @@ SQT Reporter computes accuracy metrics (accuracy, F1, IoU, L2, etc.) client-side
 comparing `output.outputs` against reference labels attached to the spec. An
 `outputs_checksum` (SHA-256 of the outputs array) enables cross-session
 reproducibility verification without re-transferring the data.
+
+**Reproducibility evidence (SRS-REL-004):** The Reporter records `result_consistent` in
+the per-run evidence for every job regardless of whether a reproducibility constraint is
+declared. A spec may include a reproducibility constraint:
+
+```yaml
+- metric: output.result_consistent
+  operator: eq
+  value: true
+```
+
+A `null` or absent `result_consistent` field is treated as a failing constraint. Non-identical
+outputs are recorded neutrally — without root-cause attribution — as non-determinism evidence.
 
 ### 5.7 CPU Utilisation Normalisation
 
@@ -1025,7 +1109,7 @@ cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100
 {
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "unknown model type: 'depth_estimation'",
+    "message": "unknown Use Case: 'depth_estimation'",
     "details": "Supported types: object_detection, image_classification, ...",
     "timestamp": "2026-03-06T10:00:00Z"
   }
@@ -1033,27 +1117,42 @@ cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100
 ```
 
 **Error Codes**:
-- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown workload type)
+- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown Use Case)
 - `NOT_FOUND`: Job not found
 - `TIMEOUT`: Operation exceeded timeout
 - `UNAUTHORIZED`: Missing or invalid Bearer token
 - `INTERNAL_ERROR`: Internal server error
 
+**SQT Reporter behaviour on error responses (SRS-REL-003):** The Reporter surfaces the
+Runner-supplied `error.code`, `error.message`, and `error.details` in both the terminal
+summary and the persisted run evidence. The three operationally distinct error classes —
+endpoint unreachable (connection error), authentication failure (`UNAUTHORIZED`), and
+request validation failure (`VALIDATION_ERROR`) — shall be distinguishable to the operator
+in the terminal output without requiring inspection of raw logs.
+
 ### 5.9 Polling Strategy
 
-SQT Reporter implements exponential backoff for all polling. Results are embedded
-in the GET response - no separate fetch is needed:
+SQT Reporter implements exponential backoff for all polling (SRS-PERF-003).
+Results are embedded in the GET response — no separate fetch is needed.
 
 ```
 initial delay: 1 s
 backoff factor: x2 per poll
-maximum delay: 30 s
+maximum delay: 30 s (configurable: runner.poll_interval_max_secs)
 ```
 
-Jobs for a qualification session are submitted by the Reporter and queue up in
-the Runner. The Runner executes one job at a time. The Reporter polls each
-outstanding job ID sequentially (or interleaved with backoff); total wall-clock
-time is the sum of all job durations.
+**Concurrent polling (SRS-PERF-001):** The Reporter submits all jobs first
+(receiving job IDs via 202 Accepted), then polls all outstanding IDs
+concurrently — one async task per job. When the total number of in-flight jobs
+exceeds `max_concurrent_jobs` (SRS-PERF-002), further submissions queue until
+in-flight slots free up. The per-job polling tasks run independently; a job
+completing early does not delay evaluation of subsequent specs.
+
+**Runner-side execution:** The Runner currently executes one job at a time
+(concurrency limit = 1 on the Runner). This is a valid initial implementation:
+the SRS allows any concurrency bound ≥ 1 on the Runner side. Wall-clock at the
+Reporter is therefore the sum of all job execution durations in the current
+configuration; this will improve as Runner concurrency increases.
 
 ### 5.10 Requirements Documents Endpoint
 
@@ -1084,7 +1183,7 @@ once per qualification session before any jobs are submitted.
 1. Fetch `GET /api/v1/docs`.
 2. Parse each `content` string as StrictDoc; extract all `[REQUIREMENT]` blocks.
 3. For each requirement, inspect the `VERIFICATION` field:
-   - Contains `Test` → schedule for normal constraint evaluation (requires a `.test.yaml`).
+   - Contains `Test` → schedule for normal constraint evaluation (requires a listed spec in config).
    - No `Test` → record as `compliant` with `evidence_source: server_declaration`.
 4. Include all requirements in the report traceability matrix, grouped by verification path.
 
@@ -1099,7 +1198,7 @@ See **Section 4.6** for the full rationale and report output format.
 #### ✅ IN SCOPE
 
 1. **REST API Server**
-   - Implement `job-api.openapi.yaml` endpoints (`POST /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `GET /api/v1/docs`)
+   - Implement `job-api.openapi.yaml` endpoints (`GET /api/v1/version`, `POST /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `GET /api/v1/docs`)
    - Job queue and sequential job execution (one job at a time)
    - Configuration via YAML (artifact paths, target selection, etc.)
 
@@ -1135,54 +1234,100 @@ See **Section 4.6** for the full rationale and report output format.
 
 ### 6.2 SQT Reporter Scope (Ateleris)
 
+The SQT Reporter is what the SRS calls the **Orchestrator**.
+
 #### ✅ IN SCOPE
 
 1. **Configuration Management**
-   - Parse YAML configuration files
-   - Validate configuration correctness
-   - Support configuration profiles (dev, ci, production)
+   - Parse YAML configuration files; validate before any job submission (SRS-FUNC-002)
+   - Explicitly registered test specs — no auto-discovery from filesystem (SRS-MAINT-002)
+   - Exit non-zero with the offending field identified on invalid config
 
-2. **Document Baseline Check**
+2. **Session Start Protocol**
+   - API version compatibility check via `GET /api/v1/version` (SRS-IF-008)
+   - Bearer-token validation: configured-but-empty token → non-zero exit before any job (SRS-IF-006)
+   - Credential redaction from all output at all verbosity levels (SRS-OPS-005)
+
+3. **Pre-flight Validation Mode (SRS-OPS-007)**
+   - `--preflight` flag: validate config, fetch docs, verify reachability and auth
+   - Exits without submitting any job; reports outcome in same channels as a full run
+
+4. **Document Baseline Check**
    - Fetch documents from the SQT Runner via `GET /api/v1/docs`
+   - If empty document set → proceed with project-declared specs + emit diagnostic (SRS-IF-004)
    - Parse ECSS documentation baseline and static test results
    - Gate the qualification session: halt if compliance criteria are not met
 
-3. **Requirements Management**
+5. **Requirements Management**
    - Parse Strictdoc requirements from fetched documents
-   - Extract requirements metadata and verification methods
+   - Classify by verification method: Test-verifiable vs compliant-by-Runner-declaration (SRS-IF-004)
    - Build requirements database and traceability matrix
 
-4. **REST API Client (to SQT Runner)**
-   - Submit test jobs via `POST /api/v1/jobs`
-   - Poll for job status via `GET /api/v1/jobs/{id}`
-   - Extract metric values from results
+6. **REST API Client (to SQT Runner)**
+   - Concurrent job submission: submit all jobs, receive job IDs (202 Accepted) (SRS-PERF-001)
+   - Bounded concurrency: `max_concurrent_jobs` semaphore (SRS-PERF-002)
+   - Concurrent polling of all outstanding IDs with exponential backoff (SRS-PERF-003)
+   - Per-job timeout enforcement; project-default applied when spec omits one (SRS-PERF-004)
+   - Response schema validation before consuming (SRS-IF-007)
+   - Transient error retry with bounded back-off (SRS-IF-009)
 
-5. **Metric Constraint Evaluation**
-   - Evaluate declarative test specs (`.test.yaml`) against job result metrics
-   - Map null metrics to failed constraints
+7. **Metric Constraint Evaluation**
+   - Unit-aware evaluation: reconcile compatible units (ms↔s, KB↔bytes) (SRS-FUNC-004)
+   - Map null/absent metrics to failed constraints (SRS-REL-002)
+   - Reject vacuous passes: zero-constraint specs recorded as FAIL (SRS-REL-001)
+   - Numerical output precision comparison against reference values (SRS-FUNC-016)
+   - Client-side accuracy metric computation per Use Case (SRS-FUNC-017):
+     - `image_classification` / `classification`: accuracy, F1, precision, recall
+     - `object_detection`: mAP, IoU@50, IoU@75
+     - `regression`: MSE, MAE, R²
+     - `time_series_forecasting`: MSE, MAE, MAPE
 
-6. **Evidence Collection**
-   - Aggregate all job results and static documents
-   - Build requirements traceability matrix
-   - Organize qualification artifacts
+8. **Partial-Failure Semantics (SRS-OPS-006)**
+   - Infrastructure-failed jobs do not abort the run
+   - Remaining specs continue to be evaluated
+   - `INFRA_ERROR` outcome is distinct from `PASS` / `FAIL` in reports and exit code
 
-7. **Report Generation**
-   - Generate ECSS-compliant PDF reports
-   - Create HTML developer reports
-   - Produce QDP (Quality Data Package)
-   - Include traceability matrices
+9. **Graceful Shutdown (SRS-OPS-008)**
+   - On SIGTERM: stop submitting new jobs, await in-flight polls, persist partial run result
+   - Exit code 2 (interrupted) — distinct from 0 (all-pass) and 1 (any-fail/infra-error)
 
-8. **CI/CD Integration**
-   - Provide CLI interface
-   - Return appropriate exit codes
-   - Support common CI systems (GitHub Actions, GitLab CI)
+10. **Evidence Collection**
+    - Aggregate all job results and static documents
+    - Build requirements traceability matrix (machine-readable + human-readable)
+    - Organize qualification artifacts per run under a timestamped, uniquely identified location (SRS-OPS-004)
+
+11. **Report Generation**
+    - ECSS-compliant PDF reports, HTML developer reports, JSON machine-readable output
+    - Every output carries `schema_version` field; within major version: additive changes only (SRS-DATA-001)
+    - Every output stamped with: SQT binary version, Runner-supplied identifiers (version, hardware, OS, toolchain), loaded project configuration — tokens redacted (SRS-DATA-003)
+    - Traceability matrix in machine-readable and human-readable representations (SRS-FUNC-010)
+    - Produce QDP (Quality Data Package)
+
+12. **Per-step Progress Signals (SRS-FUNC-012)**
+    - At each qualification workflow step emit a signal sufficient for the operator to
+      determine: the current step, the outcome of the previous step, and any required
+      intervention — without consulting an external runbook
+    - Signals emitted at: session start (version check), document fetch, baseline gate,
+      spec loading, job submission (per job), polling progress (per completion), constraint
+      evaluation, report generation
+
+13. **CI/CD Integration**
+    - Single CLI entry point; self-discoverable options without external documentation (SRS-HF-001)
+    - Exit 0 = all pass; exit 1 = any fail or infra-error; exit 2 = interrupted (SRS-OPS-001)
+    - End-of-run terminal summary: per-spec pass/fail/blocked counts, evidence location (SRS-OPS-003)
+    - Operator-configurable diagnostic verbosity; full request/response trace at max verbosity (SRS-OPS-002)
+    - No implicit network access beyond the configured Runner endpoint (SRS-RES-002)
 
 #### ❌ OUT OF SCOPE for SQT Reporter
 
-1. **Test execution** - the Runner handles all test execution
-2. **Hardware access** - the Runner abstracts all target hardware
-3. **ML-L artifact management** - the Reporter consumes artifacts already served by the Runner
-4. **REST API server** - the Reporter is a client only
+1. **Test execution** — the Runner handles all test execution
+2. **Hardware access** — the Runner abstracts all target hardware
+3. **ML-L artifact management** — the Reporter consumes artifacts already served by the Runner
+4. **REST API server** — the Reporter is a client only
+5. **Ateleris/Klepsydra runtime dependency** — the Reporter binary shall be operable
+   against any conformant Runner endpoint without credentials, network access, or
+   configuration issued by Ateleris or Klepsydra; no call-home, telemetry, or
+   licence-check to either organisation's infrastructure (SRS-HF-002)
 
 ### 6.3 ML-L Provider Responsibilities (Out of Scope / Stubs)
 
@@ -1206,7 +1351,8 @@ SQT Reporter                    SQT Runner
 
 "Are documents compliant?"      Gate in Reporter: proceed or halt
 
-"Execute test on x86_64"        → Assemble AI system
+"Execute Use Case: image_classification"
+                                → Assemble AI system
                                   Run Space Profile + Performance tests
                                   Return metrics
 
@@ -1226,17 +1372,37 @@ SQT Reporter                    SQT Runner
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ 1. Fetch Document Baseline  [SQT Reporter → SQT Runner]          │
+│ [Pre-flight mode: --preflight flag]  [SQT Reporter]              │
+│                                                                  │
+│    Validate config, GET /api/v1/version, GET /api/v1/docs,       │
+│    verify endpoint reachability and bearer-token auth.           │
+│    Exit here — no jobs submitted. (SRS-OPS-007)                  │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. Session Start  [SQT Reporter → SQT Runner]                    │
+│                                                                  │
+│    GET /api/v1/version                                           │
+│    ← { api_version, runner_version, target_id, os, toolchain }  │
+│    Verify API version compatible; exit non-zero if not.          │
+│    (SRS-IF-008)                                                  │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 2. Fetch Document Baseline  [SQT Reporter → SQT Runner]          │
 │                                                                  │
 │    GET /api/v1/docs                                              │
 │    ← ECSS documentation baseline (.sdoc)                        │
 │    ← Unit test results (static, .sdoc)                          │
 │    ← Validation test results (static, .sdoc)                    │
+│    If empty → proceed with project-declared specs + WARN         │
+│    (SRS-IF-004)                                                  │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 2. Baseline Compliance Check  [SQT Reporter]                     │
+│ 3. Baseline Compliance Check  [SQT Reporter]                     │
 │                                                                  │
 │    Parse fetched documents; verify required ECSS artefacts       │
 │    are present and structurally valid.                           │
@@ -1246,42 +1412,42 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 3. Parse Requirements  [SQT Reporter]                            │
+│ 4. Parse Requirements  [SQT Reporter]                            │
 │                                                                  │
 │    Parse Strictdoc from fetched documents.                       │
 │    For each [REQUIREMENT]:                                       │
-│      • VERIFICATION includes Test  → must have .test.yaml        │
+│      • VERIFICATION includes Test  → must have listed .test.yaml │
 │      • VERIFICATION is non-Test    → mark compliant by server    │
 │        (Inspection / Review / Analysis)        declaration       │
 │                                                                  │
-│    REQ-ML-L-001  VERIFICATION: Test        → needs .test.yaml    │
+│    REQ-ML-L-001  VERIFICATION: Test        → needs spec          │
 │    REQ-ML-L-NFR-001  VERIFICATION: Review  → compliant           │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 4. Load Test Specs  [SQT Reporter]                               │
+│ 5. Load Test Specs  [SQT Reporter]                               │
 │                                                                  │
-│    Scan specs/ directory for *.test.yaml files.                  │
-│    Match each spec to a requirement by uid.                      │
+│    Load specs listed explicitly in sqt-reporter.yaml.            │
+│    Match each spec to a requirement by uid. (SRS-MAINT-002)      │
 │    Unmatched testable requirements → UNCOVERED → halt            │
 │                                                                  │
 │    # specs/REQ-ML-L-001.test.yaml                                │
 │    requirement_uid: REQ-ML-L-001                                 │
+│    use_case: image_classification                                │
 │    constraints:                                                  │
-│      - metric: return_code    op: eq   value: 0                  │
-│      - metric: time.avg_ms    op: lte  value: 100                │
+│      - metric: return_code    operator: eq   value: 0            │
+│      - metric: time.avg_ms    operator: lte  value: 100ms        │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 5. Submit Jobs  [SQT Reporter → SQT Runner]                      │
+│ 6. Submit ALL Jobs Concurrently  [SQT Reporter → SQT Runner]     │
 │                                                                  │
-│    For each test spec, POST /api/v1/jobs.                        │
-│    Jobs are queued in the Runner; Reporter receives a job_id     │
-│    immediately (status: accepted, queue_position: N).            │
+│    Submit all specs concurrently, bounded by max_concurrent_jobs │
+│    (SRS-PERF-001, SRS-PERF-002). Receive job IDs immediately.   │
 │                                                                  │
-│    POST /api/v1/jobs  { model: "image_classification",          │
+│    POST /api/v1/jobs  { use_case: "image_classification",        │
 │                         repetitions: 10, mode: "latency" }      │
 │    ← { job_id: "job-abc123", status: "accepted",                │
 │        queue_position: 1 }                                       │
@@ -1289,38 +1455,42 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 6. Execute & Poll  [SQT Runner + SQT Reporter polling]           │
+│ 7. Execute & Poll Concurrently  [Runner + Reporter polling]       │
 │                                                                  │
-│  Runner (sequential, one job at a time):                         │
+│  Runner (one job at a time in current implementation):           │
 │    • Assemble AI system (inference engine + model + main prog)   │
 │    • Execute Space Profile tests (ESA/Klepsydra-defined)         │
 │    • Execute Performance tests (timing, memory, throughput)      │
 │    • Collect all metrics; update job status → complete           │
 │                                                                  │
-│  Reporter polls with exponential backoff:                        │
-│    GET /api/v1/jobs/{id}                                         │
+│  Reporter polls ALL outstanding IDs concurrently:                │
+│    GET /api/v1/jobs/{id}  (exponential backoff per job)          │
 │    ← status: "accepted" (queue_position: 1)                      │
 │    ← status: "running"                                           │
 │    ← status: "complete"  { metrics: { ... }, output: { ... } }  │
+│    ← status: "failed"    → record as INFRA_ERROR; continue       │
+│    (SRS-OPS-006: infrastructure failures do not abort the run)   │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 7. Evaluate Metric Constraints  [SQT Reporter]                   │
+│ 8. Evaluate Metric Constraints  [SQT Reporter]                   │
 │                                                                  │
-│    For each spec constraint, look up the metric in job result.   │
-│    null metric → FAILED (tool unavailable counts as failure).    │
+│    Unit-aware: reconcile compatible units before comparison.     │
+│    null metric → FAILED with missing-measurement message.        │
+│    Zero-constraint spec → FAILED (vacuous pass rejected).        │
+│    (SRS-FUNC-004, SRS-REL-001, SRS-REL-002)                     │
 │                                                                  │
 │    REQ-ML-L-001:                                                 │
-│      return_code = 0   == 0  → ✓ PASS                           │
-│      time.avg_ms = 87.3 <= 100 → ✓ PASS                        │
+│      return_code = 0   == 0    → ✓ PASS                         │
+│      time.avg_ms = 87.3 ≤ 100ms → ✓ PASS                       │
 │    REQ-ML-L-002:                                                 │
-│      return_code = 1   == 0  → ✗ FAIL                           │
+│      return_code = 1   == 0    → ✗ FAIL                         │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 8. Build Traceability Matrix  [SQT Reporter]                     │
+│ 9. Build Traceability Matrix  [SQT Reporter]                     │
 │                                                                  │
 │    REQ-ML-L-001  PASS  return_code=0 ✓  time=87ms ✓             │
 │    REQ-ML-L-002  FAIL  return_code=1 ✗                          │
@@ -1329,11 +1499,13 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 9. Generate System Test Report + QDP  [SQT Reporter]             │
+│ 10. Generate System Test Report + QDP  [SQT Reporter]            │
 │                                                                  │
-│    • Format job metrics + traceability into report structures    │
+│    • Stamp SQT version + Runner provenance in every output       │
+│    • Include schema_version in machine-readable output           │
 │    • Render ECSS-compliant PDF (Typst) and HTML                  │
 │    • Produce QDP artefact                                        │
+│    (SRS-DATA-001, SRS-DATA-003)                                  │
 │                                                                  │
 │    Output: system-test-report.pdf, report.html, qdp.zip          │
 └──────────────────────────────────────────────────────────────────┘
@@ -1352,17 +1524,18 @@ VERIFICATION: Test
 **Test Spec** (`specs/REQ-ML-L-003.test.yaml`):
 ```yaml
 requirement_uid: REQ-ML-L-003
+use_case: image_classification         # APCO Space Profile Use Case
 constraints:
   - metric: time.avg_ms
-    op: lte
-    value: 100
+    operator: lte
+    value: 100ms                       # unit-aware
   - metric: return_code
-    op: eq
+    operator: eq
     value: 0
 ```
 
 **Execution**:
-1. Reporter submits `POST /api/v1/jobs` - Runner queues it, returns `job-12345`
+1. Reporter submits `POST /api/v1/jobs` (with all other jobs concurrently) — Runner queues it, returns `job-12345`
 2. Runner executes the model on the configured target; measures latency
 3. Reporter polls; receives `complete` with `time.avg_ms: 87.3`, `return_code: 0`
 4. Reporter evaluates: `87.3 <= 100` ✓, `0 == 0` ✓ → **PASS**
@@ -1466,7 +1639,7 @@ Both test types are executed by the Runner's Test Execution Engine for each job:
 - Power and temperature metrics (where the target exposes them)
 - Results reported as standard job metrics
 
-Both test types use the same job submission flow; the `model` (workload type) field in the job request determines which test suite is exercised.
+Both test types use the same job submission flow; the `use_case` field in the job request (an APCO Space Profile Use Case, §5.2) determines which test suite is exercised.
 
 ### 8.5 Docker Containerization
 
@@ -1549,7 +1722,14 @@ requirements can share the same run without re-executing the binary.
 
 ```
 Validation Report - Klepsydra AI ML-L v1.0.0
+schema_version: 1.0
 ═══════════════════════════════════════════════════════════════
+
+Provenance (SRS-DATA-003):
+   • Generated by: SQT v1.0.0 (commit: a1b2c3d)
+   • Runner version: 1.2.3 | Target: x86_64-linux | OS: Ubuntu 22.04
+   • Toolchain: gcc 12.3.0, valgrind 3.21.0, lcov 1.16
+   • Configuration: sqt-reporter.yaml (token: [REDACTED])
 
 1. Executive Summary
    • Project: Klepsydra AI ML-L Qualification
@@ -1989,23 +2169,27 @@ sqt-reporter/                     # SQT Reporter application (orchestration + re
 | **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based | ReqIF (complex), Excel (not traceable) | 🟡 Proposed |
 | **AD-005** | Ateleris builds generic SQT Runner (not delegated to ML-L Provider) | ML-L Provider focuses on delivering artifacts; Ateleris controls the test execution layer, enabling a generic and open implementation | Delegate to ML-L Provider (Klepsydra) - rejected: closes the runner to third parties and ties test execution to a single vendor | ✅ Accepted |
 | **AD-006** | Use Typst for PDF generation | Modern, fast, programmable | LaTeX (complex), Pandoc (limited) | 🟡 Proposed |
-| **AD-007** | Convention-based req-to-test mapping | Simplicity, maintainability | Only explicit mapping (verbose) | 🟡 Proposed |
+| **AD-007** | ~~Convention-based req-to-test mapping~~ | Superseded by AD-024; SRS-MAINT-002 requires explicit listing | See AD-024 | ❌ Rejected |
 | **AD-008** | Docker containerization | Reproducibility, isolation | VM (heavy), native (env issues) | ✅ Accepted |
 | **AD-009** | Exponential backoff for polling | Efficient, respectful of API | Fixed interval (wasteful) | ✅ Accepted |
 | **AD-010** | Both PDF and HTML reports | ECSS compliance + developer UX | Only PDF (not dev-friendly) | ✅ Accepted |
 | **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
 | **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
 | **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
-| **AD-014** | Predefined workload types in SQT Reporter | Workloads (object_detection, image_classification, etc.) are a closed, known set; both Reporter and Runner reason over the same enum; no open-ended task dispatch needed | Open task-name dispatch (Runner accepts arbitrary task strings - fragile, hard to validate) | ✅ Accepted |
+| **AD-014** | APCO Space Profile Use Cases as a closed enum | Use Cases (object_detection, image_classification, etc.) are defined by the APCO Space Profile (RD-5); both Reporter and Runner reason over the same closed set; no open-ended task dispatch needed | Open task-name dispatch (Runner accepts arbitrary strings — fragile, hard to validate, not traceable to APCO) | ✅ Accepted |
 | **AD-015** | CPU utilisation normalised Runner-side | Runner knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (Runner would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
 | **AD-016** | ML accuracy metrics computed Reporter-side | Runner returns raw outputs; SQT Reporter computes accuracy/F1/IoU/L2 etc. against reference labels; keeps Runner hardware-agnostic and reference-data-free | Runner computes accuracy (requires Runner-side reference dataset per workload - complex, leaks qualification logic into the Runner) | ✅ Accepted |
-| **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all workload types including segmentation masks. | Split `sample_output` / `all_outputs` per workload type (added complexity, inconsistent semantics) | ✅ Accepted |
+| **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all Use Cases including pixel_segmentation. | Split `sample_output` / `all_outputs` per Use Case (added complexity, inconsistent semantics) | ✅ Accepted |
 | **AD-018** | Model and artifacts configured on Runner at startup, not per job | No per-job model transfer; ONNX models can be hundreds of MB; re-sending per job is impractical. Runner is purpose-configured for one model version. To qualify a different version, restart Runner with updated config or CLI flags. | Per-job `model_zip` field (removed: inconsistent with session assembly model, impractical at production model sizes) | ✅ Accepted |
 | **AD-019** | ML-L Provider artifacts pre-placed on Runner filesystem | No network transfer from Provider at qualification time; configurable paths in `sqt-runner.yaml`; simplest possible delivery model | Pull artifacts from Provider API at session start (adds Provider-side API requirement, network dependency, latency) | ✅ Accepted |
 | **AD-020** | SQT Reporter fetches docs from Runner (not directly from ML-L Provider) | Runner is the single point of contact; Reporter need not know the Provider's delivery mechanism; consistent with Runner-as-data-source model | Reporter contacts Provider directly for docs (couples Reporter to Provider, breaks single-interface design) | ✅ Accepted |
 | **AD-021** | 1:1 Reporter:Runner deployment model | Simplest correct model for the current use case; no concurrent client complexity; job queue is sufficient | Multi-client with session isolation (deferred; revisit if needed) | ✅ Accepted |
-| **AD-022** | Job queue: sequential execution, one job at a time | Predictable resource usage on target hardware; simplest correct implementation; `queue_position` gives Reporter full visibility | Parallel job execution (complex resource management, especially on constrained space hardware) | ✅ Accepted |
+| **AD-022** | Runner executes one job at a time (initial); Reporter submits+polls concurrently | SRS-PERF-001 requires concurrent submission with wall-clock ≤ longest job + 10%; the SRS permits any Runner-side concurrency bound ≥ 1. Reporter submits all jobs and polls all IDs concurrently (SRS compliant); Runner queues and runs sequentially for v1 (valid: wall-clock bounded by queue depth per SRS-PERF-001). | Fully parallel Runner execution (deferred; adds resource management complexity on space hardware) | ✅ Accepted |
 | **AD-023** | SQT Runner target abstraction layer (TAL) | Isolates target-specific code (x86\_64, GR740, GR765) behind a Rust trait; new targets can be added without touching the Reporter or the REST API; GR740/GR765 deferred but architecturally catered for | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
+| **AD-024** | Explicit spec registration (no auto-discovery) | SRS-MAINT-002 forbids auto-discovery from filesystem state; explicit listing in config makes the active spec set deterministic, auditable, and source-controllable | Directory scanning (rejected: environment-dependent, invisible in source history, incompatible with reproducible qualification) | ✅ Accepted |
+| **AD-025** | "Use Cases" per APCO Space Profile (RD-5), not "workload types" | SRS-IF-005 ties the job routing to APCO Space Profile Use Cases; aligning terminology ensures traceability to the standard | "Workload types" (rejected: generic term not traceable to APCO Space Profile) | ✅ Accepted |
+| **AD-026** | Pre-flight mode (`--preflight`) | SRS-OPS-007 requires a mode that validates config + endpoint + auth without submitting jobs; shortens CI feedback loop on configuration changes | No pre-flight (operator must run a full qualification to detect config errors) | ✅ Accepted |
+| **AD-027** | Exit code 2 for interrupted runs | SRS-OPS-008 requires SIGTERM exit distinguishable from completed-pass (0) and completed-fail (1); exit 2 = interrupted | Single non-zero code for all non-pass outcomes (rejected: loses diagnostic information) | ✅ Accepted |
 
 ### Trade-offs
 
