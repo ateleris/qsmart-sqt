@@ -143,9 +143,12 @@ impl ApiClient {
             })
             .await
             .with_context(|| format!("GET {url} failed"))?;
-        resp.json::<VersionResponse>()
+        let resp: VersionResponse = resp
+            .json::<VersionResponse>()
             .await
-            .context("Failed to parse VersionResponse")
+            .context("Failed to parse VersionResponse")?;
+        validate_version_response(&resp)?;
+        Ok(resp)
     }
 
     // -----------------------------------------------------------------------
@@ -252,7 +255,10 @@ impl ApiClient {
             bail!("API returned {status}: {body}");
         }
 
-        response.json().await.context("Failed to parse JobStatusResponse")
+        let resp: JobStatusResponse =
+            response.json().await.context("Failed to parse JobStatusResponse")?;
+        validate_job_status(&resp)?;
+        Ok(resp)
     }
 
     /// Poll until the job reaches `complete`, or fail fast on any terminal error.
@@ -293,6 +299,35 @@ impl ApiClient {
             delay = (delay * 2).min(MAX_DELAY);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Response schema validators  (SRS-IF-007)
+// ---------------------------------------------------------------------------
+
+/// Validate required fields of a `JobStatusResponse`.
+///
+/// A missing or empty `job_id` indicates a non-conformant response; the caller
+/// records the affected job as infrastructure-failed.
+fn validate_job_status(resp: &sqt_types::JobStatusResponse) -> anyhow::Result<()> {
+    if resp.job_id.is_empty() {
+        anyhow::bail!("schema: job_id field is empty in JobStatusResponse");
+    }
+    Ok(())
+}
+
+/// Validate required fields of a `VersionResponse`.
+///
+/// Both `api_version` and `runner_version` must be non-empty for the response
+/// to be considered conformant.
+fn validate_version_response(resp: &sqt_types::VersionResponse) -> anyhow::Result<()> {
+    if resp.api_version.is_empty() {
+        anyhow::bail!("schema: api_version field is empty in VersionResponse");
+    }
+    if resp.runner_version.is_empty() {
+        anyhow::bail!("schema: runner_version field is empty in VersionResponse");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -342,5 +377,80 @@ mod tests {
             .expect("client should build");
         assert_eq!(client.retry_max, 5);
         assert_eq!(client.retry_backoff_initial_secs, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // SRS-IF-007: response schema validation
+    // -----------------------------------------------------------------------
+
+    fn make_job_status_resp(job_id: &str) -> sqt_types::JobStatusResponse {
+        sqt_types::JobStatusResponse {
+            job_id: job_id.to_owned(),
+            use_case: Default::default(),
+            mode: Default::default(),
+            repetitions: 1,
+            status: sqt_types::JobStatus::Accepted,
+            queue_position: None,
+            created_at: "2026-01-01T00:00:00Z".to_owned(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+            tags: None,
+            hardware: None,
+            metrics: Default::default(),
+            output: None,
+        }
+    }
+
+    #[test]
+    fn validate_job_status_rejects_empty_job_id() {
+        let resp = make_job_status_resp("");
+        let err = validate_job_status(&resp).unwrap_err();
+        assert!(
+            err.to_string().contains("job_id"),
+            "error should mention job_id: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_job_status_accepts_valid_response() {
+        let resp = make_job_status_resp("job-abc");
+        assert!(validate_job_status(&resp).is_ok());
+    }
+
+    fn make_version_resp(api_version: &str, runner_version: &str) -> sqt_types::VersionResponse {
+        sqt_types::VersionResponse {
+            api_version: api_version.to_owned(),
+            runner_version: runner_version.to_owned(),
+            target_id: "test-target".to_owned(),
+            os: "linux".to_owned(),
+            toolchain_versions: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn validate_version_response_rejects_empty_api_version() {
+        let resp = make_version_resp("", "1.0.0");
+        let err = validate_version_response(&resp).unwrap_err();
+        assert!(
+            err.to_string().contains("api_version"),
+            "error should mention api_version: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_version_response_rejects_empty_runner_version() {
+        let resp = make_version_resp("v1", "");
+        let err = validate_version_response(&resp).unwrap_err();
+        assert!(
+            err.to_string().contains("runner_version"),
+            "error should mention runner_version: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_version_response_accepts_valid_response() {
+        let resp = make_version_resp("v1", "1.2.3");
+        assert!(validate_version_response(&resp).is_ok());
     }
 }

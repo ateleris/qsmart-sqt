@@ -474,7 +474,7 @@ at the bottom of the file. No other file needs to change.
     the fields needed for the compliance gate and traceability matrix are extracted here
   - Prerequisite of T-042 and T-044
 
-- [ ] **T-044** *(corrected — see Phase 6 Stream B for full spec)*
+- [x] **T-044** *(corrected — see Phase 6 Stream B for full spec)*
   Implement YAML spec loader (`src/specs/loader.rs`)
   - **Reads only the files listed in `config.test_specs.files`** — does NOT scan a
     directory (SRS-MAINT-002 prohibits auto-discovery)
@@ -757,7 +757,7 @@ Phase 3 (T-032) when the orchestrator starts calling into them.
 **Files changed**: `sqt-reporter/src/config/schema.rs`, `sqt-reporter/src/config/mod.rs`,
 any fixture YAML files used in tests.
 
-- [ ] **T-070** Overhaul `SqtConfig` to match ARCHITECTURE.md §3.2
+- [x] **T-070** Overhaul `SqtConfig` to match ARCHITECTURE.md §3.2
   - **Remove** the `build_dir` field entirely (legacy from auto-discovery design)
   - **Add** `test_specs.files: Vec<PathBuf>` — explicit list of spec YAML paths; required
     field, empty list is a validation error (SRS-MAINT-002)
@@ -784,7 +784,7 @@ any fixture YAML files used in tests.
 **Files changed**: `sqt-reporter/src/specs/loader.rs` (create), `sqt-reporter/src/specs/mod.rs`.
 **Depends on**: Stream A (needs `test_specs.files` from config).
 
-- [ ] **T-044** *(corrected)* Implement YAML spec loader (`src/specs/loader.rs`)
+- [x] **T-044** *(corrected)* Implement YAML spec loader (`src/specs/loader.rs`)
   - **Correction from original T-044**: do NOT scan a directory. Read only the files listed
     in `config.test_specs.files`. Auto-discovery from the filesystem is prohibited
     (SRS-MAINT-002)
@@ -830,7 +830,7 @@ any fixture YAML files used in tests.
 `sqt-runner/src/main.rs`, `sqt-runner/src/config.rs`.
 **Independent** — no Reporter dependency.
 
-- [ ] **T-071** Add `VersionResponse` to `sqt-types` and wire the Runner endpoint
+- [x] **T-071** Add `VersionResponse` to `sqt-types` and wire the Runner endpoint
   - **`sqt-types`**: add `VersionResponse` struct:
     ```rust
     pub struct VersionResponse {
@@ -862,7 +862,7 @@ any fixture YAML files used in tests.
 **Note**: this is a **breaking wire-format change** — Reporter and Runner must be updated
 together; do not merge partial.
 
-- [ ] **T-072** Rename `model` → `use_case` in the REST wire format
+- [x] **T-072** Rename `model` → `use_case` in the REST wire format
   - In `sqt-types`: rename `JobRequest.model: WorkloadType` → `use_case: WorkloadType`
     (the Rust field name changes; `serde(rename)` was not in use so the JSON key changes
     from `"model"` to `"use_case"`)
@@ -883,7 +883,7 @@ together; do not merge partial.
 already added in C), `sqt-reporter/Cargo.toml` (no new deps expected).
 **Depends on**: Stream C (VersionResponse type).
 
-- [ ] **T-073** Harden `ApiClient` with version check, docs fetch, transient retry, and credential redaction
+- [x] **T-073** Harden `ApiClient` with version check, docs fetch, transient retry, and credential redaction
   - **Add `get_version() -> Result<VersionResponse>`**: `GET /api/v1/version`, deserialise
     into `VersionResponse`. Used by the orchestrator at session start
   - **Complete `get_docs() -> Result<DocsResponse>`**: this was listed in original T-041
@@ -917,7 +917,7 @@ already added in C), `sqt-reporter/Cargo.toml` (no new deps expected).
 `sqt-reporter/src/main.rs`, `Cargo.toml` (add `tokio-util` or use `tokio::signal`).
 **Depends on**: Streams C (VersionResponse) and E (get_version, INFRA_ERROR retry).
 
-- [ ] **T-074** Orchestrator: session start, concurrency cap, INFRA_ERROR, SIGTERM, progress
+- [x] **T-074** Orchestrator: session start, concurrency cap, INFRA_ERROR, SIGTERM, progress
   - **Session start protocol** (SRS-IF-008): before submitting any job, call
     `client.get_version()`. Parse the returned `api_version`. If the major version does not
     match the Reporter's compiled `SUPPORTED_API_VERSION` constant, exit non-zero with:
@@ -968,7 +968,7 @@ already added in C), `sqt-reporter/Cargo.toml` (no new deps expected).
 `sqt-reporter/src/specs/mod.rs`.
 **Depends on**: Stream F (INFRA_ERROR type, interrupted flag, provenance from version check).
 
-- [ ] **T-075** Harden report DTOs: schema_version, provenance, INFRA_ERROR, result_consistent
+- [x] **T-075** Harden report DTOs: schema_version, provenance, INFRA_ERROR, result_consistent
   - **`schema_version`** (SRS-DATA-001): add `pub schema_version: &'static str` = `"1.0"` to
     the top-level `Report` struct; always serialise it as the first JSON field. Emit a
     deprecation warning if the consumer sends back a report with a different `schema_version`
@@ -1010,7 +1010,7 @@ already added in C), `sqt-reporter/Cargo.toml` (no new deps expected).
 (or a new `src/preflight.rs`).
 **Depends on**: Streams D+E (get_version, get_docs).
 
-- [ ] **T-076** Add `--preflight` flag and preflight logic
+- [x] **T-076** Add `--preflight` flag and preflight logic
   - Add `--preflight` boolean flag to `Commands::Run` in the CLI (or as a separate
     subcommand `sqt preflight --config <path>` — either is acceptable; `--preflight` on
     `run` is simpler)

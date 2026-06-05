@@ -9,10 +9,14 @@ use tokio_util::sync::CancellationToken;
 use sqt_types::{
     Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
 };
+use crate::accuracy::AccuracyMetrics;
+use crate::accuracy::compute as accuracy_compute;
 use crate::api::ApiClient;
+use crate::baseline;
 use crate::config::SqtConfig;
 use crate::constraint::ConstraintOutcome;
 use crate::constraint::evaluator::evaluate;
+use crate::evidence::EvidenceStore;
 use crate::report::{ConfigSummary, RunProvenance};
 use crate::specs::{RunResult, SpecResult, TestSpec};
 
@@ -108,6 +112,7 @@ pub async fn run(
     client: &ApiClient,
     config: &SqtConfig,
     shutdown: CancellationToken,
+    evidence_store: &mut EvidenceStore,
 ) -> Result<(RunResult, RunProvenance)> {
     // -----------------------------------------------------------------------
     // Session start: version check (SRS-IF-008)
@@ -146,6 +151,28 @@ pub async fn run(
 
     let provenance = build_provenance(&version, config);
 
+    // -----------------------------------------------------------------------
+    // Baseline coverage check (T-043)
+    // -----------------------------------------------------------------------
+    let docs = client.get_docs().await.unwrap_or_else(|e| {
+        tracing::warn!("docs fetch failed: {e}");
+        sqt_types::DocsResponse { documents: vec![], attachments: vec![] }
+    });
+    let baseline_req_set: Option<crate::baseline::RequirementSet> = if docs.documents.is_empty() {
+        tracing::warn!("No baseline documents available — coverage check skipped");
+        None
+    } else {
+        let req_set = baseline::parse_requirements(&docs);
+        tracing::info!(
+            testable = req_set.testable.len(),
+            by_declaration = req_set.compliant_by_declaration.len(),
+            "Baseline requirements parsed"
+        );
+        let spec_uids: Vec<String> = specs.iter().map(|s| s.requirement_uid.clone()).collect();
+        baseline::check_coverage(&req_set, &spec_uids)?;
+        Some(req_set)
+    };
+
     if specs.is_empty() {
         return Ok((
             RunResult {
@@ -153,6 +180,7 @@ pub async fn run(
                 timestamp: now_iso8601(),
                 config_version: config.project.version.clone(),
                 interrupted: false,
+                requirement_set: baseline_req_set,
             },
             provenance,
         ));
@@ -229,6 +257,9 @@ pub async fn run(
                     "[job_id={job_id}] {:?} in {elapsed:.1}s",
                     resp.status,
                 );
+                if let Err(e) = evidence_store.store_json(job_id, "job_response.json", resp) {
+                    tracing::warn!(job_id = %job_id, error = %e, "Failed to persist job response evidence");
+                }
             }
             Err(e) => {
                 tracing::warn!(job_id = %job_id, error = %e, "Job polling failed");
@@ -299,6 +330,34 @@ pub async fn run(
                     None => "null".to_string(),
                 };
 
+            // Compute client-side ml.* accuracy metrics (T-054).
+            let computed_accuracy: AccuracyMetrics =
+                if let Some(ref out) = response.output {
+                    if let Some(ref outputs) = out.outputs {
+                        if let Some(ref refs) = spec.reference_outputs {
+                            accuracy_compute::compute(outputs, refs, &spec.workload_type)
+                        } else {
+                            AccuracyMetrics::new()
+                        }
+                    } else {
+                        AccuracyMetrics::new()
+                    }
+                } else {
+                    AccuracyMetrics::new()
+                };
+
+            // Precision comparison (SRS-FUNC-016).
+            let precision_results: AccuracyMetrics = match (
+                response.output.as_ref().and_then(|o| o.outputs.as_ref()),
+                spec.precision_reference.as_ref(),
+                spec.precision_tolerance,
+            ) {
+                (Some(outs), Some(prec_ref), Some(tol)) => {
+                    accuracy_compute::precision_compare(outs, prec_ref, tol)
+                }
+                _ => AccuracyMetrics::new(),
+            };
+
             // Normal path: evaluate constraints.
             let outcomes: Vec<ConstraintOutcome> = spec
                 .constraints
@@ -312,7 +371,24 @@ pub async fn run(
                         spec.requirement_uid,
                     );
                     if !constraint.is_server_side() {
-                        return failing_outcome(name, "not yet implemented (T-054)");
+                        // Look up from client-side accuracy metrics (T-054).
+                        let maybe_computed = computed_accuracy
+                            .get(name)
+                            .or_else(|| precision_results.get(name));
+                        return match maybe_computed {
+                            Some(&val) => {
+                                let mut outcome = evaluate(val, constraint);
+                                if let Some((id, _)) = job_ids.get(&key) {
+                                    outcome.evidence.insert("job_id".into(), id.clone());
+                                }
+                                outcome.evidence.insert(
+                                    "result_consistent".into(),
+                                    result_consistent_str.clone(),
+                                );
+                                outcome
+                            }
+                            None => failing_outcome(name, "reference_outputs not provided in spec"),
+                        };
                     }
                     let maybe_value = response.metrics.get(name);
                     match maybe_value {
@@ -343,6 +419,7 @@ pub async fn run(
             timestamp: now_iso8601(),
             config_version: config.project.version.clone(),
             interrupted,
+            requirement_set: baseline_req_set,
         },
         provenance,
     ))
@@ -385,6 +462,7 @@ mod tests {
             workload_type: workload,
             target: make_target(input, timeout_secs),
             constraints: vec![],
+            ..Default::default()
         }
     }
 
@@ -494,15 +572,19 @@ mod tests {
     // --- ml.* constraint guard (T-054) ---------------------------------------
 
     #[test]
-    fn ml_constraint_produces_t054_failing_outcome() {
-        // T-054: ml.* metrics are client-side. The orchestrator must not look them
-        // up in JobMetrics (they're absent) -- instead it must produce a failing
-        // outcome whose message names T-054, distinguishing "not implemented" from
-        // "metric unavailable" (a server-side tool that was disabled).
-        let outcome = failing_outcome("ml.accuracy", "not yet implemented (T-054)");
+    fn ml_constraint_produces_failing_outcome_without_reference() {
+        // T-054: ml.* metrics are client-side. Without reference_outputs, the
+        // orchestrator must produce a failing outcome distinguishing
+        // "reference not provided" from "metric unavailable" (a server-side tool
+        // that was disabled).
+        let outcome = failing_outcome("ml.accuracy", "reference_outputs not provided in spec");
         assert!(!outcome.passed);
         assert!(outcome.message.contains("ml.accuracy"));
-        assert!(outcome.message.contains("T-054"), "outcome must reference T-054");
+        assert!(
+            outcome.message.contains("reference_outputs"),
+            "outcome must mention reference_outputs: {}",
+            outcome.message
+        );
     }
 
     // --- INFRA_ERROR does not propagate as Err (SRS-OPS-006) -----------------

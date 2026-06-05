@@ -281,6 +281,89 @@ pub fn print_terminal(report: &Report) {
     );
 }
 
+/// Bundle qualification artefacts into a `qdp.zip` archive.
+///
+/// Collects the JSON report, traceability files, and the entire `evidence/`
+/// directory into a single ZIP archive placed at `output_dir/qdp.zip`.
+/// Each path argument is optional — missing or non-existent files are silently
+/// skipped so that a partial run still produces a usable bundle.
+///
+/// # Errors
+///
+/// Returns an error if the archive cannot be created or any included file
+/// cannot be read.
+pub fn write_qdp(
+    output_dir: &Path,
+    report_json_path: Option<&Path>,
+    traceability_json: Option<&Path>,
+    traceability_txt: Option<&Path>,
+    evidence_dir: Option<&Path>,
+) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write as _;
+
+    use anyhow::Context as _;
+    use zip::write::SimpleFileOptions;
+
+    let qdp_path = output_dir.join("qdp.zip");
+    if let Some(parent) = qdp_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file = std::fs::File::create(&qdp_path)
+        .with_context(|| format!("cannot create QDP archive: {}", qdp_path.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    // Helper closure: add a single file to the archive under `entry_name`.
+    let add_file = |zip: &mut zip::ZipWriter<_>,
+                    entry_name: &str,
+                    path: &Path|
+     -> anyhow::Result<()> {
+        let data = std::fs::read(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        zip.start_file(entry_name, options)?;
+        zip.write_all(&data)?;
+        Ok(())
+    };
+
+    if let Some(p) = report_json_path
+        && p.exists()
+    {
+        add_file(&mut zip, "report.json", p)?;
+    }
+    if let Some(p) = traceability_json
+        && p.exists()
+    {
+        add_file(&mut zip, "traceability.json", p)?;
+    }
+    if let Some(p) = traceability_txt
+        && p.exists()
+    {
+        add_file(&mut zip, "traceability.txt", p)?;
+    }
+
+    // Include all evidence files recursively under their relative paths.
+    if let Some(ev_dir) = evidence_dir
+        && ev_dir.is_dir()
+    {
+        // Strip the evidence dir's parent so paths in the archive are
+        // rooted at "evidence/<file>" rather than absolute.
+        let strip_base = ev_dir.parent().unwrap_or(ev_dir);
+        for entry in walkdir::WalkDir::new(ev_dir).min_depth(1) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                let rel = entry.path().strip_prefix(strip_base)?;
+                add_file(&mut zip, &rel.display().to_string(), entry.path())?;
+            }
+        }
+    }
+
+    zip.finish()?;
+    tracing::info!("QDP archive written to {}", qdp_path.display());
+    Ok(qdp_path)
+}
+
 /// Serialize the report as pretty-printed JSON to `path`.
 ///
 /// # Errors
@@ -373,6 +456,7 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             config_version: "1.0.0".to_string(),
             interrupted: false,
+            requirement_set: None,
         }
     }
 
@@ -522,6 +606,43 @@ mod tests {
             parsed["results"][0]["target"]["result_consistent"],
             true,
             "result_consistent must appear in JSON"
+        );
+    }
+
+    #[test]
+    fn write_qdp_bundles_artefacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path();
+
+        // Write dummy artefact files.
+        let report_path = out.join("report.json");
+        std::fs::write(&report_path, b"{\"schema_version\":\"1.0\"}").unwrap();
+        let t_json = out.join("traceability.json");
+        std::fs::write(&t_json, b"{}").unwrap();
+        let t_txt = out.join("traceability.txt");
+        std::fs::write(&t_txt, b"ok").unwrap();
+
+        // Create a small evidence dir with one file.
+        let ev_dir = out.join("evidence");
+        std::fs::create_dir_all(&ev_dir).unwrap();
+        std::fs::write(ev_dir.join("run-001.json"), b"{\"job\":\"run-001\"}").unwrap();
+
+        let qdp = write_qdp(out, Some(&report_path), Some(&t_json), Some(&t_txt), Some(&ev_dir))
+            .expect("write_qdp must succeed");
+
+        assert!(qdp.exists(), "qdp.zip must be created");
+        // Verify the archive contains the expected entries.
+        let zip_file = std::fs::File::open(&qdp).unwrap();
+        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_owned())
+            .collect();
+        assert!(names.contains(&"report.json".to_owned()), "must contain report.json");
+        assert!(names.contains(&"traceability.json".to_owned()), "must contain traceability.json");
+        assert!(names.contains(&"traceability.txt".to_owned()), "must contain traceability.txt");
+        assert!(
+            names.iter().any(|n| n.ends_with("run-001.json")),
+            "must contain evidence file; got {names:?}"
         );
     }
 

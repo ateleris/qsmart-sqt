@@ -39,6 +39,15 @@ struct RawTestSpec {
     #[serde(default)]
     timeout_secs: Option<u64>,
     constraints: Vec<RawConstraint>,
+    /// Reference outputs for client-side ml.* accuracy evaluation (T-054).
+    #[serde(default)]
+    reference_outputs: Option<Vec<serde_json::Value>>,
+    /// Reference outputs for numerical precision comparison (SRS-FUNC-016).
+    #[serde(default)]
+    precision_reference: Option<Vec<serde_json::Value>>,
+    /// Absolute tolerance for `ml.output_within_tolerance` (SRS-FUNC-016).
+    #[serde(default)]
+    precision_tolerance: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +217,9 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
         workload_type,
         target,
         constraints,
+        reference_outputs: raw.reference_outputs,
+        precision_reference: raw.precision_reference,
+        precision_tolerance: raw.precision_tolerance,
     })
 }
 

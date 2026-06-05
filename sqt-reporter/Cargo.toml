@@ -26,9 +26,13 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 inventory = { workspace = true }
 futures = { workspace = true }
+zip = "2"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

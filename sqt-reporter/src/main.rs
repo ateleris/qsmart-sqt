@@ -19,6 +19,8 @@ enum Commands {
         config: PathBuf,
         #[arg(short, long, help = "Write JSON report to this path")]
         output: Option<PathBuf>,
+        #[arg(long, help = "Validate config and Runner connectivity; exit without submitting jobs")]
+        preflight: bool,
     },
 }
 
@@ -34,11 +36,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { config, output } => {
+        Commands::Run { config, output, preflight: do_preflight } => {
             let cfg = config::load_config(&config)?;
             cfg.print_summary();
 
-            let specs = specs::all_specs();
+            let specs = specs::loader::load_specs(
+                &cfg.test_specs.files,
+                cfg.runner.job_timeout_secs,
+            )?;
             if specs.is_empty() {
                 tracing::warn!("No specs defined - nothing to run");
                 return Ok(());
@@ -72,15 +77,57 @@ async fn main() -> Result<()> {
                 cfg.runner.retry_backoff_initial_secs,
             )?;
 
-            let (result, provenance) = orchestrator::run(&specs, &client, &cfg, token).await?;
+            if do_preflight {
+                use sqt_reporter::preflight;
+                match preflight::preflight(&cfg, &client).await {
+                    Ok(()) => {
+                        tracing::info!("Pre-flight OK");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Pre-flight FAILED: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            let evidence_dir = cfg.report.output_dir.join("evidence");
+            let mut ev_store = sqt_reporter::evidence::EvidenceStore::new(evidence_dir.clone())?;
+
+            let (result, provenance) =
+                orchestrator::run(&specs, &client, &cfg, token, &mut ev_store).await?;
 
             let rep = report::Report::from_run_result(&result, provenance);
             report::print_terminal(&rep);
 
-            if let Some(path) = output {
-                report::write_json(&rep, &path)?;
+            if let Some(ref path) = output {
+                report::write_json(&rep, path)?;
                 tracing::info!("Report written to {}", path.display());
             }
+
+            // Traceability matrix (if baseline was available)
+            if let Some(ref req_set) = result.requirement_set {
+                let matrix =
+                    sqt_reporter::traceability::build(req_set, &result, &rep.timestamp);
+                let t_json = cfg.report.output_dir.join("traceability.json");
+                let t_txt = cfg.report.output_dir.join("traceability.txt");
+                sqt_reporter::traceability::write_json(&matrix, &t_json)?;
+                sqt_reporter::traceability::write_text(&matrix, &t_txt)?;
+                tracing::info!(
+                    "Traceability matrix written to {}",
+                    cfg.report.output_dir.display()
+                );
+            }
+
+            // Bundle all artefacts into qdp.zip (T-055).
+            let qdp_path = report::write_qdp(
+                &cfg.report.output_dir,
+                output.as_deref(),
+                Some(&cfg.report.output_dir.join("traceability.json")),
+                Some(&cfg.report.output_dir.join("traceability.txt")),
+                Some(&evidence_dir),
+            )?;
+            tracing::info!("QDP bundle: {}", qdp_path.display());
 
             // Exit code 2 for interrupted, 1 for any failure, 0 for all-pass.
             if result.interrupted {

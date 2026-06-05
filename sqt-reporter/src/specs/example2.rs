@@ -14,6 +14,7 @@ pub fn spec() -> TestSpec {
             Constraint::memory_peak_rss(Op::Lte, 5000.0),
             Constraint::cpu_avg_normalized_pct(Op::Lte, 50.0),
         ],
+        ..Default::default()
     }
 }
 

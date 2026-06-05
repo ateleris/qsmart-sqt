@@ -71,6 +71,8 @@ pub enum Constraint {
     MlF1Score { op: Op, value: f64 },
     MlRecall { op: Op, value: f64 },
     MlPrecision { op: Op, value: f64 },
+    /// Numerical precision comparison within tolerance (SRS-FUNC-016).
+    MlOutputWithinTolerance { op: Op, value: f64 },
 }
 
 // -- Named constructors -------------------------------------------------------
@@ -145,6 +147,9 @@ impl Constraint {
     pub fn ml_precision(op: Op, value: f64) -> Self {
         Self::MlPrecision { op, value }
     }
+    pub fn ml_output_within_tolerance(op: Op, value: f64) -> Self {
+        Self::MlOutputWithinTolerance { op, value }
+    }
 }
 
 // -- String-based factory -----------------------------------------------------
@@ -181,6 +186,7 @@ impl Constraint {
             "ml.f1_score" => Self::MlF1Score { op, value },
             "ml.recall" => Self::MlRecall { op, value },
             "ml.precision" => Self::MlPrecision { op, value },
+            "ml.output_within_tolerance" => Self::MlOutputWithinTolerance { op, value },
             _ => return None,
         })
     }
@@ -215,6 +221,7 @@ impl Constraint {
             Self::MlF1Score { .. } => "ml.f1_score",
             Self::MlRecall { .. } => "ml.recall",
             Self::MlPrecision { .. } => "ml.precision",
+            Self::MlOutputWithinTolerance { .. } => "ml.output_within_tolerance",
         }
     }
 
@@ -230,6 +237,7 @@ impl Constraint {
                 | Self::MlF1Score { .. }
                 | Self::MlRecall { .. }
                 | Self::MlPrecision { .. }
+                | Self::MlOutputWithinTolerance { .. }
         )
     }
 
@@ -279,7 +287,8 @@ impl Constraint {
             | Self::MlAccuracy { op, .. }
             | Self::MlF1Score { op, .. }
             | Self::MlRecall { op, .. }
-            | Self::MlPrecision { op, .. } => *op,
+            | Self::MlPrecision { op, .. }
+            | Self::MlOutputWithinTolerance { op, .. } => *op,
         }
     }
 
@@ -309,7 +318,8 @@ impl Constraint {
             Self::MlAccuracy { value, .. }
             | Self::MlF1Score { value, .. }
             | Self::MlRecall { value, .. }
-            | Self::MlPrecision { value, .. } => *value,
+            | Self::MlPrecision { value, .. }
+            | Self::MlOutputWithinTolerance { value, .. } => *value,
         }
     }
 }

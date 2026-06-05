@@ -14,6 +14,12 @@ pub struct TestSpec {
     pub workload_type: WorkloadType,
     pub target: Target,
     pub constraints: Vec<Constraint>,
+    /// Reference outputs for client-side ml.* accuracy evaluation (T-054).
+    pub reference_outputs: Option<Vec<serde_json::Value>>,
+    /// Reference outputs for numerical precision comparison (SRS-FUNC-016).
+    pub precision_reference: Option<Vec<serde_json::Value>>,
+    /// Absolute tolerance for `ml.output_within_tolerance` (SRS-FUNC-016).
+    pub precision_tolerance: Option<f64>,
 }
 
 /// A factory that produces a `TestSpec`.
@@ -93,6 +99,8 @@ pub struct RunResult {
     pub config_version: String,
     /// `true` if the run was cut short by SIGTERM or Ctrl-C.
     pub interrupted: bool,
+    /// Baseline requirement set parsed during this run, if available.
+    pub requirement_set: Option<crate::baseline::RequirementSet>,
 }
 
 /// Collect all registered specs via inventory.
