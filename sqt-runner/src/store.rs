@@ -22,7 +22,7 @@ impl JobState {
     pub fn new(id: String, request: &JobRequest) -> Self {
         Self {
             id,
-            workload_type: request.model.clone(),
+            workload_type: request.use_case.clone(),
             repetitions: request.repetitions,
             tags: request.tags.clone(),
             status: JobStatus::Accepted,
@@ -47,9 +47,9 @@ mod tests {
 
     use super::*;
 
-    fn make_request(model: WorkloadType, repetitions: u32) -> JobRequest {
+    fn make_request(use_case: WorkloadType, repetitions: u32) -> JobRequest {
         JobRequest {
-            model,
+            use_case,
             input: None,
             repetitions,
             instrumentation: Instrumentation::default(),

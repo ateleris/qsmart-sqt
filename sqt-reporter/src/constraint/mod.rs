@@ -30,7 +30,7 @@ impl fmt::Display for Op {
 ///
 /// Each variant encodes the metric identity together with the comparison
 /// operator and threshold. Wire names match `JobMetrics` field keys in the
-/// OpenAPI spec exactly — the orchestrator uses `metric_name()` to look up
+/// `OpenAPI` spec exactly — the orchestrator uses `metric_name()` to look up
 /// the value in `JobMetrics::get()`.
 #[derive(Debug, Clone)]
 pub enum Constraint {
@@ -46,7 +46,7 @@ pub enum Constraint {
     // -- Memory ---------------------------------------------------------------
     MemoryPeakRss { op: Op, kb: f64 },
     MemoryAvgRss { op: Op, kb: f64 },
-    /// Valgrind / ASan leak bytes (wire name: `memory.leaks_bytes`).
+    /// Valgrind / `ASan` leak bytes (wire name: `memory.leaks_bytes`).
     MemoryLeaks { op: Op, bytes: f64 },
     MemoryStackKb { op: Op, kb: f64 },
     MemoryHeapAllocations { op: Op, count: i64 },

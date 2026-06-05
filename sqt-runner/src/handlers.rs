@@ -11,7 +11,7 @@ use axum::{
 };
 use sqt_types::{
     ApiError as ApiErrorBody, Attachment, DocsResponse, ErrorResponse, JobAccepted, JobRequest,
-    JobStatus, JobStatusResponse, MeasurementMode, StrictdocDocument,
+    JobStatus, JobStatusResponse, MeasurementMode, StrictdocDocument, VersionResponse,
 };
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -29,6 +29,14 @@ pub struct AppState {
     pub job_semaphore: Arc<Semaphore>,
     /// Directory scanned by GET /api/v1/docs (`.sdoc` → documents, rest → attachments).
     pub docs_dir: Option<PathBuf>,
+    /// Runner crate version, populated from `env!("CARGO_PKG_VERSION")` at startup.
+    pub runner_version: String,
+    /// Target hardware identifier, e.g. `"gr740-leon4"`.
+    pub target_id: String,
+    /// Operating system name, e.g. `"linux"`.
+    pub os: String,
+    /// Versions of key tools/runtimes available on this runner.
+    pub toolchain_versions: std::collections::HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +59,7 @@ pub async fn create_job(
 
     tracing::info!(
         job_id = %job_id,
-        model = ?req.model,
+        use_case = ?req.use_case,
         input = ?req.input,
         timeout_secs = ?req.timeout_secs,
         "POST /api/v1/jobs - accepted"
@@ -199,7 +207,7 @@ pub async fn get_job(
 
     Ok(Json(JobStatusResponse {
         job_id: id,
-        model: workload_type,
+        use_case: workload_type,
         mode: MeasurementMode::default(),
         repetitions,
         status,
@@ -213,6 +221,20 @@ pub async fn get_job(
         metrics: metrics.unwrap_or_default(),
         output: None,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/version
+// ---------------------------------------------------------------------------
+
+pub async fn get_version(State(state): State<AppState>) -> Json<VersionResponse> {
+    Json(VersionResponse {
+        api_version: "1.0".to_string(),
+        runner_version: state.runner_version.clone(),
+        target_id: state.target_id.clone(),
+        os: state.os.clone(),
+        toolchain_versions: state.toolchain_versions.clone(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -294,11 +316,11 @@ fn scan_docs_dir(dir: &std::path::Path) -> anyhow::Result<DocsResponse> {
 
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("cannot read docs directory: {}", dir.display()))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .collect();
 
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let path = entry.path();
@@ -387,11 +409,16 @@ mod tests {
             executor: Arc::new(StubExecutor),
             job_semaphore: Arc::new(Semaphore::new(1)),
             docs_dir,
+            runner_version: "0.0.0-test".to_string(),
+            os: "linux".to_string(),
+            target_id: "test-target".to_string(),
+            toolchain_versions: std::collections::HashMap::new(),
         };
         Router::new()
             .route("/api/v1/jobs", post(create_job))
             .route("/api/v1/jobs/{job_id}", get(get_job))
             .route("/api/v1/docs", get(get_docs))
+            .route("/api/v1/version", get(get_version))
             .with_state(state)
     }
 
@@ -494,7 +521,7 @@ mod tests {
     #[tokio::test]
     async fn post_job_accepted_returns_202() {
         let app = test_app(None);
-        let body = serde_json::json!({ "model": "image_classification" });
+        let body = serde_json::json!({ "use_case": "image_classification" });
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/api/v1/jobs")
@@ -517,6 +544,10 @@ mod tests {
             executor: Arc::new(StubExecutor),
             job_semaphore: Arc::new(Semaphore::new(1)),
             docs_dir: None,
+            runner_version: "0.0.0-test".to_string(),
+            os: "linux".to_string(),
+            target_id: "test-target".to_string(),
+            toolchain_versions: std::collections::HashMap::new(),
         };
         let app = Router::new()
             .route("/api/v1/jobs", post(create_job))
@@ -524,7 +555,7 @@ mod tests {
             .with_state(state);
 
         // Submit a job and capture the job_id.
-        let body = serde_json::json!({ "model": "regression" });
+        let body = serde_json::json!({ "use_case": "regression" });
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/api/v1/jobs")
@@ -544,7 +575,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["job_id"], job_id);
-        assert_eq!(json["model"], "regression");
+        assert_eq!(json["use_case"], "regression");
     }
 
     #[test]
@@ -620,5 +651,62 @@ mod tests {
         let result = scan_docs_dir(dir.path()).unwrap();
         assert_eq!(result.documents[0].filename, "a-first.sdoc");
         assert_eq!(result.documents[1].filename, "z-last.sdoc");
+    }
+
+    // ---- GET /api/v1/version ------------------------------------------------
+
+    #[tokio::test]
+    async fn get_version_returns_200_with_required_fields() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/version")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert!(json["api_version"].as_str().is_some(), "api_version must be present");
+        assert!(json["runner_version"].as_str().is_some(), "runner_version must be present");
+        assert!(json["target_id"].as_str().is_some(), "target_id must be present");
+        assert!(json["os"].as_str().is_some(), "os must be present");
+        assert!(json["toolchain_versions"].is_object(), "toolchain_versions must be an object");
+    }
+
+    #[tokio::test]
+    async fn get_version_api_version_is_1_0() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/version")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["api_version"], "1.0");
+    }
+
+    #[tokio::test]
+    async fn get_version_runner_version_matches_stub() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/version")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        // The test_app uses "0.0.0-test" as the runner_version.
+        assert_eq!(json["runner_version"], "0.0.0-test");
+    }
+
+    #[tokio::test]
+    async fn get_version_target_id_and_os_from_state() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/version")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["target_id"], "test-target");
+        assert_eq!(json["os"], "linux");
     }
 }

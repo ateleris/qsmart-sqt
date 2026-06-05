@@ -26,6 +26,11 @@ pub struct ProcessOutput {
 /// When `command_override` is set the override binary is spawned with
 /// `extra_args` followed by `target.binary` as its final argument, e.g.
 /// `/usr/bin/time -v /path/to/binary`.
+///
+/// # Errors
+///
+/// Returns an error if the target platform is remote, if the working directory
+/// cannot be created, or if spawning the process fails.
 pub fn run_process(
     target: &Target,
     command_override: Option<&str>,
@@ -90,7 +95,10 @@ pub fn run_process(
 }
 
 /// Check whether a tool is available on PATH by trying to spawn `tool --version`.
-/// Returns `Err` with a clear message if the binary is not found.
+///
+/// # Errors
+///
+/// Returns an error if the binary is not found on PATH.
 pub fn check_tool(name: &str) -> Result<()> {
     match Command::new(name)
         .arg("--version")

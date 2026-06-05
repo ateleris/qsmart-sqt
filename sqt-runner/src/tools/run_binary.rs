@@ -68,10 +68,10 @@ pub fn collect(
         .collect();
 
     // If input_mode is Env, set the variable to the input path
-    if let InputMode::Env(ref var) = binary_config.input_mode {
-        if let Some(inp) = input {
-            env.push((var.clone(), inp.to_string()));
-        }
+    if let InputMode::Env(ref var) = binary_config.input_mode
+        && let Some(inp) = input
+    {
+        env.push((var.clone(), inp.to_string()));
     }
 
     let spec = DockerRun {

@@ -8,12 +8,22 @@ pub struct MetricRegistry {
     collectors: HashMap<String, Box<dyn MetricCollector>>,
 }
 
+impl Default for MetricRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricRegistry {
     pub fn new() -> Self {
         Self { collectors: HashMap::new() }
     }
 
-    /// Register a collector.  Panics on duplicate name (safety-critical tool).
+    /// Register a collector.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a collector with the same name has already been registered.
     pub fn register_boxed(&mut self, name: impl Into<String>, collector: Box<dyn MetricCollector>) {
         let name = name.into();
         assert!(!self.collectors.contains_key(&name), "duplicate collector registration: '{name}'");

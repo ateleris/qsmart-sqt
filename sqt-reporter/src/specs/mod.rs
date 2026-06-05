@@ -1,5 +1,8 @@
 mod example;
 mod example2;
+pub mod loader;
+
+use std::collections::HashMap;
 
 use sqt_types::WorkloadType;
 use crate::constraint::{Constraint, ConstraintOutcome};
@@ -23,17 +26,63 @@ pub struct SpecFactory {
 
 inventory::collect!(SpecFactory);
 
+/// Three-state outcome for a spec: pass, fail, or infrastructure error.
+///
+/// `InfraError` means the Runner failed to execute the job (network failure,
+/// internal server error, job timeout on the runner side). It is distinct from
+/// a constraint `Fail`, which means the binary-under-test did not meet its
+/// performance requirement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutcomeKind {
+    Pass,
+    Fail,
+    InfraError,
+}
+
 #[derive(Debug, Clone)]
 pub struct SpecResult {
     pub spec: TestSpec,
     pub outcomes: Vec<ConstraintOutcome>,
+    pub outcome: OutcomeKind,
+    /// Backward-compat helper: `true` only for `OutcomeKind::Pass`.
     pub passed: bool,
 }
 
 impl SpecResult {
+    /// Construct a `SpecResult` from evaluated constraint outcomes.
+    ///
+    /// An empty `outcomes` slice always produces `OutcomeKind::Fail` (vacuous
+    /// pass prevention).  All outcomes passing → `Pass`.  Any failure → `Fail`.
     pub fn new(spec: TestSpec, outcomes: Vec<ConstraintOutcome>) -> Self {
-        let passed = !outcomes.is_empty() && outcomes.iter().all(|o| o.passed);
-        Self { spec, outcomes, passed }
+        let kind = if !outcomes.is_empty() && outcomes.iter().all(|o| o.passed) {
+            OutcomeKind::Pass
+        } else {
+            OutcomeKind::Fail
+        };
+        let passed = kind == OutcomeKind::Pass;
+        Self { spec, outcomes, outcome: kind, passed }
+    }
+
+    /// Construct a synthetic `SpecResult` representing a Runner infrastructure
+    /// error (e.g. network failure, job timeout, internal server error).
+    ///
+    /// The single outcome's `evidence` map carries the structured error fields
+    /// from the Runner's `ErrorResponse` so they surface in both the terminal
+    /// summary and the JSON report.
+    pub fn infra_error(spec: TestSpec, message: String, evidence: HashMap<String, String>) -> Self {
+        let outcome = ConstraintOutcome {
+            passed: false,
+            actual: f64::NAN,
+            expected: f64::NAN,
+            message,
+            evidence,
+        };
+        Self {
+            spec,
+            outcomes: vec![outcome],
+            outcome: OutcomeKind::InfraError,
+            passed: false,
+        }
     }
 }
 
@@ -42,6 +91,8 @@ pub struct RunResult {
     pub results: Vec<SpecResult>,
     pub timestamp: String,
     pub config_version: String,
+    /// `true` if the run was cut short by SIGTERM or Ctrl-C.
+    pub interrupted: bool,
 }
 
 /// Collect all registered specs via inventory.
@@ -105,12 +156,40 @@ mod tests {
     fn spec_result_derives_passed_from_outcomes() {
         let result = SpecResult::new(make_spec(), vec![passing_outcome(), passing_outcome()]);
         assert!(result.passed);
+        assert_eq!(result.outcome, OutcomeKind::Pass);
     }
 
     #[test]
     fn spec_result_fails_if_any_outcome_fails() {
         let result = SpecResult::new(make_spec(), vec![passing_outcome(), failing_outcome()]);
         assert!(!result.passed);
+        assert_eq!(result.outcome, OutcomeKind::Fail);
+    }
+
+    #[test]
+    fn spec_result_infra_error_is_not_passed() {
+        let result = SpecResult::infra_error(
+            make_spec(),
+            "runner crashed".to_string(),
+            std::collections::HashMap::new(),
+        );
+        assert!(!result.passed);
+        assert_eq!(result.outcome, OutcomeKind::InfraError);
+        assert_eq!(result.outcomes.len(), 1);
+        assert!(result.outcomes[0].message.contains("runner crashed"));
+    }
+
+    #[test]
+    fn spec_result_infra_error_carries_evidence() {
+        let mut evidence = std::collections::HashMap::new();
+        evidence.insert("error_code".to_string(), "RUNNER_TIMEOUT".to_string());
+        evidence.insert("error_message".to_string(), "job timed out".to_string());
+        let result = SpecResult::infra_error(make_spec(), "job timed out".to_string(), evidence);
+        assert_eq!(result.outcome, OutcomeKind::InfraError);
+        assert_eq!(
+            result.outcomes[0].evidence.get("error_code").map(String::as_str),
+            Some("RUNNER_TIMEOUT")
+        );
     }
 
     #[test]

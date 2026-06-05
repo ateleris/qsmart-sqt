@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 
-/// Query the SonarQube API for critical and major issues.
+/// Query the `SonarQube` API for critical and major issues.
 ///
 /// Uses the `api/issues/search` endpoint with component key derived from
 /// the project name (typically the binary name).

@@ -29,7 +29,7 @@ pub mod docker;
 ///
 /// 2. **Execute** - the binary (pre-built or freshly compiled) is invoked and
 ///    metrics are collected through the configured tool chain (Valgrind,
-///    lcov, cppcheck, SonarQube, ...).
+///    lcov, cppcheck, `SonarQube`, ...).
 pub trait JobExecutor: Send + Sync {
     /// Run a single job and return the collected metrics.
     ///

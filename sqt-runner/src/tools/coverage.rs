@@ -60,10 +60,10 @@ fn parse_line_coverage(text: &str) -> Result<f64> {
             // lines......: 85.5% (171 of 200 lines)
             if let Some(pct_start) = trimmed.find(':') {
                 let after_colon = trimmed[pct_start + 1..].trim();
-                if let Some(pct_end) = after_colon.find('%') {
-                    if let Ok(val) = after_colon[..pct_end].trim().parse::<f64>() {
-                        return Ok(val);
-                    }
+                if let Some(pct_end) = after_colon.find('%')
+                    && let Ok(val) = after_colon[..pct_end].trim().parse::<f64>()
+                {
+                    return Ok(val);
                 }
             }
         }

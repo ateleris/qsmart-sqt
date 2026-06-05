@@ -70,10 +70,10 @@ fn parse_leaked_bytes(xml: &str) -> f64 {
     // Simple approach: sum all <leakedbytes>N</leakedbytes> values
     let mut total: f64 = 0.0;
     for segment in xml.split("<leakedbytes>").skip(1) {
-        if let Some(end) = segment.find("</leakedbytes>") {
-            if let Ok(val) = segment[..end].trim().parse::<f64>() {
-                total += val;
-            }
+        if let Some(end) = segment.find("</leakedbytes>")
+            && let Ok(val) = segment[..end].trim().parse::<f64>()
+        {
+            total += val;
         }
     }
     total

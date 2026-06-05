@@ -50,6 +50,7 @@ impl MetricValue {
         Self { value, unit: unit.into(), evidence: HashMap::new() }
     }
 
+    #[must_use]
     pub fn with_evidence(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.evidence.insert(key.into(), value.into());
         self
@@ -59,6 +60,9 @@ impl MetricValue {
 #[allow(dead_code)]
 pub trait MetricCollector: Send + Sync {
     fn name(&self) -> &'static str;
+    /// # Errors
+    ///
+    /// Returns an error if the underlying tool fails to run or its output cannot be parsed.
     fn collect(&self, target: &Target, config: &serde_yaml::Value) -> anyhow::Result<MetricValue>;
 }
 

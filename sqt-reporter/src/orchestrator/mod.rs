@@ -1,19 +1,27 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use futures::future::try_join_all;
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
-use sqt_types::{Instrumentation, JobRequest, MeasurementMode, WorkloadType};
+use sqt_types::{
+    Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
+};
 use crate::api::ApiClient;
 use crate::config::SqtConfig;
 use crate::constraint::ConstraintOutcome;
 use crate::constraint::evaluator::evaluate;
+use crate::report::{ConfigSummary, RunProvenance};
 use crate::specs::{RunResult, SpecResult, TestSpec};
+
+/// The API major version the Reporter was compiled against.
+const SUPPORTED_API_MAJOR: &str = "1";
 
 type GroupKey = (WorkloadType, Option<String>);
 
-/// Build the grouping key for a spec: (workload_type, input_path).
+/// Build the grouping key for a spec: (`workload_type`, `input_path`).
 fn group_key(spec: &TestSpec) -> GroupKey {
     (
         spec.workload_type.clone(),
@@ -21,16 +29,16 @@ fn group_key(spec: &TestSpec) -> GroupKey {
     )
 }
 
-/// Build a `JobRequest` for a group of specs that share the same (workload_type, input).
+/// Build a `JobRequest` for a group of specs that share the same (`workload_type`, `input`).
 fn build_job_request(
     workload_type: &WorkloadType,
-    input: &Option<String>,
+    input: Option<&String>,
     specs: &[&TestSpec],
 ) -> JobRequest {
     let max_timeout = specs.iter().map(|s| s.target.timeout.as_secs()).max().unwrap_or(30);
     JobRequest {
-        model: workload_type.clone(),
-        input: input.as_ref().map(|s| serde_json::Value::String(s.clone())),
+        use_case: workload_type.clone(),
+        input: input.map(|s| serde_json::Value::String(s.clone())),
         repetitions: 1,
         instrumentation: Instrumentation::default(),
         mode: MeasurementMode::default(),
@@ -51,77 +59,274 @@ fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
     }
 }
 
+/// Build the evidence map for an `INFRA_ERROR` from a plain error message.
+fn infra_error_evidence(message: &str, job_id: Option<&str>) -> HashMap<String, String> {
+    let mut evidence = HashMap::new();
+    evidence.insert("error_message".to_string(), message.to_string());
+    if let Some(id) = job_id {
+        evidence.insert("job_id".to_string(), id.to_string());
+    }
+    evidence
+}
+
+/// Build a `RunProvenance` from the runner version response and config.
+fn build_provenance(version: &VersionResponse, config: &SqtConfig) -> RunProvenance {
+    RunProvenance {
+        sqt_version: env!("CARGO_PKG_VERSION").to_string(),
+        runner_version: version.runner_version.clone(),
+        runner_target_id: version.target_id.clone(),
+        runner_os: version.os.clone(),
+        runner_toolchain_versions: version.toolchain_versions.clone(),
+        config_summary: ConfigSummary {
+            runner_url: config.runner.url.clone(),
+            token_env: config.runner.token_env.clone(),
+            max_concurrent_jobs: config.runner.max_concurrent_jobs,
+        },
+    }
+}
+
 /// Run all specs against the single-endpoint API.
 ///
-/// Groups specs by (workload_type, input), submits one job per group,
+/// Groups specs by (`workload_type`, input), submits one job per group,
 /// waits for all results, then evaluates each spec's constraints.
+///
+/// On SIGTERM / Ctrl-C the `shutdown` token is cancelled.  In-flight polls
+/// finish (or time out), partial results are collected, and the returned
+/// `RunResult` will have `interrupted: true`.
+///
+/// Returns `(RunResult, RunProvenance)` so the caller can build a report
+/// with full provenance information.
 ///
 /// # Errors
 ///
-/// Returns an error if job submission or polling fails.
-pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> Result<RunResult> {
-    if specs.is_empty() {
-        return Ok(RunResult {
-            results: vec![],
-            timestamp: now_iso8601(),
-            config_version: config.project.version.clone(),
-        });
+/// Returns an error only for unrecoverable setup failures (version check,
+/// job submission I/O).  Individual job failures are recorded as
+/// `OutcomeKind::InfraError` in the spec results rather than propagated.
+#[allow(clippy::too_many_lines)]
+pub async fn run(
+    specs: &[TestSpec],
+    client: &ApiClient,
+    config: &SqtConfig,
+    shutdown: CancellationToken,
+) -> Result<(RunResult, RunProvenance)> {
+    // -----------------------------------------------------------------------
+    // Session start: version check (SRS-IF-008)
+    // -----------------------------------------------------------------------
+    tracing::info!(
+        reporter_version = env!("CARGO_PKG_VERSION"),
+        runner_url = %config.runner.url,
+        "SQT Reporter {} -- checking Runner at {}",
+        env!("CARGO_PKG_VERSION"),
+        config.runner.url,
+    );
+
+    let version = client.get_version().await?;
+    tracing::info!(
+        runner_version = %version.runner_version,
+        api_version = %version.api_version,
+        target_id = %version.target_id,
+        "Runner connected",
+    );
+
+    let runner_major = version.api_version.split('.').next().unwrap_or("0");
+    if runner_major != SUPPORTED_API_MAJOR {
+        anyhow::bail!(
+            "Runner API version {} incompatible with supported {}.x",
+            version.api_version,
+            SUPPORTED_API_MAJOR,
+        );
     }
 
+    tracing::info!(
+        "SQT Reporter {} -- Runner {} at {}",
+        env!("CARGO_PKG_VERSION"),
+        version.runner_version,
+        config.runner.url,
+    );
+
+    let provenance = build_provenance(&version, config);
+
+    if specs.is_empty() {
+        return Ok((
+            RunResult {
+                results: vec![],
+                timestamp: now_iso8601(),
+                config_version: config.project.version.clone(),
+                interrupted: false,
+            },
+            provenance,
+        ));
+    }
+
+    tracing::info!(count = specs.len(), "Specs loaded");
+
+    // -----------------------------------------------------------------------
     // Group specs by (workload_type, input).
+    // -----------------------------------------------------------------------
     let mut groups: HashMap<GroupKey, Vec<&TestSpec>> = HashMap::new();
     for spec in specs {
         groups.entry(group_key(spec)).or_default().push(spec);
     }
 
+    // -----------------------------------------------------------------------
+    // Concurrency semaphore (SRS-PERF-002)
+    // -----------------------------------------------------------------------
+    let semaphore = Arc::new(Semaphore::new(config.runner.max_concurrent_jobs as usize));
+
     // Submit one job per group, tracking the per-group server timeout.
-    tracing::info!("Submitting {} job(s) to {}", groups.len(), config.api.url);
+    tracing::info!("Submitting {} job(s) to {}", groups.len(), config.runner.url);
+    let total = groups.len();
     let mut job_ids: HashMap<GroupKey, (String, u64)> = HashMap::new();
-    for ((workload_type, input), group) in &groups {
-        let request = build_job_request(workload_type, input, group);
+    for (i, ((workload_type, input), group)) in groups.iter().enumerate() {
+        let request = build_job_request(workload_type, input.as_ref(), group);
         let timeout_secs = request.timeout_secs.unwrap_or(30);
+
+        // Acquire semaphore slot before submission; release immediately after.
+        let permit = semaphore.acquire().await?;
         let job_id = client.submit_job(&request).await?;
-        tracing::info!(job_id, workload = ?workload_type, input = ?input, "Job accepted");
+        drop(permit);
+
+        tracing::info!(
+            job = i + 1,
+            total,
+            use_case = ?workload_type,
+            input = ?input,
+            job_id = %job_id,
+            "[{}/{}] Submitting use_case={:?} input={:?} -> job_id={}",
+            i + 1,
+            total,
+            workload_type,
+            input,
+            job_id,
+        );
         job_ids.insert((workload_type.clone(), input.clone()), (job_id, timeout_secs));
     }
 
-    // Poll all jobs concurrently. Each job gets server_timeout + 60 s buffer.
-    let wait_futures: Vec<_> = job_ids
-        .iter()
-        .map(|(key, (job_id, timeout_secs))| {
-            let key = key.clone();
-            let job_id = job_id.clone();
-            let poll_timeout = Duration::from_secs(*timeout_secs + 60);
-            async move {
-                let response = client.wait_for_job(&job_id, poll_timeout).await?;
-                tracing::info!(job_id, status = ?response.status, "Job finished");
-                Ok::<_, anyhow::Error>((key, response))
-            }
-        })
-        .collect();
-    let job_responses: HashMap<GroupKey, _> =
-        try_join_all(wait_futures).await?.into_iter().collect();
+    // -----------------------------------------------------------------------
+    // Poll all jobs, respecting the shutdown token (SRS-OPS-008)
+    // -----------------------------------------------------------------------
+    let mut job_responses: HashMap<GroupKey, Result<sqt_types::JobStatusResponse>> = HashMap::new();
+    let mut interrupted = false;
 
-    // Evaluate constraints for each spec.
+    for (key, (job_id, timeout_secs)) in &job_ids {
+        let poll_timeout = Duration::from_secs(*timeout_secs + 60);
+        let start = Instant::now();
+
+        let result = tokio::select! {
+            res = client.wait_for_job(job_id, poll_timeout) => res,
+            () = shutdown.cancelled() => {
+                interrupted = true;
+                Err(anyhow::anyhow!("shutdown signal received while waiting for job {job_id}"))
+            }
+        };
+
+        match &result {
+            Ok(resp) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                tracing::info!(
+                    job_id = %job_id,
+                    status = ?resp.status,
+                    "[job_id={job_id}] {:?} in {elapsed:.1}s",
+                    resp.status,
+                );
+            }
+            Err(e) => {
+                tracing::warn!(job_id = %job_id, error = %e, "Job polling failed");
+            }
+        }
+
+        job_responses.insert(key.clone(), result);
+
+        if interrupted {
+            break;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Evaluate constraints for each spec (SRS-OPS-006: INFRA_ERROR)
+    // -----------------------------------------------------------------------
     let results: Vec<SpecResult> = specs
         .iter()
         .map(|spec| {
             let key = group_key(spec);
+
+            // Check if we even got a response for this group.
+            let response_result = job_responses.get(&key);
+            let Some(response_result) = response_result else {
+                // No response recorded -- job was skipped due to shutdown.
+                return SpecResult::infra_error(
+                    spec.clone(),
+                    "job was not submitted or polled (interrupted)".to_string(),
+                    HashMap::new(),
+                );
+            };
+
+            // Handle transport / polling errors.
+            let response = match response_result {
+                Err(e) => {
+                    let mut evidence = infra_error_evidence(
+                        &e.to_string(),
+                        job_ids.get(&key).map(|(id, _)| id.as_str()),
+                    );
+                    evidence.insert("error_code".to_string(), "TRANSPORT_ERROR".to_string());
+                    return SpecResult::infra_error(spec.clone(), e.to_string(), evidence);
+                }
+                Ok(r) => r,
+            };
+
+            // Handle server-side job failure (SRS-OPS-006, SRS-REL-003).
+            if response.status == JobStatus::Failed {
+                let error_msg = response
+                    .error
+                    .as_deref()
+                    .unwrap_or("job failed with no error details")
+                    .to_string();
+                let mut evidence = HashMap::new();
+                evidence.insert("error_code".to_string(), "RUNNER_JOB_FAILED".to_string());
+                evidence.insert("error_message".to_string(), error_msg.clone());
+                if let Some((id, _)) = job_ids.get(&key) {
+                    evidence.insert("job_id".to_string(), id.clone());
+                }
+                let msg = format!("RUNNER_JOB_FAILED: {error_msg}");
+                return SpecResult::infra_error(spec.clone(), msg, evidence);
+            }
+
+            // Capture result_consistent from the job output (SRS-REL-004).
+            // Records true/false when the output block is present, or "null" when absent.
+            let result_consistent_str =
+                match response.output.as_ref().map(|o| o.result_consistent) {
+                    Some(rc) => rc.to_string(),
+                    None => "null".to_string(),
+                };
+
+            // Normal path: evaluate constraints.
             let outcomes: Vec<ConstraintOutcome> = spec
                 .constraints
                 .iter()
                 .map(|constraint| {
                     let name = constraint.metric_name();
+                    tracing::info!(
+                        uid = %spec.requirement_uid,
+                        "Evaluating {} constraints for {}",
+                        spec.constraints.len(),
+                        spec.requirement_uid,
+                    );
                     if !constraint.is_server_side() {
                         return failing_outcome(name, "not yet implemented (T-054)");
                     }
-                    let maybe_value = job_responses.get(&key).and_then(|r| r.metrics.get(name));
+                    let maybe_value = response.metrics.get(name);
                     match maybe_value {
                         Some(value) => {
                             let mut outcome = evaluate(value, constraint);
                             if let Some((id, _)) = job_ids.get(&key) {
                                 outcome.evidence.insert("job_id".into(), id.clone());
                             }
+                            // Record result_consistent in every outcome's evidence
+                            // (SRS-REL-004): null/absent -> "null", true/false as string.
+                            outcome.evidence.insert(
+                                "result_consistent".into(),
+                                result_consistent_str.clone(),
+                            );
                             outcome
                         }
                         None => failing_outcome(name, "metric unavailable"),
@@ -132,11 +337,15 @@ pub async fn run(specs: &[TestSpec], client: &ApiClient, config: &SqtConfig) -> 
         })
         .collect();
 
-    Ok(RunResult {
-        results,
-        timestamp: now_iso8601(),
-        config_version: config.project.version.clone(),
-    })
+    Ok((
+        RunResult {
+            results,
+            timestamp: now_iso8601(),
+            config_version: config.project.version.clone(),
+            interrupted,
+        },
+        provenance,
+    ))
 }
 
 fn now_iso8601() -> String {
@@ -156,7 +365,7 @@ mod tests {
     use crate::constraint::{Constraint, Op};
     use crate::constraint::evaluator::evaluate;
     use crate::metrics::{Platform, Target};
-    use crate::specs::TestSpec;
+    use crate::specs::{OutcomeKind, SpecResult, TestSpec};
 
     use super::{build_job_request, failing_outcome, group_key};
 
@@ -212,13 +421,13 @@ mod tests {
         let spec60 = make_spec(WorkloadType::ImageClassification, None, 60);
         let spec45 = make_spec(WorkloadType::ImageClassification, None, 45);
         let refs: Vec<&TestSpec> = vec![&spec30, &spec60, &spec45];
-        let request = build_job_request(&WorkloadType::ImageClassification, &None, &refs);
+        let request = build_job_request(&WorkloadType::ImageClassification, None, &refs);
         assert_eq!(request.timeout_secs, Some(60));
     }
 
     #[test]
     fn null_metric_maps_to_failing_outcome() {
-        // AD-013 / ARCH §5.5.2: null metric → failing outcome, not an error.
+        // AD-013 / ARCH 5.5.2: null metric -> failing outcome, not an error.
         let outcome = failing_outcome("time.avg_ms", "metric unavailable");
         assert!(!outcome.passed);
         assert!(outcome.actual.is_nan(), "actual must be NaN when metric unavailable");
@@ -264,8 +473,8 @@ mod tests {
         // The workload type from the group key must appear in the request body.
         let spec = make_spec(WorkloadType::ObjectDetection, None, 30);
         let refs = vec![&spec];
-        let req = build_job_request(&WorkloadType::ObjectDetection, &None, &refs);
-        assert_eq!(req.model, WorkloadType::ObjectDetection);
+        let req = build_job_request(&WorkloadType::ObjectDetection, None, &refs);
+        assert_eq!(req.use_case, WorkloadType::ObjectDetection);
     }
 
     #[test]
@@ -274,7 +483,7 @@ mod tests {
         let spec = make_spec(WorkloadType::Regression, Some("data.csv"), 30);
         let refs = vec![&spec];
         let input = Some("data.csv".to_string());
-        let req = build_job_request(&WorkloadType::Regression, &input, &refs);
+        let req = build_job_request(&WorkloadType::Regression, input.as_ref(), &refs);
         assert_eq!(
             req.input,
             Some(serde_json::Value::String("data.csv".into())),
@@ -287,7 +496,7 @@ mod tests {
     #[test]
     fn ml_constraint_produces_t054_failing_outcome() {
         // T-054: ml.* metrics are client-side. The orchestrator must not look them
-        // up in JobMetrics (they're absent) — instead it must produce a failing
+        // up in JobMetrics (they're absent) -- instead it must produce a failing
         // outcome whose message names T-054, distinguishing "not implemented" from
         // "metric unavailable" (a server-side tool that was disabled).
         let outcome = failing_outcome("ml.accuracy", "not yet implemented (T-054)");
@@ -296,4 +505,29 @@ mod tests {
         assert!(outcome.message.contains("T-054"), "outcome must reference T-054");
     }
 
+    // --- INFRA_ERROR does not propagate as Err (SRS-OPS-006) -----------------
+
+    #[test]
+    fn infra_error_spec_result_does_not_pass() {
+        // T-074: INFRA_ERROR must be recorded as a non-passing SpecResult,
+        // not as an Err that aborts the whole run.
+        let spec = make_spec(WorkloadType::ImageClassification, None, 30);
+        let result = SpecResult::infra_error(
+            spec,
+            "RUNNER_ERROR: internal server error".to_string(),
+            std::collections::HashMap::new(),
+        );
+        assert!(!result.passed, "INFRA_ERROR must not pass");
+        assert_eq!(result.outcome, OutcomeKind::InfraError, "outcome must be InfraError");
+        assert_eq!(result.outcomes.len(), 1, "must carry exactly one synthetic outcome");
+    }
+
+    #[test]
+    fn zero_constraint_spec_produces_fail_not_pass() {
+        // Vacuous-pass prevention: a spec with no constraints must never PASS.
+        let spec = make_spec(WorkloadType::ImageClassification, None, 30);
+        let result = SpecResult::new(spec, vec![]);
+        assert!(!result.passed, "zero-constraint spec must fail (vacuous pass prevention)");
+        assert_eq!(result.outcome, OutcomeKind::Fail);
+    }
 }

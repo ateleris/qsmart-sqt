@@ -58,7 +58,7 @@ impl JobStatus {
 /// Body for `POST /api/v1/jobs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRequest {
-    pub model: WorkloadType,
+    pub use_case: WorkloadType,
     /// Workload-specific input data (images, tabular rows, time series, or
     /// dataset reference). `None` when the server has a default dataset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,7 +256,7 @@ pub struct JobOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobStatusResponse {
     pub job_id: String,
-    pub model: WorkloadType,
+    pub use_case: WorkloadType,
     pub mode: MeasurementMode,
     pub repetitions: u32,
     pub status: JobStatus,
@@ -278,6 +278,25 @@ pub struct JobStatusResponse {
     pub metrics: JobMetrics,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<JobOutput>,
+}
+
+// ---------------------------------------------------------------------------
+// Version response
+// ---------------------------------------------------------------------------
+
+/// Response body for `GET /api/v1/version`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionResponse {
+    /// API major.minor version string, e.g. `"1.0"`.
+    pub api_version: String,
+    /// Crate version of the runner binary (from `CARGO_PKG_VERSION`).
+    pub runner_version: String,
+    /// Hardware target identifier configured in the runner, e.g. `"gr740-leon4"`.
+    pub target_id: String,
+    /// Operating system name, e.g. `"linux"` or `"macos"`.
+    pub os: String,
+    /// Versions of key tools available on the runner, e.g. `{"onnxruntime": "1.17"}`.
+    pub toolchain_versions: std::collections::HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +378,7 @@ mod tests {
     fn job_status_response_deserializes() {
         let json = r#"{
             "job_id": "job-abc123",
-            "model": "image_classification",
+            "use_case": "image_classification",
             "mode": "latency",
             "repetitions": 10,
             "status": "complete",
@@ -374,7 +393,7 @@ mod tests {
         }"#;
         let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.job_id, "job-abc123");
-        assert_eq!(resp.model, WorkloadType::ImageClassification);
+        assert_eq!(resp.use_case, WorkloadType::ImageClassification);
         assert_eq!(resp.status, JobStatus::Complete);
         assert!(resp.status.is_terminal());
         assert_eq!(resp.metrics.return_code, Some(0));
@@ -387,7 +406,7 @@ mod tests {
     fn job_metrics_all_null_deserializes() {
         let json = r#"{
             "job_id": "job-xyz",
-            "model": "regression",
+            "use_case": "regression",
             "mode": "latency",
             "repetitions": 1,
             "status": "running",
@@ -511,9 +530,9 @@ mod tests {
 
     #[test]
     fn job_request_defaults_are_spec_compliant() {
-        // ARCH §5.5.1: when only model is given, repetitions=1,
+        // ARCH §5.5.1: when only use_case is given, repetitions=1,
         // instrumentation=none, mode=latency must be assumed.
-        let json = r#"{"model":"regression"}"#;
+        let json = r#"{"use_case":"regression"}"#;
         let req: JobRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.repetitions, 1, "default repetitions must be 1");
         assert_eq!(req.instrumentation, Instrumentation::None, "default instrumentation must be none");
@@ -528,7 +547,7 @@ mod tests {
         // ARCH §5.5.2 example: hardware descriptor with GR740 fields.
         let json = r#"{
             "job_id": "job-hw-test",
-            "model": "image_classification",
+            "use_case": "image_classification",
             "mode": "latency",
             "repetitions": 10,
             "status": "complete",
@@ -561,7 +580,7 @@ mod tests {
         // produced bit-identical results.
         let json = r#"{
             "job_id": "job-out",
-            "model": "classification",
+            "use_case": "classification",
             "mode": "latency",
             "repetitions": 5,
             "status": "complete",
@@ -585,7 +604,7 @@ mod tests {
         // ARCH §5.5.2: a failed job has an `error` field with a description.
         let json = r#"{
             "job_id": "job-fail",
-            "model": "regression",
+            "use_case": "regression",
             "mode": "latency",
             "repetitions": 1,
             "status": "failed",
@@ -608,7 +627,7 @@ mod tests {
         // Explicitly null fields must deserialize to None, not error.
         let json = r#"{
             "job_id": "job-partial",
-            "model": "image_classification",
+            "use_case": "image_classification",
             "mode": "latency",
             "repetitions": 1,
             "status": "complete",

@@ -5,20 +5,15 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// How input files are passed to the binary under test.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum InputMode {
     /// Pipe input file contents to stdin (default).
+    #[default]
     Stdin,
     /// Pass input file path as the last CLI argument.
     Arg,
     /// Set an environment variable to the input file path.
     Env(String),
-}
-
-impl Default for InputMode {
-    fn default() -> Self {
-        Self::Stdin
-    }
 }
 
 impl<'de> Deserialize<'de> for InputMode {
@@ -77,7 +72,7 @@ pub struct ToolsConfig {
     /// Coverage configuration (optional; enables `coverage.line_pct`).
     pub coverage: Option<CoverageToolConfig>,
 
-    /// SonarQube configuration (optional; enables `sonar.*` metrics).
+    /// `SonarQube` configuration (optional; enables `sonar.*` metrics).
     pub sonarqube: Option<SonarQubeToolConfig>,
 
     /// Static analysis configuration (optional; enables `static.warnings`).
@@ -101,7 +96,7 @@ pub struct CoverageToolConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SonarQubeToolConfig {
-    /// SonarQube server URL.
+    /// `SonarQube` server URL.
     pub url: String,
 
     /// Name of the environment variable holding the authentication token.
@@ -170,6 +165,24 @@ pub struct DocsConfig {
     pub directory: PathBuf,
 }
 
+/// Hardware identity configuration for the `GET /api/v1/version` endpoint.
+///
+/// Distinct from `sqt_types::HardwareInfo` (which describes hardware for
+/// `JobStatusResponse`). This section carries identity and toolchain metadata
+/// that the runner reports via the version endpoint.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HardwareConfig {
+    /// Short identifier for the target hardware, e.g. `"gr740-leon4"`.
+    /// Used in `VersionResponse.target_id`.
+    #[serde(default)]
+    pub target_id: String,
+
+    /// Versions of key tools/runtimes available on the runner,
+    /// e.g. `{"onnxruntime": "1.17"}`. Used in `VersionResponse.toolchain_versions`.
+    #[serde(default)]
+    pub toolchain_versions: std::collections::HashMap<String, String>,
+}
+
 /// Top-level server configuration loaded from a YAML file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -198,6 +211,10 @@ pub struct ServerConfig {
     /// record which device produced each result.
     #[serde(default)]
     pub hardware: sqt_types::HardwareInfo,
+
+    /// Runner identity and toolchain metadata for `GET /api/v1/version`.
+    #[serde(default)]
+    pub runner_hardware: HardwareConfig,
 
     /// Qualification documents served via `GET /api/v1/docs`.
     ///
@@ -237,10 +254,8 @@ impl ServerConfig {
         }
 
         // Resolve docs directory path to absolute.
-        if let Some(ref mut docs) = config.docs {
-            if docs.directory.is_relative() {
-                docs.directory = cwd.join(&docs.directory);
-            }
+        if let Some(ref mut docs) = config.docs && docs.directory.is_relative() {
+            docs.directory = cwd.join(&docs.directory);
         }
 
         // Resolve build paths to absolute (Docker bind mounts require absolute paths).
