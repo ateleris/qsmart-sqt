@@ -1,31 +1,15 @@
 #!/usr/bin/env bash
 # Runs inside the ci build image (ci/Dockerfile); cwd is the repo checkout.
-# Gates, in order: rustfmt --check, clippy -D warnings, then tests + coverage.
-# Produces, in the workspace:
+# Tests with coverage (rustfmt and clippy are separate CI jobs). Produces,
+# in the workspace:
 #   target/nextest/ci/junit.xml  -> published by dorny/test-reporter
 #   coverage.json                -> raw llvm-cov report
 #   coverage-summary.md          -> appended to the GitHub job summary
-# All phases run even if an earlier one fails, so every check reports; the
-# script exits non-zero if any gate or test failed (so the workflow fails too).
+# Exits non-zero if any test fails (so the workflow fails too).
 set -uo pipefail
 
-rc=0
-
-echo "::group::rustfmt --check"
-cargo fmt --all -- --check || rc=1
-echo "::endgroup::"
-
-# Strict pedantic bar on production code (lib + bins). Test/example targets are
-# intentionally excluded (--all-targets) — they carry pedantic noise (float_cmp,
-# needless_raw_string_hashes, ...) that isn't worth gating on. Tests are still
-# compiled and run by the nextest step below.
-echo "::group::clippy (-D warnings)"
-cargo clippy --workspace -- -D warnings || rc=1
-echo "::endgroup::"
-
-echo "::group::tests + coverage"
-cargo llvm-cov --no-report --workspace nextest --profile ci || rc=1
-echo "::endgroup::"
+cargo llvm-cov --no-report --workspace nextest --profile ci
+status=$?
 
 # Compilation (and nextest's junit) may live in a cached target dir outside the
 # workspace (CARGO_TARGET_DIR). Copy the junit into the workspace so that
@@ -69,4 +53,4 @@ if [ -f coverage.json ]; then
   ' || true
 fi
 
-exit "$rc"
+exit "$status"

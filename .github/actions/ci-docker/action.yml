@@ -1,0 +1,33 @@
+name: Run in CI build image
+description: >
+  Build the ci image on the dind daemon (cached) and run a command inside it,
+  with the workspace shared and persistent cargo + target caches mounted.
+
+inputs:
+  run:
+    description: Command to run inside the build image (cwd = repo checkout).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Cached in dind's storage: an unchanged Dockerfile is an instant hit.
+    - name: Build CI image
+      shell: bash
+      run: docker build -t ats-sqt-ci:latest - < ci/Dockerfile
+
+    - name: Run
+      shell: bash
+      env:
+        RUN: ${{ inputs.run }}
+      run: |
+        docker run --rm \
+          -v "$GITHUB_WORKSPACE":"$GITHUB_WORKSPACE" \
+          -w "$GITHUB_WORKSPACE" \
+          -v sqt-cargo-registry:/usr/local/cargo/registry \
+          -v sqt-cargo-git:/usr/local/cargo/git \
+          -v sqt-target:/cache/target \
+          -e CARGO_TARGET_DIR=/cache/target \
+          -e CARGO_TERM_COLOR=always \
+          ats-sqt-ci:latest \
+          bash -c "$RUN"
