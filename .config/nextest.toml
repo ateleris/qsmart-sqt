@@ -1,0 +1,4 @@
+# JUnit output for the `ci` profile, consumed by dorny/test-reporter in CI.
+# Written to target/nextest/ci/junit.xml when run with `--profile ci`.
+[profile.ci.junit]
+path = "junit.xml"

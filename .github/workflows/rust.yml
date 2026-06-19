@@ -6,54 +6,53 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The build image (ci/Dockerfile), built locally on dind and run against it.
+  BUILD_IMAGE: ats-sqt-ci:latest
 
 jobs:
   build:
     runs-on: self-hosted
+    permissions:
+      contents: read
+      checks: write          # dorny/test-reporter publishes a Check Run
+      pull-requests: write    # ...and annotates the PR diff
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build and test with coverage
-        run: |
-          cargo llvm-cov --workspace --json --output-path coverage.json 2>&1 | tee test_output.txt
-          exit ${PIPESTATUS[0]}
+      # Built on the dind daemon, cached in its persistent storage. No registry:
+      # an unchanged Dockerfile is an instant cache hit; editing it rebuilds.
+      - name: Build CI image
+        run: docker build -t "$BUILD_IMAGE" - < ci/Dockerfile
 
-      - name: Write job summary
+      # The runner stays thin: it launches the toolchain image against its
+      # dind daemon. The workspace is on a volume shared with dind, so the
+      # checkout (and the artifacts written below) are visible to both.
+      - name: Build & test with coverage
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":"$GITHUB_WORKSPACE" \
+            -w "$GITHUB_WORKSPACE" \
+            -e CARGO_TERM_COLOR \
+            "$BUILD_IMAGE" \
+            bash ci/run-tests.sh
+
+      # Expandable per-test pass/fail tree + inline annotations on failing
+      # tests. JS action — runs on the runner via its bundled node.
+      - name: Publish test results
+        uses: dorny/test-reporter@v2
+        if: always()
+        with:
+          name: Tests
+          path: target/nextest/ci/junit.xml
+          reporter: java-junit
+          fail-on-error: true
+
+      - name: Coverage summary
         if: always()
         run: |
-          PASSED=$(grep -E "^test result:" test_output.txt | awk '{sum += $4} END {print sum+0}')
-          FAILED=$(grep -E "^test result:" test_output.txt | awk '{sum += $6} END {print sum+0}')
-
-          if [ -f coverage.json ]; then
-            LINE_PCT=$(node -e "
-              const d = require('./coverage.json');
-              const t = d.data[0].totals.lines;
-              process.stdout.write(t.percent.toFixed(1) + '%');
-            ")
-            LINE_COV=$(node -e "
-              const d = require('./coverage.json');
-              const t = d.data[0].totals.lines;
-              process.stdout.write(t.covered + ' / ' + t.count + ' lines');
-            ")
+          if [ -f coverage-summary.md ]; then
+            cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
           else
-            LINE_PCT="n/a"
-            LINE_COV="n/a"
+            echo "_Coverage summary unavailable._" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-          if [ "$FAILED" = "0" ]; then ICON="✅"; else ICON="❌"; fi
-
-          {
-            echo "## ${ICON} Test Results"
-            echo ""
-            echo "| | Count |"
-            echo "|---|---|"
-            echo "| ✅ Passed | ${PASSED} |"
-            echo "| ❌ Failed | ${FAILED} |"
-            echo ""
-            echo "## 📊 Coverage"
-            echo ""
-            echo "| Metric | Value |"
-            echo "|---|---|"
-            echo "| Lines | ${LINE_PCT} (${LINE_COV}) |"
-          } >> "$GITHUB_STEP_SUMMARY"
