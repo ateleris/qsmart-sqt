@@ -50,7 +50,9 @@ pub async fn preflight(config: &SqtConfig, client: &ApiClient) -> anyhow::Result
         Ok(docs) => {
             let count = docs.documents.len();
             if count == 0 {
-                println!("  [WARN] Docs endpoint returned 0 documents — no StrictDoc sources found");
+                println!(
+                    "  [WARN] Docs endpoint returned 0 documents — no StrictDoc sources found"
+                );
             } else {
                 println!("  [OK]   Docs endpoint returned {count} document(s)");
             }

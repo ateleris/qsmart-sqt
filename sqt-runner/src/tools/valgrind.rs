@@ -34,19 +34,13 @@ pub fn collect(
     command.extend(binary_config.args.iter().cloned());
 
     // Collect environment variables
-    let env: Vec<(String, String)> = binary_config
-        .env
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let env: Vec<(String, String)> =
+        binary_config.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
     let spec = DockerRun {
         image: image.to_string(),
         command,
-        volumes: vec![
-            docker::identity_mount(binary_dir),
-            docker::identity_mount(workspace),
-        ],
+        volumes: vec![docker::identity_mount(binary_dir), docker::identity_mount(workspace)],
         working_dir: Some(binary_dir.display().to_string()),
         timeout,
         env,
@@ -55,8 +49,7 @@ pub fn collect(
     let _output = docker::run_container(&spec).context("valgrind: docker execution failed")?;
 
     // Parse XML output for leaked bytes
-    let xml = std::fs::read_to_string(&xml_path)
-        .context("valgrind: failed to read XML output")?;
+    let xml = std::fs::read_to_string(&xml_path).context("valgrind: failed to read XML output")?;
 
     let leaks = parse_leaked_bytes(&xml);
     Ok(leaks)

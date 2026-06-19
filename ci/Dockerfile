@@ -23,6 +23,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # Coverage & test tooling
-RUN rustup component add llvm-tools-preview \
+RUN rustup component add llvm-tools-preview clippy rustfmt \
     && cargo install cargo-llvm-cov --locked \
     && cargo install cargo-nextest --locked

@@ -64,10 +64,7 @@ pub fn precision_compare(
             _ => false,
         }
     });
-    map.insert(
-        "ml.output_within_tolerance".into(),
-        if all_within { 1.0 } else { 0.0 },
-    );
+    map.insert("ml.output_within_tolerance".into(), if all_within { 1.0 } else { 0.0 });
     map
 }
 
@@ -108,16 +105,8 @@ fn classification_metrics(
     }
 
     let accuracy = correct as f64 / total as f64;
-    let precision = if tp + fp > 0 {
-        tp as f64 / (tp + fp) as f64
-    } else {
-        0.0
-    };
-    let recall = if tp + fn_ > 0 {
-        tp as f64 / (tp + fn_) as f64
-    } else {
-        0.0
-    };
+    let precision = if tp + fp > 0 { tp as f64 / (tp + fp) as f64 } else { 0.0 };
+    let recall = if tp + fn_ > 0 { tp as f64 / (tp + fn_) as f64 } else { 0.0 };
     let f1 = if precision + recall > 0.0 {
         2.0 * precision * recall / (precision + recall)
     } else {

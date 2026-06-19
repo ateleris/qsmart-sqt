@@ -4,9 +4,9 @@ pub mod loader;
 
 use std::collections::HashMap;
 
-use sqt_types::WorkloadType;
 use crate::constraint::{Constraint, ConstraintOutcome};
 use crate::metrics::Target;
+use sqt_types::WorkloadType;
 
 #[derive(Debug, Clone, Default)]
 pub struct TestSpec {
@@ -83,12 +83,7 @@ impl SpecResult {
             message,
             evidence,
         };
-        Self {
-            spec,
-            outcomes: vec![outcome],
-            outcome: OutcomeKind::InfraError,
-            passed: false,
-        }
+        Self { spec, outcomes: vec![outcome], outcome: OutcomeKind::InfraError, passed: false }
     }
 }
 

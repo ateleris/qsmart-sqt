@@ -9,12 +9,7 @@ use crate::docker::{self, DockerRun};
 ///
 /// Expects the binary to have been built with `--coverage` (gcov) and the
 /// coverage data files (`.gcda`, `.gcno`) to exist alongside the binary.
-pub fn collect(
-    image: &str,
-    binary: &str,
-    workspace: &Path,
-    timeout: Duration,
-) -> Result<f64> {
+pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -> Result<f64> {
     let binary_path = Path::new(binary);
     let binary_dir = binary_path.parent().unwrap_or(Path::new("/"));
     let lcov_output = workspace.join("coverage.info");
@@ -33,10 +28,7 @@ pub fn collect(
                 lcov_output.display(),
             ),
         ],
-        volumes: vec![
-            docker::identity_mount(binary_dir),
-            docker::identity_mount(workspace),
-        ],
+        volumes: vec![docker::identity_mount(binary_dir), docker::identity_mount(workspace)],
         working_dir: Some(binary_dir.display().to_string()),
         timeout,
         env: vec![],

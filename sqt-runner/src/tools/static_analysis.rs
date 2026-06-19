@@ -7,12 +7,7 @@ use crate::docker::{self, DockerRun};
 
 /// Run static analysis (cppcheck) on the binary's source directory and
 /// count the number of warning-level issues.
-pub fn collect(
-    image: &str,
-    binary: &str,
-    workspace: &Path,
-    timeout: Duration,
-) -> Result<i64> {
+pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -> Result<i64> {
     let binary_path = Path::new(binary);
     let binary_dir = binary_path.parent().unwrap_or(Path::new("/"));
 
@@ -22,21 +17,16 @@ pub fn collect(
             "sh".to_string(),
             "-c".to_string(),
             // cppcheck writes results to stderr; we redirect to stdout for capture
-            format!(
-                "cppcheck --enable=warning --quiet {} 2>&1",
-                binary_dir.display()
-            ),
+            format!("cppcheck --enable=warning --quiet {} 2>&1", binary_dir.display()),
         ],
-        volumes: vec![
-            docker::identity_mount(binary_dir),
-            docker::identity_mount(workspace),
-        ],
+        volumes: vec![docker::identity_mount(binary_dir), docker::identity_mount(workspace)],
         working_dir: Some(binary_dir.display().to_string()),
         timeout,
         env: vec![],
     };
 
-    let output = docker::run_container(&spec).context("static_analysis: docker execution failed")?;
+    let output =
+        docker::run_container(&spec).context("static_analysis: docker execution failed")?;
     let text = String::from_utf8_lossy(&output.stdout);
     let stderr_text = String::from_utf8_lossy(&output.stderr);
 

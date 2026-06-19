@@ -64,8 +64,7 @@ pub fn build(
 
     // Testable requirements — either Tested or Uncovered.
     for req in &req_set.testable {
-        let spec_result =
-            run_result.results.iter().find(|r| r.spec.requirement_uid == req.uid);
+        let spec_result = run_result.results.iter().find(|r| r.spec.requirement_uid == req.uid);
         let (outcome, evidence) = match spec_result {
             Some(sr) => {
                 let outcome_str = match sr.outcome {
@@ -74,11 +73,8 @@ pub fn build(
                     crate::specs::OutcomeKind::InfraError => "INFRA_ERROR",
                 }
                 .to_string();
-                let ev: Vec<String> = sr
-                    .outcomes
-                    .iter()
-                    .flat_map(|o| o.evidence.values().cloned())
-                    .collect();
+                let ev: Vec<String> =
+                    sr.outcomes.iter().flat_map(|o| o.evidence.values().cloned()).collect();
                 (Some(outcome_str), ev)
             }
             None => (None, Vec::new()),
@@ -109,13 +105,11 @@ pub fn build(
 
     let total = entries.len();
     let tested = entries.iter().filter(|e| e.status == TraceStatus::Tested).count();
-    let cbd =
-        entries.iter().filter(|e| e.status == TraceStatus::CompliantByDeclaration).count();
+    let cbd = entries.iter().filter(|e| e.status == TraceStatus::CompliantByDeclaration).count();
     let uncovered = entries.iter().filter(|e| e.status == TraceStatus::Uncovered).count();
     let pass = entries.iter().filter(|e| e.outcome.as_deref() == Some("PASS")).count();
     let fail = entries.iter().filter(|e| e.outcome.as_deref() == Some("FAIL")).count();
-    let infra =
-        entries.iter().filter(|e| e.outcome.as_deref() == Some("INFRA_ERROR")).count();
+    let infra = entries.iter().filter(|e| e.outcome.as_deref() == Some("INFRA_ERROR")).count();
 
     TraceabilityMatrix {
         schema_version: "1.0",
@@ -339,8 +333,7 @@ mod tests {
         write_json(&matrix, &path).expect("write_json must succeed");
         assert!(path.exists(), "traceability.json must be created");
         let content = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value =
-            serde_json::from_str(&content).expect("must be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("must be valid JSON");
         assert_eq!(parsed["schema_version"], "1.0");
         assert!(parsed["entries"].is_array());
     }

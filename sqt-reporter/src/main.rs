@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use sqt_reporter::{api, config, orchestrator, report, specs};
+use sqt_reporter::{api, config, orchestrator, preflight, report, specs};
 
 #[derive(Parser)]
 #[command(name = "sqt", version, about = "Software Qualification Toolkit")]
@@ -20,7 +20,10 @@ enum Commands {
         config: PathBuf,
         #[arg(short, long, help = "Write JSON report to this path")]
         output: Option<PathBuf>,
-        #[arg(long, help = "Validate config and Runner connectivity; exit without submitting jobs")]
+        #[arg(
+            long,
+            help = "Validate config and Runner connectivity; exit without submitting jobs"
+        )]
         preflight: bool,
     },
     /// Validate config, check Runner connectivity and auth, load spec files —
@@ -35,6 +38,7 @@ enum Commands {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -50,11 +54,7 @@ async fn main() -> Result<()> {
             let cfg = config::load_config(&config)?;
             cfg.print_summary();
 
-            let token_val = cfg
-                .runner
-                .token_env
-                .as_ref()
-                .and_then(|var| std::env::var(var).ok());
+            let token_val = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
             let client = api::ApiClient::new(
                 &cfg.runner.url,
                 token_val.as_deref(),
@@ -62,7 +62,6 @@ async fn main() -> Result<()> {
                 cfg.runner.retry_backoff_initial_secs,
             )?;
 
-            use sqt_reporter::preflight;
             match preflight::preflight(&cfg, &client).await {
                 Ok(()) => {
                     tracing::info!("Pre-flight OK");
@@ -78,10 +77,8 @@ async fn main() -> Result<()> {
             let cfg = config::load_config(&config)?;
             cfg.print_summary();
 
-            let specs = specs::loader::load_specs(
-                &cfg.test_specs.files,
-                cfg.runner.job_timeout_secs,
-            )?;
+            let specs =
+                specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs)?;
             if specs.is_empty() {
                 tracing::warn!("No specs defined - nothing to run");
                 return Ok(());
@@ -103,11 +100,7 @@ async fn main() -> Result<()> {
 
             // Read API token from the env var named in config.
             // Note: validate() already checked the var is non-empty if token_env is set.
-            let token_val = cfg
-                .runner
-                .token_env
-                .as_ref()
-                .and_then(|var| std::env::var(var).ok());
+            let token_val = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
             let client = api::ApiClient::new(
                 &cfg.runner.url,
                 token_val.as_deref(),
@@ -116,7 +109,6 @@ async fn main() -> Result<()> {
             )?;
 
             if do_preflight {
-                use sqt_reporter::preflight;
                 match preflight::preflight(&cfg, &client).await {
                     Ok(()) => {
                         tracing::info!("Pre-flight OK");
@@ -145,8 +137,7 @@ async fn main() -> Result<()> {
 
             // Traceability matrix (if baseline was available)
             if let Some(ref req_set) = result.requirement_set {
-                let matrix =
-                    sqt_reporter::traceability::build(req_set, &result, &rep.timestamp);
+                let matrix = sqt_reporter::traceability::build(req_set, &result, &rep.timestamp);
                 let t_json = cfg.report.output_dir.join("traceability.json");
                 let t_txt = cfg.report.output_dir.join("traceability.txt");
                 sqt_reporter::traceability::write_json(&matrix, &t_json)?;
@@ -186,10 +177,8 @@ async fn main() -> Result<()> {
 async fn wait_for_sigterm() {
     #[cfg(unix)]
     {
-        let mut sig = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("failed to install SIGTERM handler");
+        let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
         sig.recv().await;
     }
     #[cfg(not(unix))]

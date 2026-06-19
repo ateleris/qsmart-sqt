@@ -4,7 +4,7 @@
 //! blocks, and matches them against the loaded test specs. Testable requirements
 //! without a matching spec are UNCOVERED → non-zero exit before any jobs run.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sqt_types::DocsResponse;
 
 #[derive(Debug, Clone)]
@@ -108,11 +108,8 @@ fn parse_document(content: &str) -> Vec<Requirement> {
         } else if let Some(val) = trimmed.strip_prefix("STATUS:") {
             current.status = val.trim().to_string();
         } else if let Some(val) = trimmed.strip_prefix("VERIFICATION:") {
-            current.verification_methods = val
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            current.verification_methods =
+                val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
     }
 
@@ -139,10 +136,7 @@ pub fn check_coverage(requirement_set: &RequirementSet, spec_uids: &[String]) ->
         .map(|r| r.uid.as_str())
         .collect();
     if !uncovered.is_empty() {
-        bail!(
-            "UNCOVERED requirements (testable but no matching spec): {}",
-            uncovered.join(", ")
-        );
+        bail!("UNCOVERED requirements (testable but no matching spec): {}", uncovered.join(", "));
     }
     Ok(())
 }
@@ -256,11 +250,7 @@ STATUS: Draft
     fn check_coverage_passes_when_all_covered() {
         let docs = make_docs(MULTI_REQ_DOC);
         let set = parse_requirements(&docs);
-        let spec_uids = vec![
-            "REQ-001".to_string(),
-            "REQ-003".to_string(),
-            "REQ-EXTRA".to_string(),
-        ];
+        let spec_uids = vec!["REQ-001".to_string(), "REQ-003".to_string(), "REQ-EXTRA".to_string()];
         assert!(check_coverage(&set, &spec_uids).is_ok());
     }
 

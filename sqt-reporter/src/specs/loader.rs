@@ -158,13 +158,10 @@ fn parse_unit_value(s: &str, metric: &str) -> anyhow::Result<f64> {
 /// Trims whitespace between number and unit.
 fn split_number_and_unit(s: &str) -> anyhow::Result<(&str, &str)> {
     // Find where the numeric part (digits, dot, sign) ends.
-    let split_idx = s
-        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != '+')
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no unit suffix found in '{s}'; expected e.g. '100ms' or '512KB'"
-            )
-        })?;
+    let split_idx =
+        s.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != '+').ok_or_else(
+            || anyhow::anyhow!("no unit suffix found in '{s}'; expected e.g. '100ms' or '512KB'"),
+        )?;
 
     let num_part = s[..split_idx].trim();
     let unit_part = s[split_idx..].trim();
@@ -253,8 +250,8 @@ pub fn load_specs(files: &[PathBuf], default_timeout_secs: u64) -> anyhow::Resul
 }
 
 fn load_one_spec(path: &Path, default_timeout_secs: u64) -> anyhow::Result<TestSpec> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading '{}'", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading '{}'", path.display()))?;
     let raw: RawTestSpec = serde_yaml::from_str(&content)
         .with_context(|| format!("parsing YAML in '{}'", path.display()))?;
     convert_spec(raw, default_timeout_secs)
@@ -271,8 +268,7 @@ mod tests {
 
     /// Deserialise a YAML string directly (without file I/O) and convert to TestSpec.
     fn parse_yaml(yaml: &str) -> anyhow::Result<TestSpec> {
-        let raw: RawTestSpec = serde_yaml::from_str(yaml)
-            .with_context(|| "parsing test YAML")?;
+        let raw: RawTestSpec = serde_yaml::from_str(yaml).with_context(|| "parsing test YAML")?;
         convert_spec(raw, 300)
     }
 
@@ -526,25 +522,21 @@ constraints:
     #[test]
     fn time_unit_conversions() {
         assert!((parse_unit_value("100ms", "time.avg_ms").unwrap() - 100.0).abs() < f64::EPSILON);
-        assert!(
-            (parse_unit_value("1.5s", "time.avg_ms").unwrap() - 1_500.0).abs() < f64::EPSILON
-        );
+        assert!((parse_unit_value("1.5s", "time.avg_ms").unwrap() - 1_500.0).abs() < f64::EPSILON);
         assert!((parse_unit_value("2s", "time.avg_ms").unwrap() - 2_000.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn memory_unit_conversions() {
         assert!(
-            (parse_unit_value("512KB", "memory.peak_rss_kb").unwrap() - 512.0).abs()
-                < f64::EPSILON
+            (parse_unit_value("512KB", "memory.peak_rss_kb").unwrap() - 512.0).abs() < f64::EPSILON
         );
         assert!(
             (parse_unit_value("512 KB", "memory.peak_rss_kb").unwrap() - 512.0).abs()
                 < f64::EPSILON
         );
         assert!(
-            (parse_unit_value("2MB", "memory.peak_rss_kb").unwrap() - 2_048.0).abs()
-                < f64::EPSILON
+            (parse_unit_value("2MB", "memory.peak_rss_kb").unwrap() - 2_048.0).abs() < f64::EPSILON
         );
         assert!(
             (parse_unit_value("1GB", "memory.peak_rss_kb").unwrap() - 1_048_576.0).abs()
@@ -580,9 +572,6 @@ constraints:
         let result = load_specs(&[PathBuf::from("/nonexistent/path/spec.yaml")], 300);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("nonexistent"),
-            "error should mention the bad path: {msg}"
-        );
+        assert!(msg.contains("nonexistent"), "error should mention the bad path: {msg}");
     }
 }

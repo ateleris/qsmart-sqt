@@ -1,7 +1,7 @@
-use sqt_types::WorkloadType;
 use crate::constraint::{Constraint, Op};
 use crate::metrics::Target;
 use crate::specs::{SpecFactory, TestSpec};
+use sqt_types::WorkloadType;
 
 pub fn spec() -> TestSpec {
     TestSpec {

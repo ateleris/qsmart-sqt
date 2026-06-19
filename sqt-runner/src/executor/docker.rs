@@ -41,10 +41,7 @@ impl DockerExecutor {
     /// `<workspace>/` so that `LD_LIBRARY_PATH=<workspace>` is sufficient for
     /// the binary to find it at runtime.
     fn compile(&self, request: &JobRequest, workspace: &Path) -> Result<PathBuf> {
-        let build = self
-            .build_config
-            .as_ref()
-            .expect("compile called without build_config");
+        let build = self.build_config.as_ref().expect("compile called without build_config");
 
         let source_path = Path::new(&build.source);
         let source_dir = source_path.parent().unwrap_or(Path::new("/"));
@@ -79,8 +76,7 @@ impl DockerExecutor {
             shell_quote(&workspace.display().to_string()),
         );
 
-        let compile_timeout =
-            Duration::from_secs(build.compile_timeout_secs.unwrap_or(300));
+        let compile_timeout = Duration::from_secs(build.compile_timeout_secs.unwrap_or(300));
 
         // Collect unique volume mounts
         let mut volumes: Vec<(PathBuf, String)> = vec![
@@ -134,11 +130,7 @@ impl JobExecutor for DockerExecutor {
             self.binary_config.clone()
         };
 
-        let input = request
-            .input
-            .as_ref()
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+        let input = request.input.as_ref().and_then(|v| v.as_str()).map(str::to_string);
 
         let mut metrics = JobMetrics::default();
         let config = &self.tool_config;

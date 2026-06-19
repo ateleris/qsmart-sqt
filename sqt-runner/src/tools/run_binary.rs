@@ -61,11 +61,8 @@ pub fn collect(
     volumes.push(docker::identity_mount(workspace));
 
     // Collect environment variables
-    let mut env: Vec<(String, String)> = binary_config
-        .env
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let mut env: Vec<(String, String)> =
+        binary_config.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
     // If input_mode is Env, set the variable to the input path
     if let InputMode::Env(ref var) = binary_config.input_mode
@@ -178,22 +175,13 @@ mod tests {
         let text = "\tCommand being timed: \"./app\"\n\
                      \tMaximum resident set size (kbytes): 15432\n\
                      \tPercent of CPU this job got: 98%\n";
-        assert_eq!(
-            parse_time_field(text, "Maximum resident set size (kbytes):"),
-            Some(15432.0)
-        );
-        assert_eq!(
-            parse_time_field(text, "Percent of CPU this job got:"),
-            Some(98.0)
-        );
+        assert_eq!(parse_time_field(text, "Maximum resident set size (kbytes):"), Some(15432.0));
+        assert_eq!(parse_time_field(text, "Percent of CPU this job got:"), Some(98.0));
     }
 
     #[test]
     fn parse_time_field_missing_returns_none() {
-        assert_eq!(
-            parse_time_field("no such line", "Maximum resident set size (kbytes):"),
-            None
-        );
+        assert_eq!(parse_time_field("no such line", "Maximum resident set size (kbytes):"), None);
     }
 
     #[test]
@@ -205,10 +193,7 @@ mod tests {
     #[test]
     fn invocation_with_args_no_input() {
         let config = make_config("./app", &["--model", "resnet50"], InputMode::Stdin);
-        assert_eq!(
-            build_binary_invocation(&config, None),
-            "./app --model resnet50"
-        );
+        assert_eq!(build_binary_invocation(&config, None), "./app --model resnet50");
     }
 
     #[test]
@@ -233,10 +218,7 @@ mod tests {
     fn invocation_env_with_input() {
         let config = make_config("./app", &[], InputMode::Env("INPUT_FILE".into()));
         // Env mode doesn't modify the command - it's handled via Docker -e
-        assert_eq!(
-            build_binary_invocation(&config, Some("/data/input.bin")),
-            "./app"
-        );
+        assert_eq!(build_binary_invocation(&config, Some("/data/input.bin")), "./app");
     }
 
     #[test]
@@ -268,10 +250,7 @@ mod tests {
     #[test]
     fn parse_time_field_strips_percent() {
         let text = "\tPercent of CPU this job got: 75%\n";
-        assert_eq!(
-            parse_time_field(text, "Percent of CPU this job got:"),
-            Some(75.0)
-        );
+        assert_eq!(parse_time_field(text, "Percent of CPU this job got:"), Some(75.0));
     }
 
     #[test]

@@ -1,20 +1,46 @@
 #!/usr/bin/env bash
 # Runs inside the ci build image (ci/Dockerfile); cwd is the repo checkout.
-# Produces:
+# Gates, in order: rustfmt --check, clippy -D warnings, then tests + coverage.
+# Produces, in the workspace:
 #   target/nextest/ci/junit.xml  -> published by dorny/test-reporter
 #   coverage.json                -> raw llvm-cov report
 #   coverage-summary.md          -> appended to the GitHub job summary
-# Exits non-zero if any test fails (so the workflow fails too).
+# All phases run even if an earlier one fails, so every check reports; the
+# script exits non-zero if any gate or test failed (so the workflow fails too).
 set -uo pipefail
 
-cargo llvm-cov --no-report --workspace nextest --profile ci
-status=$?
+rc=0
+
+echo "::group::rustfmt --check"
+cargo fmt --all -- --check || rc=1
+echo "::endgroup::"
+
+# Strict pedantic bar on production code (lib + bins). Test/example targets are
+# intentionally excluded (--all-targets) — they carry pedantic noise (float_cmp,
+# needless_raw_string_hashes, ...) that isn't worth gating on. Tests are still
+# compiled and run by the nextest step below.
+echo "::group::clippy (-D warnings)"
+cargo clippy --workspace -- -D warnings || rc=1
+echo "::endgroup::"
+
+echo "::group::tests + coverage"
+cargo llvm-cov --no-report --workspace nextest --profile ci || rc=1
+echo "::endgroup::"
+
+# Compilation (and nextest's junit) may live in a cached target dir outside the
+# workspace (CARGO_TARGET_DIR). Copy the junit into the workspace so that
+# dorny/test-reporter — which runs on the runner, not in this container — sees it.
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+JUNIT=target/nextest/ci/junit.xml
+if [ "$TARGET_DIR/nextest/ci/junit.xml" != "$JUNIT" ] && [ -f "$TARGET_DIR/nextest/ci/junit.xml" ]; then
+  mkdir -p "$(dirname "$JUNIT")"
+  cp "$TARGET_DIR/nextest/ci/junit.xml" "$JUNIT"
+fi
 
 # nextest omits the `time` attribute on <testsuite> elements (it only sets it on
-# the root <testsuites> and on each <testcase>). dorny/test-reporter sums the
-# per-suite times, so without this it reports the total as "NaNms". Backfill each
-# suite's time as the sum of its testcases.
-JUNIT=target/nextest/ci/junit.xml
+# the root <testsuites> and each <testcase>). dorny/test-reporter sums per-suite
+# times, so without this it reports the total as "NaNms". Backfill each suite's
+# time as the sum of its testcases.
 if [ -f "$JUNIT" ]; then
   node -e '
     const fs = require("fs");
@@ -30,8 +56,8 @@ if [ -f "$JUNIT" ]; then
   ' "$JUNIT" || true
 fi
 
+# Coverage report + summary (written into the workspace).
 cargo llvm-cov report --json --output-path coverage.json || true
-
 if [ -f coverage.json ]; then
   node -e '
     const d = require("./coverage.json");
@@ -43,4 +69,4 @@ if [ -f coverage.json ]; then
   ' || true
 fi
 
-exit "$status"
+exit "$rc"

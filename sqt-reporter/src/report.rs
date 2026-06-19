@@ -257,8 +257,10 @@ pub fn print_terminal(report: &Report) {
 
             // For INFRA_ERROR outcomes, surface the error details on the next line.
             if outcome.outcome_kind == OutcomeKind::InfraError {
-                let error_code = outcome.evidence.get("error_code").map_or("UNKNOWN", String::as_str);
-                let error_message = outcome.evidence.get("error_message").map_or("", String::as_str);
+                let error_code =
+                    outcome.evidence.get("error_code").map_or("UNKNOWN", String::as_str);
+                let error_message =
+                    outcome.evidence.get("error_message").map_or("", String::as_str);
                 println!("        error_code={error_code} error_message={error_message}");
                 if let Some(details) = outcome.evidence.get("error_details") {
                     println!("        error_details={details}");
@@ -312,20 +314,17 @@ pub fn write_qdp(
     let file = std::fs::File::create(&qdp_path)
         .with_context(|| format!("cannot create QDP archive: {}", qdp_path.display()))?;
     let mut zip = zip::ZipWriter::new(file);
-    let options =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // Helper closure: add a single file to the archive under `entry_name`.
-    let add_file = |zip: &mut zip::ZipWriter<_>,
-                    entry_name: &str,
-                    path: &Path|
-     -> anyhow::Result<()> {
-        let data = std::fs::read(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        zip.start_file(entry_name, options)?;
-        zip.write_all(&data)?;
-        Ok(())
-    };
+    let add_file =
+        |zip: &mut zip::ZipWriter<_>, entry_name: &str, path: &Path| -> anyhow::Result<()> {
+            let data =
+                std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+            zip.start_file(entry_name, options)?;
+            zip.write_all(&data)?;
+            Ok(())
+        };
 
     if let Some(p) = report_json_path
         && p.exists()
@@ -550,7 +549,11 @@ mod tests {
             .split(':')
             .next()
             .map(|s| s.trim().trim_matches('"'));
-        assert_eq!(first_key, Some("schema_version"), "schema_version must be the first JSON field");
+        assert_eq!(
+            first_key,
+            Some("schema_version"),
+            "schema_version must be the first JSON field"
+        );
     }
 
     #[test]
@@ -566,13 +569,11 @@ mod tests {
         let json = serde_json::to_string(&report).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(
-            parsed["results"][0]["outcome_kind"],
-            "INFRA_ERROR",
+            parsed["results"][0]["outcome_kind"], "INFRA_ERROR",
             "InfraError spec must serialize as INFRA_ERROR"
         );
         assert_eq!(
-            parsed["results"][0]["outcomes"][0]["outcome_kind"],
-            "INFRA_ERROR",
+            parsed["results"][0]["outcomes"][0]["outcome_kind"], "INFRA_ERROR",
             "InfraError outcome must also have INFRA_ERROR kind"
         );
         assert_eq!(parsed["summary"]["infra_errors"], 1);
@@ -603,8 +604,7 @@ mod tests {
         let json = serde_json::to_string(&report).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(
-            parsed["results"][0]["target"]["result_consistent"],
-            true,
+            parsed["results"][0]["target"]["result_consistent"], true,
             "result_consistent must appear in JSON"
         );
     }
@@ -634,9 +634,8 @@ mod tests {
         // Verify the archive contains the expected entries.
         let zip_file = std::fs::File::open(&qdp).unwrap();
         let mut archive = zip::ZipArchive::new(zip_file).unwrap();
-        let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_owned())
-            .collect();
+        let names: Vec<String> =
+            (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_owned()).collect();
         assert!(names.contains(&"report.json".to_owned()), "must contain report.json");
         assert!(names.contains(&"traceability.json".to_owned()), "must contain traceability.json");
         assert!(names.contains(&"traceability.txt".to_owned()), "must contain traceability.txt");
@@ -651,8 +650,7 @@ mod tests {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
         let report = Report::from_run_result(&run_result, make_provenance());
         assert_eq!(
-            report.results[0].target.result_consistent,
-            None,
+            report.results[0].target.result_consistent, None,
             "result_consistent must be None when not in evidence"
         );
         let json = serde_json::to_string(&report).expect("serialize");

@@ -38,8 +38,7 @@ pub fn run_container(spec: &DockerRun) -> Result<DockerOutput> {
     cmd.arg("run").arg("--rm").arg("--name").arg(&container_name);
 
     for (host_path, container_path) in &spec.volumes {
-        cmd.arg("-v")
-            .arg(format!("{}:{}", host_path.display(), container_path));
+        cmd.arg("-v").arg(format!("{}:{}", host_path.display(), container_path));
     }
     for (key, val) in &spec.env {
         cmd.arg("-e").arg(format!("{key}={val}"));
@@ -215,7 +214,9 @@ pub fn check_binary_in_image(image: &str, binary: &str) -> Result<()> {
 
     tracing::info!(
         "preflight binary check: docker run --rm -v {} {} test -x {}",
-        volume_mount, image, binary
+        volume_mount,
+        image,
+        binary
     );
 
     let output = Command::new("docker")

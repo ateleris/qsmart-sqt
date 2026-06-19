@@ -35,44 +35,116 @@ impl fmt::Display for Op {
 #[derive(Debug, Clone)]
 pub enum Constraint {
     // -- Execution ------------------------------------------------------------
-    ReturnCode { op: Op, value: i64 },
+    ReturnCode {
+        op: Op,
+        value: i64,
+    },
     /// Wall-clock execution time (wire name: `time.avg_ms`).
-    ExecutionTime { op: Op, ms: f64 },
-    TimeLatencyP50Ms { op: Op, ms: f64 },
-    TimeLatencyP95Ms { op: Op, ms: f64 },
-    TimeLatencyP99Ms { op: Op, ms: f64 },
-    TimeThroughputFps { op: Op, fps: f64 },
+    ExecutionTime {
+        op: Op,
+        ms: f64,
+    },
+    TimeLatencyP50Ms {
+        op: Op,
+        ms: f64,
+    },
+    TimeLatencyP95Ms {
+        op: Op,
+        ms: f64,
+    },
+    TimeLatencyP99Ms {
+        op: Op,
+        ms: f64,
+    },
+    TimeThroughputFps {
+        op: Op,
+        fps: f64,
+    },
 
     // -- Memory ---------------------------------------------------------------
-    MemoryPeakRss { op: Op, kb: f64 },
-    MemoryAvgRss { op: Op, kb: f64 },
+    MemoryPeakRss {
+        op: Op,
+        kb: f64,
+    },
+    MemoryAvgRss {
+        op: Op,
+        kb: f64,
+    },
     /// Valgrind / `ASan` leak bytes (wire name: `memory.leaks_bytes`).
-    MemoryLeaks { op: Op, bytes: f64 },
-    MemoryStackKb { op: Op, kb: f64 },
-    MemoryHeapAllocations { op: Op, count: i64 },
+    MemoryLeaks {
+        op: Op,
+        bytes: f64,
+    },
+    MemoryStackKb {
+        op: Op,
+        kb: f64,
+    },
+    MemoryHeapAllocations {
+        op: Op,
+        count: i64,
+    },
 
     // -- CPU ------------------------------------------------------------------
     /// Normalised CPU utilisation 0–100 % (wire name: `cpu.avg_normalized_pct`).
-    CpuAvgNormalizedPct { op: Op, pct: f64 },
+    CpuAvgNormalizedPct {
+        op: Op,
+        pct: f64,
+    },
 
     // -- Coverage -------------------------------------------------------------
-    CoverageLinePct { op: Op, pct: f64 },
-    CoverageBranchPct { op: Op, pct: f64 },
-    CoverageFunctionPct { op: Op, pct: f64 },
+    CoverageLinePct {
+        op: Op,
+        pct: f64,
+    },
+    CoverageBranchPct {
+        op: Op,
+        pct: f64,
+    },
+    CoverageFunctionPct {
+        op: Op,
+        pct: f64,
+    },
 
     // -- Static analysis / binary ---------------------------------------------
-    StaticWarnings { op: Op, value: i64 },
-    StaticCriticalIssues { op: Op, value: i64 },
-    StaticMajorIssues { op: Op, value: i64 },
-    BinarySizeKb { op: Op, kb: f64 },
+    StaticWarnings {
+        op: Op,
+        value: i64,
+    },
+    StaticCriticalIssues {
+        op: Op,
+        value: i64,
+    },
+    StaticMajorIssues {
+        op: Op,
+        value: i64,
+    },
+    BinarySizeKb {
+        op: Op,
+        kb: f64,
+    },
 
     // -- ML accuracy (computed client-side, T-054) ----------------------------
-    MlAccuracy { op: Op, value: f64 },
-    MlF1Score { op: Op, value: f64 },
-    MlRecall { op: Op, value: f64 },
-    MlPrecision { op: Op, value: f64 },
+    MlAccuracy {
+        op: Op,
+        value: f64,
+    },
+    MlF1Score {
+        op: Op,
+        value: f64,
+    },
+    MlRecall {
+        op: Op,
+        value: f64,
+    },
+    MlPrecision {
+        op: Op,
+        value: f64,
+    },
     /// Numerical precision comparison within tolerance (SRS-FUNC-016).
-    MlOutputWithinTolerance { op: Op, value: f64 },
+    MlOutputWithinTolerance {
+        op: Op,
+        value: f64,
+    },
 }
 
 // -- Named constructors -------------------------------------------------------
@@ -171,9 +243,7 @@ impl Constraint {
             "memory.avg_rss_kb" => Self::MemoryAvgRss { op, kb: value },
             "memory.leaks_bytes" => Self::MemoryLeaks { op, bytes: value },
             "memory.stack_kb" => Self::MemoryStackKb { op, kb: value },
-            "memory.heap_allocations" => {
-                Self::MemoryHeapAllocations { op, count: value as i64 }
-            }
+            "memory.heap_allocations" => Self::MemoryHeapAllocations { op, count: value as i64 },
             "cpu.avg_normalized_pct" => Self::CpuAvgNormalizedPct { op, pct: value },
             "coverage.line_pct" => Self::CoverageLinePct { op, pct: value },
             "coverage.branch_pct" => Self::CoverageBranchPct { op, pct: value },

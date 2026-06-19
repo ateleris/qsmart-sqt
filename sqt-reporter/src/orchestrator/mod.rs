@@ -6,9 +6,6 @@ use anyhow::Result;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use sqt_types::{
-    Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
-};
 use crate::accuracy::AccuracyMetrics;
 use crate::accuracy::compute as accuracy_compute;
 use crate::api::ApiClient;
@@ -19,6 +16,9 @@ use crate::constraint::evaluator::evaluate;
 use crate::evidence::EvidenceStore;
 use crate::report::{ConfigSummary, RunProvenance};
 use crate::specs::{RunResult, SpecResult, TestSpec};
+use sqt_types::{
+    Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
+};
 
 /// The API major version the Reporter was compiled against.
 const SUPPORTED_API_MAJOR: &str = "1";
@@ -324,27 +324,26 @@ pub async fn run(
 
             // Capture result_consistent from the job output (SRS-REL-004).
             // Records true/false when the output block is present, or "null" when absent.
-            let result_consistent_str =
-                match response.output.as_ref().map(|o| o.result_consistent) {
-                    Some(rc) => rc.to_string(),
-                    None => "null".to_string(),
-                };
+            let result_consistent_str = match response.output.as_ref().map(|o| o.result_consistent)
+            {
+                Some(rc) => rc.to_string(),
+                None => "null".to_string(),
+            };
 
             // Compute client-side ml.* accuracy metrics (T-054).
-            let computed_accuracy: AccuracyMetrics =
-                if let Some(ref out) = response.output {
-                    if let Some(ref outputs) = out.outputs {
-                        if let Some(ref refs) = spec.reference_outputs {
-                            accuracy_compute::compute(outputs, refs, &spec.workload_type)
-                        } else {
-                            AccuracyMetrics::new()
-                        }
+            let computed_accuracy: AccuracyMetrics = if let Some(ref out) = response.output {
+                if let Some(ref outputs) = out.outputs {
+                    if let Some(ref refs) = spec.reference_outputs {
+                        accuracy_compute::compute(outputs, refs, &spec.workload_type)
                     } else {
                         AccuracyMetrics::new()
                     }
                 } else {
                     AccuracyMetrics::new()
-                };
+                }
+            } else {
+                AccuracyMetrics::new()
+            };
 
             // Precision comparison (SRS-FUNC-016).
             let precision_results: AccuracyMetrics = match (
@@ -372,9 +371,8 @@ pub async fn run(
                     );
                     if !constraint.is_server_side() {
                         // Look up from client-side accuracy metrics (T-054).
-                        let maybe_computed = computed_accuracy
-                            .get(name)
-                            .or_else(|| precision_results.get(name));
+                        let maybe_computed =
+                            computed_accuracy.get(name).or_else(|| precision_results.get(name));
                         return match maybe_computed {
                             Some(&val) => {
                                 let mut outcome = evaluate(val, constraint);
@@ -399,10 +397,9 @@ pub async fn run(
                             }
                             // Record result_consistent in every outcome's evidence
                             // (SRS-REL-004): null/absent -> "null", true/false as string.
-                            outcome.evidence.insert(
-                                "result_consistent".into(),
-                                result_consistent_str.clone(),
-                            );
+                            outcome
+                                .evidence
+                                .insert("result_consistent".into(), result_consistent_str.clone());
                             outcome
                         }
                         None => failing_outcome(name, "metric unavailable"),
@@ -438,11 +435,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use sqt_types::{JobMetrics, WorkloadType};
-    use crate::constraint::{Constraint, Op};
     use crate::constraint::evaluator::evaluate;
+    use crate::constraint::{Constraint, Op};
     use crate::metrics::{Platform, Target};
     use crate::specs::{OutcomeKind, SpecResult, TestSpec};
+    use sqt_types::{JobMetrics, WorkloadType};
 
     use super::{build_job_request, failing_outcome, group_key};
 

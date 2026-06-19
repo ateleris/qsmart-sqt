@@ -179,20 +179,30 @@ pub async fn get_job(
         })
     }; // read lock released here
 
-    let (id, workload_type, repetitions, tags, status, created_at, started_at, completed_at, error, metrics) =
-        snapshot.ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: ApiErrorBody {
-                        code: "JOB_NOT_FOUND".into(),
-                        message: format!("job '{job_id}' not found"),
-                        details: None,
-                        timestamp: crate::now_iso(),
-                    },
-                }),
-            )
-        })?;
+    let (
+        id,
+        workload_type,
+        repetitions,
+        tags,
+        status,
+        created_at,
+        started_at,
+        completed_at,
+        error,
+        metrics,
+    ) = snapshot.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: ApiErrorBody {
+                    code: "JOB_NOT_FOUND".into(),
+                    message: format!("job '{job_id}' not found"),
+                    details: None,
+                    timestamp: crate::now_iso(),
+                },
+            }),
+        )
+    })?;
 
     tracing::debug!(
         job_id = %job_id,
@@ -332,8 +342,7 @@ fn scan_docs_dir(dir: &std::path::Path) -> anyhow::Result<DocsResponse> {
             let title = extract_sdoc_title(&content);
             documents.push(StrictdocDocument { filename, title, content });
         } else {
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("cannot read {filename}"))?;
+            let bytes = std::fs::read(&path).with_context(|| format!("cannot read {filename}"))?;
             let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let content_type = mime_type_for(&filename).to_string();
             attachments.push(Attachment { filename, content_type, data });
@@ -368,14 +377,14 @@ fn extract_sdoc_title(content: &str) -> Option<String> {
 fn mime_type_for(filename: &str) -> &'static str {
     let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
-        "pdf"  => "application/pdf",
+        "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "zip"  => "application/zip",
-        "txt"  => "text/plain",
+        "zip" => "application/zip",
+        "txt" => "text/plain",
         "html" => "text/html",
         "json" => "application/json",
-        _      => "application/octet-stream",
+        _ => "application/octet-stream",
     }
 }
 
@@ -396,10 +405,16 @@ mod tests {
 
     struct StubExecutor;
     impl JobExecutor for StubExecutor {
-        fn execute(&self, _req: &sqt_types::JobRequest, _ws: &std::path::Path) -> anyhow::Result<JobMetrics> {
+        fn execute(
+            &self,
+            _req: &sqt_types::JobRequest,
+            _ws: &std::path::Path,
+        ) -> anyhow::Result<JobMetrics> {
             Ok(JobMetrics::default())
         }
-        fn hardware_info(&self) -> HardwareInfo { HardwareInfo::default() }
+        fn hardware_info(&self) -> HardwareInfo {
+            HardwareInfo::default()
+        }
     }
 
     fn test_app(docs_dir: Option<std::path::PathBuf>) -> Router {
@@ -580,7 +595,8 @@ mod tests {
 
     #[test]
     fn extract_title_from_document_block() {
-        let sdoc = "[DOCUMENT]\nTITLE: ML-L Requirements\nVERSION: 1.0\n\n[REQUIREMENT]\nUID: R-001\n";
+        let sdoc =
+            "[DOCUMENT]\nTITLE: ML-L Requirements\nVERSION: 1.0\n\n[REQUIREMENT]\nUID: R-001\n";
         assert_eq!(extract_sdoc_title(sdoc), Some("ML-L Requirements".into()));
     }
 
@@ -599,7 +615,10 @@ mod tests {
     #[test]
     fn mime_type_known_extensions() {
         assert_eq!(mime_type_for("report.pdf"), "application/pdf");
-        assert_eq!(mime_type_for("data.xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        assert_eq!(
+            mime_type_for("data.xlsx"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
         assert_eq!(mime_type_for("notes.txt"), "text/plain");
     }
 
@@ -629,9 +648,9 @@ mod tests {
         assert_eq!(result.attachments[0].content_type, "application/pdf");
         // data is valid base64
         use base64::Engine as _;
-        assert!(base64::engine::general_purpose::STANDARD
-            .decode(&result.attachments[0].data)
-            .is_ok());
+        assert!(
+            base64::engine::general_purpose::STANDARD.decode(&result.attachments[0].data).is_ok()
+        );
     }
 
     #[test]

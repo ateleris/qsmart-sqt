@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, post};
 use axum::response::Json as AJson;
+use axum::routing::{get, post};
 use sqt_reporter::{api, config, evidence, orchestrator, specs};
 use sqt_types::{
     JobAccepted, JobMetrics, JobStatus, JobStatusResponse, MeasurementMode, VersionResponse,
@@ -156,14 +156,11 @@ constraints:
         cfg.runner.retry_backoff_initial_secs,
     )
     .unwrap();
-    let mut ev_store =
-        evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
+    let mut ev_store = evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
     let shutdown = CancellationToken::new();
 
     let (result, _provenance) =
-        orchestrator::run(&loaded_specs, &client, &cfg, shutdown, &mut ev_store)
-            .await
-            .unwrap();
+        orchestrator::run(&loaded_specs, &client, &cfg, shutdown, &mut ev_store).await.unwrap();
 
     assert!(!result.interrupted);
     assert_eq!(result.results.len(), 1);
@@ -205,14 +202,11 @@ constraints:
         cfg.runner.retry_backoff_initial_secs,
     )
     .unwrap();
-    let mut ev_store =
-        evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
+    let mut ev_store = evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
     let shutdown = CancellationToken::new();
 
     let (result, _) =
-        orchestrator::run(&loaded_specs, &client, &cfg, shutdown, &mut ev_store)
-            .await
-            .unwrap();
+        orchestrator::run(&loaded_specs, &client, &cfg, shutdown, &mut ev_store).await.unwrap();
 
     assert_eq!(result.results[0].outcome, specs::OutcomeKind::Fail);
 }

@@ -36,13 +36,7 @@ pub fn evaluate(actual: f64, constraint: &Constraint) -> ConstraintOutcome {
         format!("{actual} {unit} {op} {expected} {unit}: {status}")
     };
 
-    ConstraintOutcome {
-        passed,
-        actual,
-        expected,
-        message,
-        evidence: HashMap::new(),
-    }
+    ConstraintOutcome { passed, actual, expected, message, evidence: HashMap::new() }
 }
 
 #[cfg(test)]

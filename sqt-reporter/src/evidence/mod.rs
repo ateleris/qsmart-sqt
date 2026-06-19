@@ -60,9 +60,14 @@ impl EvidenceStore {
     /// # Errors
     ///
     /// Returns an error if JSON serialisation fails or the underlying [`Self::store`] call fails.
-    pub fn store_json<T: Serialize>(&mut self, job_id: &str, label: &str, value: &T) -> Result<PathBuf> {
-        let json = serde_json::to_string_pretty(value)
-            .context("cannot serialise evidence to JSON")?;
+    pub fn store_json<T: Serialize>(
+        &mut self,
+        job_id: &str,
+        label: &str,
+        value: &T,
+    ) -> Result<PathBuf> {
+        let json =
+            serde_json::to_string_pretty(value).context("cannot serialise evidence to JSON")?;
         self.store(job_id, label, json.as_bytes())
     }
 

@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 /// Get the size of a binary file in kilobytes.
 pub fn collect(binary: &str) -> Result<f64> {
     let path = Path::new(binary);
-    let metadata = std::fs::metadata(path)
-        .with_context(|| format!("binary_size: cannot stat '{binary}'"))?;
+    let metadata =
+        std::fs::metadata(path).with_context(|| format!("binary_size: cannot stat '{binary}'"))?;
 
     #[allow(clippy::cast_precision_loss)]
     let size_kb = metadata.len() as f64 / 1024.0;

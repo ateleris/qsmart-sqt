@@ -64,7 +64,9 @@ fn run_preflight_checks(server_config: &ServerConfig, tool_config: &ToolConfig) 
         tracing::info!("{name} image OK: {image}");
     }
 
-    if server_config.build.is_none() && let Some(ref run_image) = tool_config.run_image {
+    if server_config.build.is_none()
+        && let Some(ref run_image) = tool_config.run_image
+    {
         docker::check_binary_in_image(run_image, &server_config.binary.path)
             .expect("preflight: binary check failed");
         tracing::info!("binary OK: {} (in {})", server_config.binary.path, run_image);
@@ -99,8 +101,7 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    let server_config =
-        ServerConfig::load(&cli.config).expect("failed to load configuration file");
+    let server_config = ServerConfig::load(&cli.config).expect("failed to load configuration file");
 
     let tool_config = ToolConfig::from_server_config(&server_config);
 
@@ -125,11 +126,21 @@ async fn main() {
         tracing::info!("docs directory: not configured (GET /api/v1/docs will return 404)");
     }
 
-    if let Some(ref img) = tool_config.run_image { tracing::info!("run image: {img}"); }
-    if let Some(ref img) = tool_config.valgrind_image { tracing::info!("valgrind image: {img}"); }
-    if let Some(ref img) = tool_config.coverage_image { tracing::info!("coverage image: {img}"); }
-    if let Some(ref url) = tool_config.sonar_url { tracing::info!("sonarqube URL: {url}"); }
-    if let Some(ref img) = tool_config.static_image { tracing::info!("static analysis image: {img}"); }
+    if let Some(ref img) = tool_config.run_image {
+        tracing::info!("run image: {img}");
+    }
+    if let Some(ref img) = tool_config.valgrind_image {
+        tracing::info!("valgrind image: {img}");
+    }
+    if let Some(ref img) = tool_config.coverage_image {
+        tracing::info!("coverage image: {img}");
+    }
+    if let Some(ref url) = tool_config.sonar_url {
+        tracing::info!("sonarqube URL: {url}");
+    }
+    if let Some(ref img) = tool_config.static_image {
+        tracing::info!("static analysis image: {img}");
+    }
 
     run_preflight_checks(&server_config, &tool_config);
 
@@ -163,9 +174,7 @@ async fn main() {
         .route("/api/v1/version", get(get_version))
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", cli.host, cli.port)
-        .parse()
-        .expect("invalid host:port");
+    let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse().expect("invalid host:port");
 
     tracing::info!("sqt-runner listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

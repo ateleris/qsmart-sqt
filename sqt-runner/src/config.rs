@@ -254,7 +254,9 @@ impl ServerConfig {
         }
 
         // Resolve docs directory path to absolute.
-        if let Some(ref mut docs) = config.docs && docs.directory.is_relative() {
+        if let Some(ref mut docs) = config.docs
+            && docs.directory.is_relative()
+        {
             docs.directory = cwd.join(&docs.directory);
         }
 
@@ -298,11 +300,8 @@ pub struct ToolConfig {
 
 impl ToolConfig {
     pub fn from_server_config(config: &ServerConfig) -> Self {
-        let sonar_token = config
-            .tools
-            .sonarqube
-            .as_ref()
-            .and_then(|s| std::env::var(&s.token_env).ok());
+        let sonar_token =
+            config.tools.sonarqube.as_ref().and_then(|s| std::env::var(&s.token_env).ok());
 
         Self {
             run_image: config.tools.run.as_ref().map(|r| r.image.clone()),
@@ -310,11 +309,7 @@ impl ToolConfig {
             coverage_image: config.tools.coverage.as_ref().map(|c| c.image.clone()),
             sonar_url: config.tools.sonarqube.as_ref().map(|s| s.url.clone()),
             sonar_token,
-            static_image: config
-                .tools
-                .static_analysis
-                .as_ref()
-                .map(|s| s.image.clone()),
+            static_image: config.tools.static_analysis.as_ref().map(|s| s.image.clone()),
         }
     }
 }
@@ -376,10 +371,7 @@ tools:
         assert_eq!(config.workspace, PathBuf::from("/var/sqt/workspace"));
         assert!(config.tools.valgrind.is_some());
         assert!(config.tools.coverage.is_some());
-        assert_eq!(
-            config.tools.sonarqube.as_ref().unwrap().token_env,
-            "MY_SONAR_TOKEN"
-        );
+        assert_eq!(config.tools.sonarqube.as_ref().unwrap().token_env, "MY_SONAR_TOKEN");
     }
 
     #[test]
@@ -542,10 +534,7 @@ build:
         let config = ServerConfig::load(&config_path).unwrap();
         let build = config.build.unwrap();
 
-        assert!(
-            PathBuf::from(&build.source).is_absolute(),
-            "build.source must be absolute"
-        );
+        assert!(PathBuf::from(&build.source).is_absolute(), "build.source must be absolute");
         assert!(
             PathBuf::from(&build.engine_lib).is_absolute(),
             "build.engine_lib must be absolute"

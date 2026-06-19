@@ -570,10 +570,7 @@ mod tests {
     fn measurement_mode_wire_names() {
         // ARCH §5.3: latency / throughput.
         assert_eq!(serde_json::to_string(&MeasurementMode::Latency).unwrap(), "\"latency\"");
-        assert_eq!(
-            serde_json::to_string(&MeasurementMode::Throughput).unwrap(),
-            "\"throughput\""
-        );
+        assert_eq!(serde_json::to_string(&MeasurementMode::Throughput).unwrap(), "\"throughput\"");
     }
 
     // ----- JobRequest serialization (ARCH §5.5.1) ----------------------------
@@ -585,7 +582,11 @@ mod tests {
         let json = r#"{"use_case":"regression"}"#;
         let req: JobRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.repetitions, 1, "default repetitions must be 1");
-        assert_eq!(req.instrumentation, Instrumentation::None, "default instrumentation must be none");
+        assert_eq!(
+            req.instrumentation,
+            Instrumentation::None,
+            "default instrumentation must be none"
+        );
         assert_eq!(req.mode, MeasurementMode::Latency, "default mode must be latency");
         assert!(req.input.is_none());
     }
@@ -664,10 +665,7 @@ mod tests {
         }"#;
         let resp: JobStatusResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.status, JobStatus::Failed);
-        assert_eq!(
-            resp.error.as_deref(),
-            Some("binary not found: /opt/model.onnx")
-        );
+        assert_eq!(resp.error.as_deref(), Some("binary not found: /opt/model.onnx"));
     }
 
     #[test]

@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use reqwest::header::HeaderValue;
 
-use sqt_types::{DocsResponse, ErrorResponse, JobAccepted, JobRequest, JobStatus, JobStatusResponse, VersionResponse};
+use sqt_types::{
+    DocsResponse, ErrorResponse, JobAccepted, JobRequest, JobStatus, JobStatusResponse,
+    VersionResponse,
+};
 
 // ---------------------------------------------------------------------------
 // Credential redaction newtype
@@ -62,9 +65,7 @@ impl ApiClient {
             HeaderValue::from_str(&format!("Bearer {tok}"))
                 .context("API token contains invalid header characters")?;
         }
-        let client = reqwest::Client::builder()
-            .build()
-            .context("Failed to build HTTP client")?;
+        let client = reqwest::Client::builder().build().context("Failed to build HTTP client")?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_owned(),
@@ -76,11 +77,7 @@ impl ApiClient {
 
     /// Attach the `Authorization` header to a request builder if a token is configured.
     fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(Redacted(ref tok)) = self.token {
-            rb.bearer_auth(tok)
-        } else {
-            rb
-        }
+        if let Some(Redacted(ref tok)) = self.token { rb.bearer_auth(tok) } else { rb }
     }
 
     // -----------------------------------------------------------------------
@@ -106,9 +103,8 @@ impl ApiClient {
                         || e.is_timeout()
                         || e.status().is_some_and(|s| s.is_server_error()) =>
                 {
-                    let backoff = Duration::from_secs(
-                        self.retry_backoff_initial_secs * 2u64.pow(attempt),
-                    );
+                    let backoff =
+                        Duration::from_secs(self.retry_backoff_initial_secs * 2u64.pow(attempt));
                     tracing::warn!(
                         attempt,
                         backoff_secs = backoff.as_secs(),
@@ -138,15 +134,11 @@ impl ApiClient {
         let url = format!("{}/api/v1/version", self.base_url);
         let client = &self.client;
         let resp = self
-            .retry(|| async {
-                self.auth(client.get(&url)).send().await?.error_for_status()
-            })
+            .retry(|| async { self.auth(client.get(&url)).send().await?.error_for_status() })
             .await
             .with_context(|| format!("GET {url} failed"))?;
-        let resp: VersionResponse = resp
-            .json::<VersionResponse>()
-            .await
-            .context("Failed to parse VersionResponse")?;
+        let resp: VersionResponse =
+            resp.json::<VersionResponse>().await.context("Failed to parse VersionResponse")?;
         validate_version_response(&resp)?;
         Ok(resp)
     }
@@ -168,9 +160,7 @@ impl ApiClient {
         let url = format!("{}/api/v1/docs", self.base_url);
         let client = &self.client;
         let resp = self
-            .retry(|| async {
-                self.auth(client.get(&url)).send().await?.error_for_status()
-            })
+            .retry(|| async { self.auth(client.get(&url)).send().await?.error_for_status() })
             .await
             .with_context(|| format!("GET {url} failed"))?;
         let docs: DocsResponse = resp.json().await.context("Failed to parse DocsResponse")?;
@@ -205,11 +195,7 @@ impl ApiClient {
                     let r = req.send().await?;
                     // Convert 5xx into an error so the retry helper can detect server errors,
                     // but only do so — non-5xx are returned as-is for body inspection below.
-                    if r.status().is_server_error() {
-                        r.error_for_status()
-                    } else {
-                        Ok(r)
-                    }
+                    if r.status().is_server_error() { r.error_for_status() } else { Ok(r) }
                 }
             })
             .await
@@ -351,10 +337,7 @@ mod tests {
             !debug.contains("secret-token"),
             "raw token must not appear in Debug output: {debug}"
         );
-        assert!(
-            debug.contains("[REDACTED]"),
-            "Debug output should contain [REDACTED]: {debug}"
-        );
+        assert!(debug.contains("[REDACTED]"), "Debug output should contain [REDACTED]: {debug}");
     }
 
     #[test]
@@ -406,10 +389,7 @@ mod tests {
     fn validate_job_status_rejects_empty_job_id() {
         let resp = make_job_status_resp("");
         let err = validate_job_status(&resp).unwrap_err();
-        assert!(
-            err.to_string().contains("job_id"),
-            "error should mention job_id: {err}"
-        );
+        assert!(err.to_string().contains("job_id"), "error should mention job_id: {err}");
     }
 
     #[test]
@@ -432,10 +412,7 @@ mod tests {
     fn validate_version_response_rejects_empty_api_version() {
         let resp = make_version_resp("", "1.0.0");
         let err = validate_version_response(&resp).unwrap_err();
-        assert!(
-            err.to_string().contains("api_version"),
-            "error should mention api_version: {err}"
-        );
+        assert!(err.to_string().contains("api_version"), "error should mention api_version: {err}");
     }
 
     #[test]

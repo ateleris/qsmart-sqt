@@ -423,14 +423,8 @@ report:
         let result = load(&yaml);
         assert!(result.is_err(), "should fail when token env var is absent");
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("bearer token env var"),
-            "error should mention bearer token: {msg}"
-        );
-        assert!(
-            msg.contains(var_name),
-            "error should mention the var name: {msg}"
-        );
+        assert!(msg.contains("bearer token env var"), "error should mention bearer token: {msg}");
+        assert!(msg.contains(var_name), "error should mention the var name: {msg}");
     }
 
     #[test]
@@ -460,9 +454,6 @@ report:
         unsafe { std::env::remove_var(var_name) };
         assert!(result.is_err(), "should fail when token env var is empty");
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("bearer token env var"),
-            "error should mention bearer token: {msg}"
-        );
+        assert!(msg.contains("bearer token env var"), "error should mention bearer token: {msg}");
     }
 }

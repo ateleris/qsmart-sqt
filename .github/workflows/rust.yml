@@ -25,14 +25,21 @@ jobs:
       - name: Build CI image
         run: docker build -t "$BUILD_IMAGE" - < ci/Dockerfile
 
-      # The runner stays thin: it launches the toolchain image against its
-      # dind daemon. The workspace is on a volume shared with dind, so the
-      # checkout (and the artifacts written below) are visible to both.
-      - name: Build & test with coverage
+      # The runner stays thin: it launches the toolchain image against its dind
+      # daemon. The workspace is shared with dind so the checkout (and the
+      # artifacts written below) are visible to both. The cargo registry/git and
+      # an out-of-workspace target dir are persistent dind volumes, so crates
+      # aren't re-downloaded and dependencies aren't recompiled every run.
+      # (checkout's clean would wipe an in-workspace target/ each job.)
+      - name: Lint, test & coverage
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE":"$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
+            -v sqt-cargo-registry:/usr/local/cargo/registry \
+            -v sqt-cargo-git:/usr/local/cargo/git \
+            -v sqt-target:/cache/target \
+            -e CARGO_TARGET_DIR=/cache/target \
             -e CARGO_TERM_COLOR \
             "$BUILD_IMAGE" \
             bash ci/run-tests.sh

@@ -4,11 +4,7 @@ use anyhow::{Context, Result, bail};
 ///
 /// Uses the `api/issues/search` endpoint with component key derived from
 /// the project name (typically the binary name).
-pub fn collect(
-    sonar_url: &str,
-    sonar_token: &str,
-    project_key: &str,
-) -> Result<(i64, i64)> {
+pub fn collect(sonar_url: &str, sonar_token: &str, project_key: &str) -> Result<(i64, i64)> {
     let critical = fetch_issue_count(sonar_url, sonar_token, project_key, "CRITICAL")?;
     let major = fetch_issue_count(sonar_url, sonar_token, project_key, "MAJOR")?;
     Ok((critical, major))
@@ -35,20 +31,13 @@ fn fetch_issue_count(
         .context("sonarqube: failed to connect to SonarQube API")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "sonarqube: API returned status {} for severity {}",
-            resp.status(),
-            severity
-        );
+        bail!("sonarqube: API returned status {} for severity {}", resp.status(), severity);
     }
 
-    let body: serde_json::Value = resp
-        .json()
-        .context("sonarqube: failed to parse JSON response")?;
+    let body: serde_json::Value =
+        resp.json().context("sonarqube: failed to parse JSON response")?;
 
-    body["total"]
-        .as_i64()
-        .context("sonarqube: 'total' field missing or not an integer")
+    body["total"].as_i64().context("sonarqube: 'total' field missing or not an integer")
 }
 
 #[cfg(test)]
