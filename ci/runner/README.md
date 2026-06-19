@@ -10,12 +10,17 @@ while the runner itself stays minimal.
 
 ```
 ┌─ runner (myoung34/github-runner) ──┐      ┌─ dind (docker:27-dind) ─────────┐
-│  registers to the repo             │ TLS  │  isolated Docker daemon         │
+│  registers to the repo             │ TCP  │  isolated Docker daemon         │
 │  docker CLI ─────────────────────────────▶│  runs the ci build image        │
-│  DOCKER_HOST=tcp://dind:2376       │ 2376 │  /var/lib/docker = image cache  │
+│  DOCKER_HOST=tcp://dind:2375       │ 2375 │  /var/lib/docker = image cache  │
 └────────────────────────────────────┘      └─────────────────────────────────┘
         shared volume: /actions-runner/_work (the job checkout)
 ```
+
+dind's API is plaintext (`DOCKER_TLS_CERTDIR=""`) — it's reachable only on the
+private `ci` compose network, never from the host or internet, so the TLS certs
+that variant requires would add a generation step and a startup race for no real
+security gain.
 
 The toolchain lives in `../Dockerfile` (the build image). The workflow builds
 it on the dind daemon on demand (`docker build - < ci/Dockerfile`) and caches
@@ -56,8 +61,8 @@ run on the runner via its bundled node.
 
 > To switch to the lighter Docker-out-of-Docker model later: drop the `dind`
 > service, bind-mount `/var/run/docker.sock` into the runner, and remove the
-> `DOCKER_HOST`/TLS env. The host daemon then runs the build containers and
-> shares its image cache.
+> `DOCKER_HOST` env. The host daemon then runs the build containers and shares
+> its image cache.
 
 ## Notes & caveats
 

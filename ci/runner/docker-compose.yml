@@ -4,18 +4,20 @@
 #   dind    - privileged Docker daemon; build/analysis containers run here,
 #             isolated from the host daemon. Image cache persists across jobs.
 #   runner  - thin agent (myoung34/github-runner). Registers to the repo and
-#             talks to dind over TLS. The toolchain is NOT here — jobs launch
-#             the ci build image via `docker run` (see .github/workflows/rust.yml).
+#             talks to dind over its plaintext TCP socket on the private `ci`
+#             network. The toolchain is NOT here — jobs launch the ci build
+#             image via `docker run` (see .github/workflows/rust.yml).
 #
 # Deploy:  cp .env.example .env  &&  edit it  &&  docker compose up -d
 services:
   dind:
-    image: docker:27-dind
+    image: docker:dind
     privileged: true                       # required for Docker-in-Docker
     environment:
-      DOCKER_TLS_CERTDIR: /certs
+      DOCKER_TLS_CERTDIR: ""               # empty -> no TLS; listen on tcp://0.0.0.0:2375.
+                                           # Safe: the socket is only on the private `ci`
+                                           # network, never exposed to host or internet.
     volumes:
-      - ./certs:/certs
       - ./runner-work:/actions-runner/_work  # MUST match the runner's path below
       - ./dind-cache:/var/lib/docker         # persistent image cache across jobs
     networks: [ci]
@@ -30,17 +32,13 @@ services:
       RUNNER_SCOPE: repo
       RUNNER_NAME: ${RUNNER_NAME:-ats-sqt-dind}
       LABELS: ${RUNNER_LABELS:-self-hosted,dind}
-      EPHEMERAL: "true"                    # fresh runner per job; clean state
       DISABLE_AUTO_UPDATE: "true"          # pin to the image's runner; in-container
                                            # self-update can corrupt bin/ and, with
                                            # restart:always, loops on the broken layer
       RUNNER_WORKDIR: /actions-runner/_work
-      # Point the runner's docker CLI at the dind daemon.
-      DOCKER_HOST: tcp://dind:2376
-      DOCKER_TLS_VERIFY: "1"
-      DOCKER_CERT_PATH: /certs/client
+      # Point the runner's docker CLI at the dind daemon (plaintext TCP, no certs).
+      DOCKER_HOST: tcp://dind:2375
     volumes:
-      - ./certs:/certs:ro
       - ./runner-work:/actions-runner/_work  # same path as dind -> shared checkout
     networks: [ci]
     restart: always

@@ -6,7 +6,7 @@
 #
 # Built on demand by the workflow (`docker build - < ci/Dockerfile`) and
 # cached in dind's persistent storage; never pushed to a registry.
-FROM rust:1.95-slim-bookworm
+FROM rust:1-slim-trixie
 
 # Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

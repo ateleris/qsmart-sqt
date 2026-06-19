@@ -5,6 +5,5 @@
 ci/runner/.env
 
 # Runner runtime data (bind-mounted by ci/runner/docker-compose.yml)
-ci/runner/certs/
 ci/runner/runner-work/
 ci/runner/dind-cache/
