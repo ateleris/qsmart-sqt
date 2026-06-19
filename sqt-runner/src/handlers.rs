@@ -327,7 +327,7 @@ fn scan_docs_dir(dir: &std::path::Path) -> anyhow::Result<DocsResponse> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("cannot read docs directory: {}", dir.display()))?
         .filter_map(std::result::Result::ok)
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .collect();
 
     entries.sort_by_key(std::fs::DirEntry::file_name);

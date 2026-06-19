@@ -82,7 +82,7 @@ fn run_preflight_checks(server_config: &ServerConfig, tool_config: &ToolConfig) 
         let n = std::fs::read_dir(&docs.directory)
             .expect("preflight: cannot read docs directory")
             .filter_map(std::result::Result::ok)
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
             .count();
         tracing::info!("docs directory OK: {} ({n} file(s))", docs.directory.display());
     }
