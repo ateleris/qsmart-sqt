@@ -91,3 +91,68 @@ pub trait ExecutionBackend: Send + Sync {
     /// `target_id` and `toolchain_versions` feed `GET /api/v1/version`.
     fn describe(&self) -> BackendDescriptor;
 }
+
+/// Ergonomic, lifecycle-oriented backend trait — **implement this**, not
+/// [`ExecutionBackend`], when adding a backend.
+///
+/// A blanket impl turns every `LifecycleBackend` into an `ExecutionBackend`,
+/// supplying the `execute` orchestration (prepare → run → collect, with
+/// `teardown` always run afterwards) for free. The only types that cross the
+/// boundary are [`JobContext`] in and `JobMetrics` / [`BackendDescriptor`]
+/// out; `Prepared` and `RawRun` stay private to the implementing backend.
+///
+/// The trait is *not* object-safe (it has associated types), which is fine:
+/// the object-safe [`ExecutionBackend`] is what the HTTP layer stores as
+/// `Arc<dyn ExecutionBackend>`.
+pub trait LifecycleBackend: Send + Sync {
+    /// Backend-private handle produced by `prepare` (e.g. compiled binary path,
+    /// container spec, board session).
+    type Prepared;
+    /// Backend-private raw output produced by `run`, mapped to metrics by
+    /// `collect`.
+    type RawRun;
+
+    /// See [`ExecutionBackend::preflight`].
+    fn preflight(&self) -> Result<()>;
+
+    /// See [`ExecutionBackend::describe`].
+    fn describe(&self) -> BackendDescriptor;
+
+    /// Phase 1: provision artifacts for the job (compile, flash, stage input).
+    fn prepare(&self, ctx: &JobContext) -> Result<Self::Prepared>;
+
+    /// Phase 2: run the workload under measurement, gathering raw output.
+    fn run(&self, ctx: &JobContext, prepared: &Self::Prepared) -> Result<Self::RawRun>;
+
+    /// Phase 3: map raw output into the `JobMetrics` DTO.
+    fn collect(&self, ctx: &JobContext, raw: Self::RawRun) -> Result<JobMetrics>;
+
+    /// Phase 4: release per-job resources. Runs even when an earlier phase
+    /// failed. Defaults to dropping `Prepared` with no extra work.
+    fn teardown(&self, _ctx: &JobContext, _prepared: Self::Prepared) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<T: LifecycleBackend> ExecutionBackend for T {
+    fn preflight(&self) -> Result<()> {
+        LifecycleBackend::preflight(self)
+    }
+
+    fn describe(&self) -> BackendDescriptor {
+        LifecycleBackend::describe(self)
+    }
+
+    fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics> {
+        let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(60));
+        let ctx = JobContext { request, workspace, timeout };
+
+        let prepared = self.prepare(&ctx)?;
+        // run → collect; teardown runs unconditionally afterwards.
+        let outcome = self.run(&ctx, &prepared).and_then(|raw| self.collect(&ctx, raw));
+        if let Err(e) = self.teardown(&ctx, prepared) {
+            tracing::warn!(error = format!("{e:#}"), "teardown failed");
+        }
+        outcome
+    }
+}

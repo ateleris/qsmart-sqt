@@ -400,27 +400,32 @@ mod tests {
     use tokio::sync::Semaphore;
     use tower::ServiceExt as _;
 
-    use crate::executor::ExecutionBackend;
+    use crate::executor::{BackendDescriptor, JobContext, LifecycleBackend};
     use crate::store;
 
     struct StubExecutor;
-    impl ExecutionBackend for StubExecutor {
+    impl LifecycleBackend for StubExecutor {
+        type Prepared = ();
+        type RawRun = ();
+
         fn preflight(&self) -> anyhow::Result<()> {
             Ok(())
         }
-        fn execute(
-            &self,
-            _req: &sqt_types::JobRequest,
-            _ws: &std::path::Path,
-        ) -> anyhow::Result<JobMetrics> {
-            Ok(JobMetrics::default())
-        }
-        fn describe(&self) -> crate::executor::BackendDescriptor {
-            crate::executor::BackendDescriptor {
+        fn describe(&self) -> BackendDescriptor {
+            BackendDescriptor {
                 hardware: HardwareInfo::default(),
                 target_id: "test-target".to_string(),
                 toolchain_versions: std::collections::HashMap::new(),
             }
+        }
+        fn prepare(&self, _ctx: &JobContext) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn run(&self, _ctx: &JobContext, _prepared: &()) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn collect(&self, _ctx: &JobContext, _raw: ()) -> anyhow::Result<JobMetrics> {
+            Ok(JobMetrics::default())
         }
     }
 

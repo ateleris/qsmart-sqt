@@ -8,7 +8,7 @@ use crate::config::{BinaryConfig, BuildConfig, ToolConfig};
 use crate::docker::{self, DockerRun};
 use crate::tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind};
 
-use super::{BackendDescriptor, ExecutionBackend, JobContext};
+use super::{BackendDescriptor, JobContext, LifecycleBackend};
 
 /// Default job executor: compiles (when configured) and runs workloads in
 /// Docker containers, then collects metrics via the configured tool chain.
@@ -16,8 +16,10 @@ use super::{BackendDescriptor, ExecutionBackend, JobContext};
 /// # Customisation
 ///
 /// Fork `sqt-runner` and replace `DockerExecutor` with your own
-/// [`ExecutionBackend`] implementation in `main.rs` to integrate a different
-/// ML-L framework, compiler, or target architecture.
+/// [`LifecycleBackend`] implementation in `main.rs` to integrate a different
+/// ML-L framework, compiler, or target architecture. Implementing
+/// `LifecycleBackend` yields an [`super::ExecutionBackend`] via the blanket
+/// impl, so `main.rs` can store it as `Arc<dyn ExecutionBackend>` unchanged.
 pub struct DockerExecutor {
     binary_config: BinaryConfig,
     build_config: Option<BuildConfig>,
@@ -27,9 +29,9 @@ pub struct DockerExecutor {
     toolchain_versions: std::collections::HashMap<String, String>,
 }
 
-/// Per-job state produced by [`DockerExecutor::prepare`] and consumed by the
-/// `run`/`teardown` phases.
-struct Prepared {
+/// Per-job state produced by `prepare` and consumed by the `run`/`teardown`
+/// phases. Exposed as `<DockerExecutor as LifecycleBackend>::Prepared`.
+pub struct Prepared {
     /// Binary config with `path` resolved to the actual executable (the
     /// pre-built binary, or the freshly compiled one in build mode).
     binary_config: BinaryConfig,
@@ -37,10 +39,11 @@ struct Prepared {
     input: Option<String>,
 }
 
-/// Raw measurements gathered by [`DockerExecutor::run`], mapped into
-/// `JobMetrics` by [`DockerExecutor::collect`]. Keeping the IO (`run`) separate
-/// from the pure mapping (`collect`) makes the latter trivially testable.
-struct RawRun {
+/// Raw measurements gathered by `run`, mapped into `JobMetrics` by `collect`.
+/// Keeping the IO (`run`) separate from the pure mapping (`collect`) makes the
+/// latter trivially testable. Exposed as
+/// `<DockerExecutor as LifecycleBackend>::RawRun`.
+pub struct RawRun {
     primary: run_binary::RunBinaryOutput,
     leaks_bytes: Option<i64>,
     coverage_line_pct: Option<f64>,
@@ -137,10 +140,58 @@ impl DockerExecutor {
 
         Ok(output)
     }
+}
+
+impl LifecycleBackend for DockerExecutor {
+    type Prepared = Prepared;
+    type RawRun = RawRun;
+
+    fn preflight(&self) -> Result<()> {
+        tracing::info!("running Docker backend preflight checks...");
+
+        docker::check_docker().context("Docker check failed")?;
+
+        let images: Vec<(&str, &str)> = [
+            (self.tool_config.run_image.as_deref(), "run"),
+            (self.tool_config.valgrind_image.as_deref(), "valgrind"),
+            (self.tool_config.coverage_image.as_deref(), "coverage"),
+            (self.tool_config.static_image.as_deref(), "static_analysis"),
+            (self.build_config.as_ref().map(|b| b.image.as_str()), "build"),
+        ]
+        .into_iter()
+        .filter_map(|(img, name)| img.map(|i| (i, name)))
+        .collect();
+
+        for (image, name) in &images {
+            docker::check_image(image).with_context(|| format!("{name} image check failed"))?;
+            tracing::info!("{name} image OK: {image}");
+        }
+
+        // When building per-job there is no pre-built binary to probe; the
+        // compile step validates the source instead.
+        if self.build_config.is_none()
+            && let Some(ref run_image) = self.tool_config.run_image
+        {
+            docker::check_binary_in_image(run_image, &self.binary_config.path)
+                .context("binary check failed")?;
+            tracing::info!("binary OK: {} (in {})", self.binary_config.path, run_image);
+        }
+
+        tracing::info!("Docker backend preflight passed");
+        Ok(())
+    }
+
+    fn describe(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            hardware: self.hardware.clone(),
+            target_id: self.target_id.clone(),
+            toolchain_versions: self.toolchain_versions.clone(),
+        }
+    }
 
     /// Phase 1: resolve the binary to run (compile in build mode, else use the
     /// pre-built one) and the input path for this job.
-    fn prepare(&self, ctx: &JobContext) -> Result<Prepared> {
+    fn prepare(&self, ctx: &JobContext) -> Result<Self::Prepared> {
         let binary_config = if self.build_config.is_some() {
             let binary_path = self.compile(ctx.request, ctx.workspace)?;
             let mut bc = self.binary_config.clone();
@@ -293,14 +344,13 @@ impl DockerExecutor {
 
     /// Phase 3: map raw measurements into the `JobMetrics` DTO. Pure, no IO.
     /// Consumes `RawRun` by value as the terminal owner of the run's output.
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    fn collect(&self, raw: RawRun) -> JobMetrics {
+    fn collect(&self, _ctx: &JobContext, raw: Self::RawRun) -> Result<JobMetrics> {
         let (static_critical_issues, static_major_issues) = match raw.sonar_issues {
             Some((critical, major)) => (Some(critical), Some(major)),
             None => (None, None),
         };
 
-        JobMetrics {
+        Ok(JobMetrics {
             return_code: raw.primary.return_code,
             time_avg_ms: raw.primary.time_execution_ms,
             memory_peak_rss_kb: raw.primary.memory_peak_rss_kb,
@@ -313,70 +363,12 @@ impl DockerExecutor {
             static_major_issues,
             static_warnings: raw.static_warnings,
             ..Default::default()
-        }
+        })
     }
 
-    /// Phase 4: release per-job resources. Consumes `Prepared` by value — other
-    /// backends free real resources here (containers, board sessions); `docker
-    /// run --rm` cleans up for us, so this is a no-op.
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
-    fn teardown(&self, _prepared: Prepared) {}
-}
-
-impl ExecutionBackend for DockerExecutor {
-    fn preflight(&self) -> Result<()> {
-        tracing::info!("running Docker backend preflight checks...");
-
-        docker::check_docker().context("Docker check failed")?;
-
-        let images: Vec<(&str, &str)> = [
-            (self.tool_config.run_image.as_deref(), "run"),
-            (self.tool_config.valgrind_image.as_deref(), "valgrind"),
-            (self.tool_config.coverage_image.as_deref(), "coverage"),
-            (self.tool_config.static_image.as_deref(), "static_analysis"),
-            (self.build_config.as_ref().map(|b| b.image.as_str()), "build"),
-        ]
-        .into_iter()
-        .filter_map(|(img, name)| img.map(|i| (i, name)))
-        .collect();
-
-        for (image, name) in &images {
-            docker::check_image(image).with_context(|| format!("{name} image check failed"))?;
-            tracing::info!("{name} image OK: {image}");
-        }
-
-        // When building per-job there is no pre-built binary to probe; the
-        // compile step validates the source instead.
-        if self.build_config.is_none()
-            && let Some(ref run_image) = self.tool_config.run_image
-        {
-            docker::check_binary_in_image(run_image, &self.binary_config.path)
-                .context("binary check failed")?;
-            tracing::info!("binary OK: {} (in {})", self.binary_config.path, run_image);
-        }
-
-        tracing::info!("Docker backend preflight passed");
-        Ok(())
-    }
-
-    fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics> {
-        let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(60));
-        let ctx = JobContext { request, workspace, timeout };
-
-        let prepared = self.prepare(&ctx)?;
-        // Run then map; teardown runs unconditionally afterward (even on error).
-        let outcome = self.run(&ctx, &prepared).map(|raw| self.collect(raw));
-        self.teardown(prepared);
-        outcome
-    }
-
-    fn describe(&self) -> BackendDescriptor {
-        BackendDescriptor {
-            hardware: self.hardware.clone(),
-            target_id: self.target_id.clone(),
-            toolchain_versions: self.toolchain_versions.clone(),
-        }
-    }
+    // Phase 4 (teardown): the default no-op suffices — `docker run --rm` removes
+    // containers and the workspace is owned by the caller. Other backends
+    // override it to release boards, power, etc.
 }
 
 /// Return compiler flags for the requested instrumentation mode.
