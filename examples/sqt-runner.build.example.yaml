@@ -1,0 +1,61 @@
+# sqt-runner configuration — Mode 2: COMPILE-PER-JOB
+#
+# Unlike sqt-runner.example.yaml (which runs a pre-built binary), this config
+# has a `build:` section. When present, the runner compiles `build.source`
+# against `build.engine_lib` (the ML-L inference engine .so) into
+# <workspace>/binary BEFORE EACH job, applying instrumentation flags chosen
+# from the job request (none → -O2, asan, valgrind, gprof).
+#
+# This is a TEMPLATE: the artifacts under ./artifacts (main.cpp, libengine.so,
+# headers) would be supplied by the ML-L Provider. Preflight only verifies the
+# `build.image` exists locally; the source/engine paths are checked at compile
+# time, when the first job runs.
+#
+# Usage: sqt-runner -c sqt-runner.build.example.yaml [--port 3000]
+
+binary:
+  # IMPORTANT: in build mode this `path` is IGNORED — it is overwritten by the
+  # freshly compiled output (<workspace>/binary). The schema still requires the
+  # field, so a placeholder is fine. The REST of this block (args/env/
+  # input_mode) DOES still apply to the compiled binary.
+  path: /unused-in-build-mode
+
+  # args: ["--model", "/artifacts/resnet50.onnx"]   # forwarded to the compiled binary
+  env:
+    # The runner auto-sets LD_LIBRARY_PATH to the workspace (where engine_lib is
+    # copied after compile), so the binary finds the engine .so at runtime.
+    # Add any extra runtime env here:
+    MODEL_DIR: /artifacts
+  input_mode: stdin                  # stdin | arg | env:VAR_NAME
+
+workspace: ./sqt-workspace           # compiled binary + tool output land here
+
+tools:
+  run:
+    image: ubuntu:latest             # must be able to run the compiled binary
+                                     # and load the linked engine .so
+
+build:
+  image: gcc:14-bookworm             # compiler toolchain image (must exist locally)
+  source: ./artifacts/main.cpp       # main program that drives the ML-L engine
+  engine_lib: ./artifacts/libengine.so  # ML-L inference engine shared library to link
+  compiler: g++                      # default: g++
+  # Note: do NOT repeat the optimization level here — instrumentation flags
+  # (e.g. -O2 for `none`) are prepended automatically per job request.
+  extra_flags: ["-std=c++17"]
+  include_dirs: ["./artifacts/include"]
+  compile_timeout_secs: 300
+
+# Optional metric tools work identically to Mode 1; uncomment as needed.
+# tools.valgrind / coverage / sonarqube / static_analysis ...
+
+hardware:
+  type: x86_64
+  model: Intel Core i7-12700
+  os: Ubuntu 24.04 LTS
+
+runner_hardware:
+  target_id: dev-x86_64-build
+  toolchain_versions:
+    gcc: "14"
+    onnxruntime: "1.17"

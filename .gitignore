@@ -1,6 +1,9 @@
 /target
 .idea
 
+# sqt-runner workspace produced by the example configs
+/sqt-workspace
+
 # Runner deployment secrets (PAT lives here)
 ci/runner/.env
 

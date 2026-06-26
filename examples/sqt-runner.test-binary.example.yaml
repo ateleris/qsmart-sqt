@@ -1,0 +1,43 @@
+# sqt-runner configuration — pointed at the built-in `sqt-test-binary` fixture.
+#
+# Quick start (from the repo root):
+#   1. ./examples/run-image/build.sh
+#        → builds target/debug/sqt-test-binary AND the sqt-run-time:latest image
+#   2. RUST_LOG=info cargo run -p sqt-runner --bin sqt-runner -- -c examples/sqt-runner.test-binary.example.yaml
+#   3. In another shell, submit a job and poll (use_case must be a valid
+#      WorkloadType, e.g. image_classification / object_detection / regression):
+#        set JOB (curl -s -X POST localhost:3000/api/v1/jobs \
+#                   -H 'content-type: application/json' -d '{"use_case":"image_classification"}' | jq -r .job_id)
+#        curl -s localhost:3000/api/v1/jobs/$JOB | jq
+#
+# sqt-test-binary flags (set via binary.args):
+#   --busy MS    busy-loop ~MS ms   → exercises CPU% + execution time
+#   --leak N     leak N bytes       → exercises memory.leaks_bytes (needs the valgrind tool)
+#   --exit CODE  exit with CODE     → exercises return_code
+
+binary:
+  path: ./target/debug/sqt-test-binary   # built by examples/run-image/build.sh
+  args: ["--busy", "300", "--leak", "8192"]
+  input_mode: stdin                      # the test binary ignores stdin; any mode is fine
+
+workspace: ./sqt-workspace
+
+tools:
+  run:
+    # Ubuntu 24.04 + GNU time, built by examples/run-image/build.sh.
+    # GNU time (/usr/bin/time -v) lets the runner capture peak RSS and CPU%;
+    # a plain `ubuntu:latest` returns those as null.
+    image: sqt-run-time:latest
+
+  # Uncomment to also measure leaks (requires a valgrind-equipped image):
+  # valgrind:
+  #   image: sqt-valgrind:latest
+
+hardware:
+  type: x86_64
+  os: Ubuntu 24.04 LTS
+
+runner_hardware:
+  target_id: dev-x86_64-testbin
+  toolchain_versions:
+    rustc: "stable"
