@@ -1,0 +1,11 @@
+# REQ-ML-L-002 — Memory footprint stays within the deployment budget.
+# Exercises the runner's GNU-time peak-RSS measurement (memory.peak_rss_kb).
+# Same use_case+input as the other specs, so they share one measurement run.
+
+requirement_uid: REQ-ML-L-002
+use_case: image_classification
+
+constraints:
+  - metric: memory.peak_rss_kb   # memory.* values accept B/KB/MB/GB suffixes
+    operator: lte
+    value: "50 MB"

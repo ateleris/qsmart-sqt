@@ -8,8 +8,11 @@ project:
   version: "1.0.0"
 
 test_specs:
-  files:
-    - ./specs/example.sqt.yaml      # one or more test spec files; relative paths resolved against this file
+  files:                            # one or more spec files; relative paths resolved against this file
+    - ./specs/example.sqt.yaml      # REQ-ML-L-001: exit code + execution time
+    - ./specs/REQ-ML-L-002.sqt.yaml # REQ-ML-L-002: peak RSS budget
+    - ./specs/REQ-ML-L-003.sqt.yaml # REQ-ML-L-003: CPU budget + exit code
+    - ./specs/REQ-ML-L-004.sqt.yaml # REQ-ML-L-004: binary size budget
 
 runner:
   url: http://localhost:3000        # sqt-runner base URL (http:// or https://)

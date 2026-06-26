@@ -1,0 +1,11 @@
+# REQ-ML-L-004 — Deployment artifact size is bounded.
+# NOTE: binary.size_kb is NOT a memory.*/time.* metric, so unit suffixes are
+# NOT converted — give a plain number in KB (here 51200 KB = 50 MB).
+
+requirement_uid: REQ-ML-L-004
+use_case: image_classification
+
+constraints:
+  - metric: binary.size_kb
+    operator: lte
+    value: 51200          # KB (= 50 MB)
