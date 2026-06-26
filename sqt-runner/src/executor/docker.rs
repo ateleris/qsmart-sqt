@@ -293,27 +293,27 @@ impl LifecycleBackend for DockerExecutor {
         };
 
         // --- Optional: SonarQube ---------------------------------------------
-        let sonar_issues = if let (Some(url), Some(token)) = (&config.sonar_url, &config.sonar_token)
-        {
-            let project_key = Path::new(&binary_config.path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&binary_config.path);
+        let sonar_issues =
+            if let (Some(url), Some(token)) = (&config.sonar_url, &config.sonar_token) {
+                let project_key = Path::new(&binary_config.path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&binary_config.path);
 
-            tracing::info!(url = %url, project_key = %project_key, "querying sonarqube");
-            match sonarqube::collect(url, token, project_key) {
-                Ok((critical, major)) => {
-                    tracing::info!(critical, major, "sonarqube complete");
-                    Some((critical, major))
+                tracing::info!(url = %url, project_key = %project_key, "querying sonarqube");
+                match sonarqube::collect(url, token, project_key) {
+                    Ok((critical, major)) => {
+                        tracing::info!(critical, major, "sonarqube complete");
+                        Some((critical, major))
+                    }
+                    Err(e) => {
+                        tracing::warn!("sonarqube failed, skipping static metrics: {e:#}");
+                        None
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("sonarqube failed, skipping static metrics: {e:#}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         // --- Optional: static analysis ---------------------------------------
         let static_warnings = if let Some(ref image) = config.static_image {

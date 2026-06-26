@@ -15,7 +15,8 @@ mod store;
 mod tools;
 
 use config::{
-    Backend, BinaryConfig, DockerBackendConfig, DocsConfig, HardwareConfig, ServerConfig, ToolConfig,
+    Backend, BinaryConfig, DockerBackendConfig, DocsConfig, HardwareConfig, ServerConfig,
+    ToolConfig,
 };
 use executor::ExecutionBackend;
 use executor::docker::DockerExecutor;

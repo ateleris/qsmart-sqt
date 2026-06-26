@@ -325,8 +325,7 @@ pub struct ToolConfig {
 
 impl ToolConfig {
     pub fn from_tools(tools: &ToolsConfig) -> Self {
-        let sonar_token =
-            tools.sonarqube.as_ref().and_then(|s| std::env::var(&s.token_env).ok());
+        let sonar_token = tools.sonarqube.as_ref().and_then(|s| std::env::var(&s.token_env).ok());
 
         Self {
             run_image: tools.run.as_ref().map(|r| r.image.clone()),
