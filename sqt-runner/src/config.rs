@@ -183,17 +183,23 @@ pub struct HardwareConfig {
     pub toolchain_versions: std::collections::HashMap<String, String>,
 }
 
-/// Top-level server configuration loaded from a YAML file.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
-    /// Binary under test configuration.
-    pub binary: BinaryConfig,
+/// Which execution backend the runner drives.
+///
+/// Selected by the top-level `backend:` key. Backend-specific settings live in
+/// a section named after the variant (currently only `docker:`). Adding a new
+/// backend is a new variant here plus a match arm in `main.rs`'s factory.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    /// Run workloads in Docker containers (the default).
+    #[default]
+    Docker,
+}
 
-    /// Workspace directory for evidence and tool output.
-    #[serde(default = "default_workspace")]
-    pub workspace: PathBuf,
-
-    /// Per-tool configuration.
+/// Settings specific to the Docker execution backend (the `docker:` section).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DockerBackendConfig {
+    /// Per-tool Docker image configuration.
     #[serde(default)]
     pub tools: ToolsConfig,
 
@@ -204,6 +210,25 @@ pub struct ServerConfig {
     /// must point to a pre-built executable.
     #[serde(default)]
     pub build: Option<BuildConfig>,
+}
+
+/// Top-level server configuration loaded from a YAML file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    /// Which execution backend to use.
+    #[serde(default)]
+    pub backend: Backend,
+
+    /// Binary under test configuration.
+    pub binary: BinaryConfig,
+
+    /// Workspace directory for evidence and tool output.
+    #[serde(default = "default_workspace")]
+    pub workspace: PathBuf,
+
+    /// Docker backend settings (tools, build step).
+    #[serde(default)]
+    pub docker: DockerBackendConfig,
 
     /// Description of the target hardware.
     ///
@@ -261,7 +286,7 @@ impl ServerConfig {
         }
 
         // Resolve build paths to absolute (Docker bind mounts require absolute paths).
-        if let Some(ref mut build) = config.build {
+        if let Some(ref mut build) = config.docker.build {
             let source = PathBuf::from(&build.source);
             if source.is_relative() {
                 build.source = cwd.join(&source).display().to_string();
@@ -299,17 +324,16 @@ pub struct ToolConfig {
 }
 
 impl ToolConfig {
-    pub fn from_server_config(config: &ServerConfig) -> Self {
-        let sonar_token =
-            config.tools.sonarqube.as_ref().and_then(|s| std::env::var(&s.token_env).ok());
+    pub fn from_tools(tools: &ToolsConfig) -> Self {
+        let sonar_token = tools.sonarqube.as_ref().and_then(|s| std::env::var(&s.token_env).ok());
 
         Self {
-            run_image: config.tools.run.as_ref().map(|r| r.image.clone()),
-            valgrind_image: config.tools.valgrind.as_ref().map(|v| v.image.clone()),
-            coverage_image: config.tools.coverage.as_ref().map(|c| c.image.clone()),
-            sonar_url: config.tools.sonarqube.as_ref().map(|s| s.url.clone()),
+            run_image: tools.run.as_ref().map(|r| r.image.clone()),
+            valgrind_image: tools.valgrind.as_ref().map(|v| v.image.clone()),
+            coverage_image: tools.coverage.as_ref().map(|c| c.image.clone()),
+            sonar_url: tools.sonarqube.as_ref().map(|s| s.url.clone()),
             sonar_token,
-            static_image: config.tools.static_analysis.as_ref().map(|s| s.image.clone()),
+            static_image: tools.static_analysis.as_ref().map(|s| s.image.clone()),
         }
     }
 }
@@ -323,23 +347,27 @@ mod tests {
         let yaml = r#"
 binary:
   path: target/debug/my-app
-tools:
-  run:
-    image: sqt-run:latest
+docker:
+  tools:
+    run:
+      image: sqt-run:latest
 "#;
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.binary.path, "target/debug/my-app");
         assert!(config.binary.args.is_empty());
         assert!(config.binary.env.is_empty());
         assert!(matches!(config.binary.input_mode, InputMode::Stdin));
+        assert!(matches!(config.backend, Backend::Docker));
         assert_eq!(config.workspace, PathBuf::from("/tmp/sqt-dev-server"));
-        assert_eq!(config.tools.run.as_ref().unwrap().image, "sqt-run:latest");
-        assert!(config.tools.valgrind.is_none());
+        assert_eq!(config.docker.tools.run.as_ref().unwrap().image, "sqt-run:latest");
+        assert!(config.docker.tools.valgrind.is_none());
     }
 
     #[test]
     fn parse_full_config() {
         let yaml = r#"
+backend: docker
+
 binary:
   path: target/debug/my-app
   args: ["--model", "resnet50"]
@@ -350,18 +378,19 @@ binary:
 
 workspace: /var/sqt/workspace
 
-tools:
-  run:
-    image: sqt-run:latest
-  valgrind:
-    image: sqt-valgrind:latest
-  coverage:
-    image: sqt-coverage:latest
-  sonarqube:
-    url: http://sonar.local:9000
-    token_env: MY_SONAR_TOKEN
-  static_analysis:
-    image: sqt-static:latest
+docker:
+  tools:
+    run:
+      image: sqt-run:latest
+    valgrind:
+      image: sqt-valgrind:latest
+    coverage:
+      image: sqt-coverage:latest
+    sonarqube:
+      url: http://sonar.local:9000
+      token_env: MY_SONAR_TOKEN
+    static_analysis:
+      image: sqt-static:latest
 "#;
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.binary.path, "target/debug/my-app");
@@ -369,9 +398,23 @@ tools:
         assert_eq!(config.binary.env.get("LD_LIBRARY_PATH").unwrap(), "/opt/libs");
         assert!(matches!(config.binary.input_mode, InputMode::Arg));
         assert_eq!(config.workspace, PathBuf::from("/var/sqt/workspace"));
-        assert!(config.tools.valgrind.is_some());
-        assert!(config.tools.coverage.is_some());
-        assert_eq!(config.tools.sonarqube.as_ref().unwrap().token_env, "MY_SONAR_TOKEN");
+        assert!(config.docker.tools.valgrind.is_some());
+        assert!(config.docker.tools.coverage.is_some());
+        assert_eq!(config.docker.tools.sonarqube.as_ref().unwrap().token_env, "MY_SONAR_TOKEN");
+    }
+
+    #[test]
+    fn backend_defaults_to_docker_when_absent() {
+        let yaml = "binary:\n  path: app\n";
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(config.backend, Backend::Docker));
+    }
+
+    #[test]
+    fn backend_unknown_value_is_error() {
+        let yaml = "backend: labgrid\nbinary:\n  path: app\n";
+        let result: Result<ServerConfig, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err(), "unknown backend should fail to parse until a variant exists");
     }
 
     #[test]
@@ -411,18 +454,19 @@ binary:
     }
 
     #[test]
-    fn tool_config_from_server_config() {
+    fn tool_config_from_tools() {
         let yaml = r#"
 binary:
   path: app
-tools:
-  run:
-    image: run:1
-  valgrind:
-    image: valgrind:1
+docker:
+  tools:
+    run:
+      image: run:1
+    valgrind:
+      image: valgrind:1
 "#;
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
-        let tc = ToolConfig::from_server_config(&config);
+        let tc = ToolConfig::from_tools(&config.docker.tools);
         assert_eq!(tc.run_image.as_deref(), Some("run:1"));
         assert_eq!(tc.valgrind_image.as_deref(), Some("valgrind:1"));
         assert!(tc.coverage_image.is_none());
@@ -435,17 +479,18 @@ tools:
         let yaml = r#"
 binary:
   path: app
-tools:
-  run:
-    image: run:1
-  sonarqube:
-    url: http://sonar:9000
-    token_env: MY_SONAR_TOKEN
+docker:
+  tools:
+    run:
+      image: run:1
+    sonarqube:
+      url: http://sonar:9000
+      token_env: MY_SONAR_TOKEN
 "#;
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::set_var("MY_SONAR_TOKEN", "secret-token") };
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
-        let tc = ToolConfig::from_server_config(&config);
+        let tc = ToolConfig::from_tools(&config.docker.tools);
         assert_eq!(tc.sonar_url.as_deref(), Some("http://sonar:9000"));
         assert_eq!(tc.sonar_token.as_deref(), Some("secret-token"));
         unsafe { std::env::remove_var("MY_SONAR_TOKEN") };
@@ -456,16 +501,17 @@ tools:
         let yaml = r#"
 binary:
   path: app
-tools:
-  run:
-    image: run:1
-  sonarqube:
-    url: http://sonar:9000
+docker:
+  tools:
+    run:
+      image: run:1
+    sonarqube:
+      url: http://sonar:9000
 "#;
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::remove_var("SONAR_TOKEN") };
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
-        let tc = ToolConfig::from_server_config(&config);
+        let tc = ToolConfig::from_tools(&config.docker.tools);
         assert!(tc.sonar_token.is_none());
     }
 
@@ -493,9 +539,10 @@ binary:
 binary:
   path: artifacts/ml_l_inference
 workspace: workspace
-tools:
-  run:
-    image: sqt-run:latest
+docker:
+  tools:
+    run:
+      image: sqt-run:latest
 "#
         )
         .unwrap();
@@ -518,21 +565,22 @@ tools:
             r#"
 binary:
   path: /bin/app
-tools:
-  run:
-    image: sqt-run:latest
-build:
-  image: gcc:14
-  source: src/main.cpp
-  engine_lib: lib/libengine.so
-  include_dirs:
-    - include/
+docker:
+  tools:
+    run:
+      image: sqt-run:latest
+  build:
+    image: gcc:14
+    source: src/main.cpp
+    engine_lib: lib/libengine.so
+    include_dirs:
+      - include/
 "#
         )
         .unwrap();
 
         let config = ServerConfig::load(&config_path).unwrap();
-        let build = config.build.unwrap();
+        let build = config.docker.build.unwrap();
 
         assert!(PathBuf::from(&build.source).is_absolute(), "build.source must be absolute");
         assert!(
@@ -557,9 +605,10 @@ build:
             r#"
 binary:
   path: /bin/app
-tools:
-  run:
-    image: sqt-run:latest
+docker:
+  tools:
+    run:
+      image: sqt-run:latest
 docs:
   directory: docs/
 "#
@@ -585,9 +634,10 @@ docs:
 binary:
   path: /absolute/path/app
 workspace: /absolute/workspace
-tools:
-  run:
-    image: sqt-run:latest
+docker:
+  tools:
+    run:
+      image: sqt-run:latest
 "#
         )
         .unwrap();

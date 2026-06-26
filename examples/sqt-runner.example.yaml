@@ -1,6 +1,8 @@
 # sqt-runner configuration
 # Usage: sqt-runner -c sqt-runner.example.yaml [--port 3000] [--host 127.0.0.1]
 
+backend: docker                      # execution backend (default: docker)
+
 binary:
   path: /usr/bin/hostname  # relative or absolute; resolved to absolute at load time
   # args: ["--model", "resnet50"]    # optional: fixed args always appended
@@ -11,18 +13,29 @@ binary:
 
 workspace: ./sqt-workspace           # evidence and tool output dir (default: /tmp/sqt-dev-server)
 
-tools:
-  run:                               # required for run jobs; Docker image to execute the binary
-    image: ubuntu:latest
-  # valgrind:                        # optional; enables memory.leaks_bytes metric
-  #   image: sqt-valgrind:latest
-  # coverage:                        # optional; enables coverage.line_pct metric
-  #   image: sqt-coverage:latest
-  # sonarqube:                       # optional; enables sonar.* metrics
-  #   url: http://sonarqube.local:9000
-  #   token_env: SONAR_TOKEN         # default: SONAR_TOKEN
-  # static_analysis:                 # optional; enables static.warnings metric
-  #   image: sqt-static:latest
+# Docker-backend-specific settings (tools + optional build step).
+docker:
+  tools:
+    run:                             # required for run jobs; Docker image to execute the binary
+      image: ubuntu:latest
+    # valgrind:                      # optional; enables memory.leaks_bytes metric
+    #   image: sqt-valgrind:latest
+    # coverage:                      # optional; enables coverage.line_pct metric
+    #   image: sqt-coverage:latest
+    # sonarqube:                     # optional; enables sonar.* metrics
+    #   url: http://sonarqube.local:9000
+    #   token_env: SONAR_TOKEN       # default: SONAR_TOKEN
+    # static_analysis:               # optional; enables static.warnings metric
+    #   image: sqt-static:latest
+
+  # build:                           # optional; compile from source before each job
+  #   image: gcc:14-bookworm         # compiler Docker image
+  #   source: src/main.cpp
+  #   engine_lib: lib/libengine.so   # ML-L engine .so to link and copy into workspace
+  #   compiler: g++                  # default: g++
+  #   extra_flags: ["-O2"]
+  #   include_dirs: [include/]
+  #   compile_timeout_secs: 300
 
 # Hardware description returned verbatim in job status responses.
 # All sub-fields are optional; omit the entire section to report type: unknown.
@@ -42,12 +55,3 @@ runner_hardware:
 
 # docs:                              # optional; enables GET /api/v1/docs
 #   directory: ./qualification-docs  # *.sdoc → documents[], other files → attachments[]
-
-# build:                             # optional; compile from source before each job
-#   image: gcc:14-bookworm           # compiler Docker image
-#   source: src/main.cpp
-#   engine_lib: lib/libengine.so     # ML-L engine .so to link and copy into workspace
-#   compiler: g++                    # default: g++
-#   extra_flags: ["-O2"]
-#   include_dirs: [include/]
-#   compile_timeout_secs: 300

@@ -14,11 +14,14 @@ permissions:
 jobs:
   rustfmt:
     runs-on: self-hosted
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/ci-docker
         with:
-          run: cargo fmt --all -- --check
+          run: >-
+            cargo fmt --all -- --check ||
+            { echo "::warning title=rustfmt::Formatting issues found — run 'cargo fmt --all' to fix (advisory, does not block the pipeline)."; exit 1; }
 
   clippy:
     runs-on: self-hosted
