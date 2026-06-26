@@ -135,6 +135,10 @@ async fn main() -> Result<()> {
                 tracing::info!("Report written to {}", path.display());
             }
 
+            // Always emit a simple PDF summary into the output dir.
+            let pdf_path = cfg.report.output_dir.join("report.pdf");
+            report::write_pdf(&rep, &pdf_path)?;
+
             // Traceability matrix (if baseline was available)
             if let Some(ref req_set) = result.requirement_set {
                 let matrix = sqt_reporter::traceability::build(req_set, &result, &rep.timestamp);
@@ -152,6 +156,7 @@ async fn main() -> Result<()> {
             let qdp_path = report::write_qdp(
                 &cfg.report.output_dir,
                 output.as_deref(),
+                Some(&pdf_path),
                 Some(&cfg.report.output_dir.join("traceability.json")),
                 Some(&cfg.report.output_dir.join("traceability.txt")),
                 Some(&evidence_dir),
