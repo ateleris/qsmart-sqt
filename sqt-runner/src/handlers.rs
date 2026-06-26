@@ -855,9 +855,7 @@ mod tests {
             runner_version: "0.0.0-test".to_string(),
             os: "linux".to_string(),
         };
-        let app = Router::new()
-            .route("/api/v1/health", get(get_health))
-            .with_state(state);
+        let app = Router::new().route("/api/v1/health", get(get_health)).with_state(state);
         let req = axum::http::Request::builder()
             .uri("/api/v1/health")
             .body(axum::body::Body::empty())
