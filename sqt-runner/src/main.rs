@@ -178,6 +178,7 @@ async fn main() {
         .route("/api/v1/jobs/{job_id}", get(handlers::get_job))
         .route("/api/v1/docs", get(handlers::get_docs))
         .route("/api/v1/version", get(get_version))
+        .route("/api/v1/health", get(handlers::get_health))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse().expect("invalid host:port");
