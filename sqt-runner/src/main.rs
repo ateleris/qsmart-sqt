@@ -14,10 +14,13 @@ mod handlers;
 mod store;
 mod tools;
 
-use config::{DocsConfig, ServerConfig, ToolConfig};
+use config::{
+    Backend, BinaryConfig, DockerBackendConfig, DocsConfig, HardwareConfig, ServerConfig, ToolConfig,
+};
 use executor::ExecutionBackend;
 use executor::docker::DockerExecutor;
 use handlers::get_version;
+use sqt_types::HardwareInfo;
 
 #[derive(Parser)]
 #[command(
@@ -69,6 +72,30 @@ fn run_preflight_checks(executor: &dyn ExecutionBackend, docs: Option<&DocsConfi
     tracing::info!("preflight checks passed");
 }
 
+/// Construct the execution backend selected by `backend:`. Adding a backend is
+/// a new match arm here (plus a `Backend` variant and its config section).
+fn build_executor(
+    backend: Backend,
+    binary: BinaryConfig,
+    docker: DockerBackendConfig,
+    hardware: HardwareInfo,
+    runner_hardware: HardwareConfig,
+) -> Arc<dyn ExecutionBackend> {
+    match backend {
+        Backend::Docker => {
+            let tool_config = ToolConfig::from_tools(&docker.tools);
+            Arc::new(DockerExecutor::new(
+                binary,
+                docker.build,
+                tool_config,
+                hardware,
+                runner_hardware.target_id,
+                runner_hardware.toolchain_versions,
+            ))
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -82,8 +109,7 @@ async fn main() {
 
     let server_config = ServerConfig::load(&cli.config).expect("failed to load configuration file");
 
-    let tool_config = ToolConfig::from_server_config(&server_config);
-
+    tracing::info!("backend: {:?}", server_config.backend);
     tracing::info!("binary under test: {}", server_config.binary.path);
     if !server_config.binary.args.is_empty() {
         tracing::info!("binary args: {:?}", server_config.binary.args);
@@ -93,7 +119,7 @@ async fn main() {
     }
     tracing::info!("input mode: {:?}", server_config.binary.input_mode);
 
-    if let Some(ref build) = server_config.build {
+    if let Some(ref build) = server_config.docker.build {
         tracing::info!("build image: {}", build.image);
         tracing::info!("build source: {}", build.source);
         tracing::info!("build engine_lib: {}", build.engine_lib);
@@ -105,30 +131,30 @@ async fn main() {
         tracing::info!("docs directory: not configured (GET /api/v1/docs will return 404)");
     }
 
-    if let Some(ref img) = tool_config.run_image {
-        tracing::info!("run image: {img}");
+    let tools = &server_config.docker.tools;
+    if let Some(ref t) = tools.run {
+        tracing::info!("run image: {}", t.image);
     }
-    if let Some(ref img) = tool_config.valgrind_image {
-        tracing::info!("valgrind image: {img}");
+    if let Some(ref t) = tools.valgrind {
+        tracing::info!("valgrind image: {}", t.image);
     }
-    if let Some(ref img) = tool_config.coverage_image {
-        tracing::info!("coverage image: {img}");
+    if let Some(ref t) = tools.coverage {
+        tracing::info!("coverage image: {}", t.image);
     }
-    if let Some(ref url) = tool_config.sonar_url {
-        tracing::info!("sonarqube URL: {url}");
+    if let Some(ref t) = tools.sonarqube {
+        tracing::info!("sonarqube URL: {}", t.url);
     }
-    if let Some(ref img) = tool_config.static_image {
-        tracing::info!("static analysis image: {img}");
+    if let Some(ref t) = tools.static_analysis {
+        tracing::info!("static analysis image: {}", t.image);
     }
 
-    let executor = Arc::new(DockerExecutor::new(
+    let executor = build_executor(
+        server_config.backend,
         server_config.binary,
-        server_config.build,
-        tool_config,
+        server_config.docker,
         server_config.hardware,
-        server_config.runner_hardware.target_id,
-        server_config.runner_hardware.toolchain_versions,
-    ));
+        server_config.runner_hardware,
+    );
 
     run_preflight_checks(executor.as_ref(), server_config.docs.as_ref());
 

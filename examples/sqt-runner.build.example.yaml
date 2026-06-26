@@ -13,6 +13,8 @@
 #
 # Usage: sqt-runner -c sqt-runner.build.example.yaml [--port 3000]
 
+backend: docker
+
 binary:
   # IMPORTANT: in build mode this `path` is IGNORED — it is overwritten by the
   # freshly compiled output (<workspace>/binary). The schema still requires the
@@ -30,24 +32,24 @@ binary:
 
 workspace: ./sqt-workspace           # compiled binary + tool output land here
 
-tools:
-  run:
-    image: ubuntu:latest             # must be able to run the compiled binary
+docker:
+  tools:
+    run:
+      image: ubuntu:latest           # must be able to run the compiled binary
                                      # and load the linked engine .so
+    # Optional metric tools work identically to Mode 1; uncomment as needed:
+    # valgrind / coverage / sonarqube / static_analysis ...
 
-build:
-  image: gcc:14-bookworm             # compiler toolchain image (must exist locally)
-  source: ./artifacts/main.cpp       # main program that drives the ML-L engine
-  engine_lib: ./artifacts/libengine.so  # ML-L inference engine shared library to link
-  compiler: g++                      # default: g++
-  # Note: do NOT repeat the optimization level here — instrumentation flags
-  # (e.g. -O2 for `none`) are prepended automatically per job request.
-  extra_flags: ["-std=c++17"]
-  include_dirs: ["./artifacts/include"]
-  compile_timeout_secs: 300
-
-# Optional metric tools work identically to Mode 1; uncomment as needed.
-# tools.valgrind / coverage / sonarqube / static_analysis ...
+  build:
+    image: gcc:14-bookworm           # compiler toolchain image (must exist locally)
+    source: ./artifacts/main.cpp     # main program that drives the ML-L engine
+    engine_lib: ./artifacts/libengine.so  # ML-L inference engine shared library to link
+    compiler: g++                    # default: g++
+    # Note: do NOT repeat the optimization level here — instrumentation flags
+    # (e.g. -O2 for `none`) are prepended automatically per job request.
+    extra_flags: ["-std=c++17"]
+    include_dirs: ["./artifacts/include"]
+    compile_timeout_secs: 300
 
 hardware:
   type: x86_64

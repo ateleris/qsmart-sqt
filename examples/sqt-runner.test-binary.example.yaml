@@ -15,6 +15,8 @@
 #   --leak N     leak N bytes       → exercises memory.leaks_bytes (needs the valgrind tool)
 #   --exit CODE  exit with CODE     → exercises return_code
 
+backend: docker
+
 binary:
   path: ./target/debug/sqt-test-binary   # built by examples/run-image/build.sh
   args: ["--busy", "300", "--leak", "8192"]
@@ -22,16 +24,17 @@ binary:
 
 workspace: ./sqt-workspace
 
-tools:
-  run:
-    # Ubuntu 24.04 + GNU time, built by examples/run-image/build.sh.
-    # GNU time (/usr/bin/time -v) lets the runner capture peak RSS and CPU%;
-    # a plain `ubuntu:latest` returns those as null.
-    image: sqt-run-time:latest
+docker:
+  tools:
+    run:
+      # Ubuntu 24.04 + GNU time, built by examples/run-image/build.sh.
+      # GNU time (/usr/bin/time -v) lets the runner capture peak RSS and CPU%;
+      # a plain `ubuntu:latest` returns those as null.
+      image: sqt-run-time:latest
 
-  # Uncomment to also measure leaks (requires a valgrind-equipped image):
-  # valgrind:
-  #   image: sqt-valgrind:latest
+    # Uncomment to also measure leaks (requires a valgrind-equipped image):
+    # valgrind:
+    #   image: sqt-valgrind:latest
 
 hardware:
   type: x86_64
