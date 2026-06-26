@@ -1,9 +1,41 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
 use sqt_types::{HardwareInfo, JobMetrics, JobRequest};
 
 pub mod docker;
+
+/// Backend-agnostic bundle of everything a backend needs to run one job.
+///
+/// Constructed by the caller (the runner core) and passed to every per-job
+/// lifecycle phase, so backends never re-derive timeout policy or reach for
+/// the workspace path on their own.
+pub struct JobContext<'a> {
+    /// The submitted job request.
+    pub request: &'a JobRequest,
+    /// Per-job scratch directory, already created by the caller.
+    pub workspace: &'a Path,
+    /// Wall-clock budget for the job's execution.
+    pub timeout: Duration,
+}
+
+/// Static description of an execution backend, surfaced on `GET /api/v1/version`
+/// and in `JobStatusResponse.hardware`.
+///
+/// Sourcing this from the backend (rather than from scattered config fields)
+/// keeps the version/hardware reporting correct for whichever backend is wired
+/// in, without the HTTP layer knowing which one it is.
+#[derive(Clone)]
+pub struct BackendDescriptor {
+    /// Hardware descriptor returned verbatim in `JobStatusResponse.hardware`.
+    pub hardware: HardwareInfo,
+    /// Short identifier for the target, e.g. `"gr740-leon4"`.
+    pub target_id: String,
+    /// Versions of key tools/runtimes available on this backend.
+    pub toolchain_versions: HashMap<String, String>,
+}
 
 /// Pluggable job execution backend.
 ///
@@ -53,9 +85,9 @@ pub trait ExecutionBackend: Send + Sync {
     /// data, ...). The caller creates and owns the directory.
     fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics>;
 
-    /// Describe the hardware this executor targets.
+    /// Describe the backend: target hardware, identity, and toolchain versions.
     ///
-    /// Returned verbatim in `JobStatusResponse.hardware` so reporters can
-    /// correlate metrics with the underlying hardware without an extra call.
-    fn hardware_info(&self) -> HardwareInfo;
+    /// `hardware` is returned verbatim in `JobStatusResponse.hardware`;
+    /// `target_id` and `toolchain_versions` feed `GET /api/v1/version`.
+    fn describe(&self) -> BackendDescriptor;
 }

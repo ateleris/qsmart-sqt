@@ -31,12 +31,11 @@ pub struct AppState {
     pub docs_dir: Option<PathBuf>,
     /// Runner crate version, populated from `env!("CARGO_PKG_VERSION")` at startup.
     pub runner_version: String,
-    /// Target hardware identifier, e.g. `"gr740-leon4"`.
-    pub target_id: String,
     /// Operating system name, e.g. `"linux"`.
+    ///
+    /// `target_id` and `toolchain_versions` are sourced from the backend via
+    /// [`ExecutionBackend::describe`], not stored here.
     pub os: String,
-    /// Versions of key tools/runtimes available on this runner.
-    pub toolchain_versions: std::collections::HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +212,7 @@ pub async fn get_job(
     // `queue_position` is non-null only while the job is still accepted (queued).
     // `hardware` is null until the job starts running.
     let queue_position = (status == JobStatus::Accepted).then_some(1);
-    let hardware = (status != JobStatus::Accepted).then(|| state.executor.hardware_info());
+    let hardware = (status != JobStatus::Accepted).then(|| state.executor.describe().hardware);
 
     Ok(Json(JobStatusResponse {
         job_id: id,
@@ -238,12 +237,13 @@ pub async fn get_job(
 // ---------------------------------------------------------------------------
 
 pub async fn get_version(State(state): State<AppState>) -> Json<VersionResponse> {
+    let descriptor = state.executor.describe();
     Json(VersionResponse {
         api_version: "1.0".to_string(),
         runner_version: state.runner_version.clone(),
-        target_id: state.target_id.clone(),
+        target_id: descriptor.target_id,
         os: state.os.clone(),
-        toolchain_versions: state.toolchain_versions.clone(),
+        toolchain_versions: descriptor.toolchain_versions,
     })
 }
 
@@ -415,8 +415,12 @@ mod tests {
         ) -> anyhow::Result<JobMetrics> {
             Ok(JobMetrics::default())
         }
-        fn hardware_info(&self) -> HardwareInfo {
-            HardwareInfo::default()
+        fn describe(&self) -> crate::executor::BackendDescriptor {
+            crate::executor::BackendDescriptor {
+                hardware: HardwareInfo::default(),
+                target_id: "test-target".to_string(),
+                toolchain_versions: std::collections::HashMap::new(),
+            }
         }
     }
 
@@ -429,8 +433,6 @@ mod tests {
             docs_dir,
             runner_version: "0.0.0-test".to_string(),
             os: "linux".to_string(),
-            target_id: "test-target".to_string(),
-            toolchain_versions: std::collections::HashMap::new(),
         };
         Router::new()
             .route("/api/v1/jobs", post(create_job))
@@ -564,8 +566,6 @@ mod tests {
             docs_dir: None,
             runner_version: "0.0.0-test".to_string(),
             os: "linux".to_string(),
-            target_id: "test-target".to_string(),
-            toolchain_versions: std::collections::HashMap::new(),
         };
         let app = Router::new()
             .route("/api/v1/jobs", post(create_job))

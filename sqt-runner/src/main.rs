@@ -126,6 +126,8 @@ async fn main() {
         server_config.build,
         tool_config,
         server_config.hardware,
+        server_config.runner_hardware.target_id,
+        server_config.runner_hardware.toolchain_versions,
     ));
 
     run_preflight_checks(executor.as_ref(), server_config.docs.as_ref());
@@ -142,8 +144,6 @@ async fn main() {
         docs_dir: server_config.docs.map(|d| d.directory),
         runner_version: env!("CARGO_PKG_VERSION").to_string(),
         os: std::env::consts::OS.to_string(),
-        target_id: server_config.runner_hardware.target_id.clone(),
-        toolchain_versions: server_config.runner_hardware.toolchain_versions.clone(),
     };
 
     let app = Router::new()

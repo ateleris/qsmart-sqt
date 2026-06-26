@@ -8,7 +8,7 @@ use crate::config::{BinaryConfig, BuildConfig, ToolConfig};
 use crate::docker::{self, DockerRun};
 use crate::tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind};
 
-use super::ExecutionBackend;
+use super::{BackendDescriptor, ExecutionBackend, JobContext};
 
 /// Default job executor: compiles (when configured) and runs workloads in
 /// Docker containers, then collects metrics via the configured tool chain.
@@ -23,6 +23,31 @@ pub struct DockerExecutor {
     build_config: Option<BuildConfig>,
     tool_config: ToolConfig,
     hardware: HardwareInfo,
+    target_id: String,
+    toolchain_versions: std::collections::HashMap<String, String>,
+}
+
+/// Per-job state produced by [`DockerExecutor::prepare`] and consumed by the
+/// `run`/`teardown` phases.
+struct Prepared {
+    /// Binary config with `path` resolved to the actual executable (the
+    /// pre-built binary, or the freshly compiled one in build mode).
+    binary_config: BinaryConfig,
+    /// Resolved input path for this job, if any.
+    input: Option<String>,
+}
+
+/// Raw measurements gathered by [`DockerExecutor::run`], mapped into
+/// `JobMetrics` by [`DockerExecutor::collect`]. Keeping the IO (`run`) separate
+/// from the pure mapping (`collect`) makes the latter trivially testable.
+struct RawRun {
+    primary: run_binary::RunBinaryOutput,
+    leaks_bytes: Option<i64>,
+    coverage_line_pct: Option<f64>,
+    binary_size_kb: Option<f64>,
+    /// `(critical, major)` issue counts from `SonarQube`, if queried.
+    sonar_issues: Option<(i64, i64)>,
+    static_warnings: Option<i64>,
 }
 
 impl DockerExecutor {
@@ -31,8 +56,10 @@ impl DockerExecutor {
         build_config: Option<BuildConfig>,
         tool_config: ToolConfig,
         hardware: HardwareInfo,
+        target_id: String,
+        toolchain_versions: std::collections::HashMap<String, String>,
     ) -> Self {
-        Self { binary_config, build_config, tool_config, hardware }
+        Self { binary_config, build_config, tool_config, hardware, target_id, toolchain_versions }
     }
 
     /// Compile the main program source against the ML-L engine shared library.
@@ -110,6 +137,190 @@ impl DockerExecutor {
 
         Ok(output)
     }
+
+    /// Phase 1: resolve the binary to run (compile in build mode, else use the
+    /// pre-built one) and the input path for this job.
+    fn prepare(&self, ctx: &JobContext) -> Result<Prepared> {
+        let binary_config = if self.build_config.is_some() {
+            let binary_path = self.compile(ctx.request, ctx.workspace)?;
+            let mut bc = self.binary_config.clone();
+            bc.path = binary_path.display().to_string();
+            // Ensure the engine lib (copied to workspace) is findable at runtime.
+            bc.env
+                .entry("LD_LIBRARY_PATH".to_string())
+                .or_insert_with(|| ctx.workspace.display().to_string());
+            bc
+        } else {
+            self.binary_config.clone()
+        };
+
+        let input = ctx.request.input.as_ref().and_then(|v| v.as_str()).map(str::to_string);
+
+        Ok(Prepared { binary_config, input })
+    }
+
+    /// Phase 2: execute the binary and run every configured analysis tool,
+    /// gathering their raw results. Optional tools fail soft (warn + `None`).
+    //
+    // A flat sequence of independent tool invocations; splitting it would only
+    // scatter the soft-fail handling without aiding readability.
+    #[allow(clippy::too_many_lines)]
+    fn run(&self, ctx: &JobContext, prepared: &Prepared) -> Result<RawRun> {
+        let config = &self.tool_config;
+        let binary_config = &prepared.binary_config;
+        let input = prepared.input.as_deref();
+        let workspace = ctx.workspace;
+        let timeout = ctx.timeout;
+
+        // --- Execution metrics -----------------------------------------------
+        let run_image = config
+            .run_image
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("no run image configured (tools.run.image)"))?;
+
+        tracing::info!(
+            binary = %binary_config.path,
+            input = ?input,
+            image = %run_image,
+            "running binary"
+        );
+        let primary = run_binary::collect(run_image, binary_config, input, workspace, timeout)?;
+        tracing::info!(
+            return_code = ?primary.return_code,
+            time_ms = ?primary.time_execution_ms,
+            peak_rss_kb = ?primary.memory_peak_rss_kb,
+            cpu_pct = ?primary.cpu_pct,
+            "run_binary complete"
+        );
+
+        // --- Optional: valgrind ----------------------------------------------
+        let leaks_bytes = if let Some(ref image) = config.valgrind_image {
+            tracing::info!(image = %image, "running valgrind");
+            match valgrind::collect(image, binary_config, workspace, timeout) {
+                Ok(leaks) => {
+                    tracing::info!(leaked_bytes = leaks, "valgrind complete");
+                    #[allow(clippy::cast_possible_truncation)]
+                    Some(leaks as i64)
+                }
+                Err(e) => {
+                    tracing::warn!("valgrind failed, skipping memory.leaks_bytes: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // --- Optional: coverage ----------------------------------------------
+        let coverage_line_pct = if let Some(ref image) = config.coverage_image {
+            tracing::info!(image = %image, "running lcov coverage");
+            match coverage::collect(image, &binary_config.path, workspace, timeout) {
+                Ok(pct) => {
+                    tracing::info!(line_pct = pct, "coverage complete");
+                    Some(pct)
+                }
+                Err(e) => {
+                    tracing::warn!("lcov failed, skipping coverage.line_pct: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // --- Binary size (no Docker needed) ----------------------------------
+        tracing::info!(binary = %binary_config.path, "collecting binary size");
+        let binary_size_kb = match binary_size::collect(&binary_config.path) {
+            Ok(size_kb) => {
+                tracing::info!(size_kb, "binary_size complete");
+                Some(size_kb)
+            }
+            Err(e) => {
+                tracing::warn!("binary_size failed: {e:#}");
+                None
+            }
+        };
+
+        // --- Optional: SonarQube ---------------------------------------------
+        let sonar_issues = if let (Some(url), Some(token)) = (&config.sonar_url, &config.sonar_token)
+        {
+            let project_key = Path::new(&binary_config.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&binary_config.path);
+
+            tracing::info!(url = %url, project_key = %project_key, "querying sonarqube");
+            match sonarqube::collect(url, token, project_key) {
+                Ok((critical, major)) => {
+                    tracing::info!(critical, major, "sonarqube complete");
+                    Some((critical, major))
+                }
+                Err(e) => {
+                    tracing::warn!("sonarqube failed, skipping static metrics: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // --- Optional: static analysis ---------------------------------------
+        let static_warnings = if let Some(ref image) = config.static_image {
+            tracing::info!(image = %image, "running static analysis");
+            match static_analysis::collect(image, &binary_config.path, workspace, timeout) {
+                Ok(warnings) => {
+                    tracing::info!(warnings, "static_analysis complete");
+                    Some(warnings)
+                }
+                Err(e) => {
+                    tracing::warn!("static analysis failed: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(RawRun {
+            primary,
+            leaks_bytes,
+            coverage_line_pct,
+            binary_size_kb,
+            sonar_issues,
+            static_warnings,
+        })
+    }
+
+    /// Phase 3: map raw measurements into the `JobMetrics` DTO. Pure, no IO.
+    /// Consumes `RawRun` by value as the terminal owner of the run's output.
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn collect(&self, raw: RawRun) -> JobMetrics {
+        let (static_critical_issues, static_major_issues) = match raw.sonar_issues {
+            Some((critical, major)) => (Some(critical), Some(major)),
+            None => (None, None),
+        };
+
+        JobMetrics {
+            return_code: raw.primary.return_code,
+            time_avg_ms: raw.primary.time_execution_ms,
+            memory_peak_rss_kb: raw.primary.memory_peak_rss_kb,
+            memory_avg_rss_kb: raw.primary.memory_avg_rss_kb,
+            cpu_avg_normalized_pct: raw.primary.cpu_pct,
+            memory_leaks_bytes: raw.leaks_bytes,
+            coverage_line_pct: raw.coverage_line_pct,
+            binary_size_kb: raw.binary_size_kb,
+            static_critical_issues,
+            static_major_issues,
+            static_warnings: raw.static_warnings,
+            ..Default::default()
+        }
+    }
+
+    /// Phase 4: release per-job resources. Consumes `Prepared` by value — other
+    /// backends free real resources here (containers, board sessions); `docker
+    /// run --rm` cleans up for us, so this is a no-op.
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn teardown(&self, _prepared: Prepared) {}
 }
 
 impl ExecutionBackend for DockerExecutor {
@@ -150,133 +361,21 @@ impl ExecutionBackend for DockerExecutor {
 
     fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics> {
         let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(60));
+        let ctx = JobContext { request, workspace, timeout };
 
-        // Compile if build config is present; otherwise use the pre-built binary.
-        let binary_config = if self.build_config.is_some() {
-            let binary_path = self.compile(request, workspace)?;
-            let mut bc = self.binary_config.clone();
-            bc.path = binary_path.display().to_string();
-            // Ensure the engine lib (copied to workspace) is findable at runtime.
-            bc.env
-                .entry("LD_LIBRARY_PATH".to_string())
-                .or_insert_with(|| workspace.display().to_string());
-            bc
-        } else {
-            self.binary_config.clone()
-        };
-
-        let input = request.input.as_ref().and_then(|v| v.as_str()).map(str::to_string);
-
-        let mut metrics = JobMetrics::default();
-        let config = &self.tool_config;
-
-        // --- Execution metrics -----------------------------------------------
-
-        let run_image = config
-            .run_image
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("no run image configured (tools.run.image)"))?;
-
-        tracing::info!(
-            binary = %binary_config.path,
-            input = ?input,
-            image = %run_image,
-            "running binary"
-        );
-        let run_out =
-            run_binary::collect(run_image, &binary_config, input.as_deref(), workspace, timeout)?;
-
-        metrics.return_code = run_out.return_code;
-        metrics.time_avg_ms = run_out.time_execution_ms;
-        metrics.memory_peak_rss_kb = run_out.memory_peak_rss_kb;
-        metrics.memory_avg_rss_kb = run_out.memory_avg_rss_kb;
-        metrics.cpu_avg_normalized_pct = run_out.cpu_pct;
-
-        tracing::info!(
-            return_code = ?metrics.return_code,
-            time_ms = ?metrics.time_avg_ms,
-            peak_rss_kb = ?metrics.memory_peak_rss_kb,
-            cpu_pct = ?metrics.cpu_avg_normalized_pct,
-            "run_binary complete"
-        );
-
-        // --- Optional: valgrind ----------------------------------------------
-
-        if let Some(ref image) = config.valgrind_image {
-            tracing::info!(image = %image, "running valgrind");
-            match valgrind::collect(image, &binary_config, workspace, timeout) {
-                Ok(leaks) => {
-                    tracing::info!(leaked_bytes = leaks, "valgrind complete");
-                    #[allow(clippy::cast_possible_truncation)]
-                    {
-                        metrics.memory_leaks_bytes = Some(leaks as i64);
-                    }
-                }
-                Err(e) => tracing::warn!("valgrind failed, skipping memory.leaks_bytes: {e:#}"),
-            }
-        }
-
-        // --- Optional: coverage ----------------------------------------------
-
-        if let Some(ref image) = config.coverage_image {
-            tracing::info!(image = %image, "running lcov coverage");
-            match coverage::collect(image, &binary_config.path, workspace, timeout) {
-                Ok(pct) => {
-                    tracing::info!(line_pct = pct, "coverage complete");
-                    metrics.coverage_line_pct = Some(pct);
-                }
-                Err(e) => tracing::warn!("lcov failed, skipping coverage.line_pct: {e:#}"),
-            }
-        }
-
-        // --- Binary size (no Docker needed) ----------------------------------
-
-        tracing::info!(binary = %binary_config.path, "collecting binary size");
-        match binary_size::collect(&binary_config.path) {
-            Ok(size_kb) => {
-                tracing::info!(size_kb, "binary_size complete");
-                metrics.binary_size_kb = Some(size_kb);
-            }
-            Err(e) => tracing::warn!("binary_size failed: {e:#}"),
-        }
-
-        // --- Optional: SonarQube ---------------------------------------------
-
-        if let (Some(url), Some(token)) = (&config.sonar_url, &config.sonar_token) {
-            let project_key = Path::new(&binary_config.path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&binary_config.path);
-
-            tracing::info!(url = %url, project_key = %project_key, "querying sonarqube");
-            match sonarqube::collect(url, token, project_key) {
-                Ok((critical, major)) => {
-                    tracing::info!(critical, major, "sonarqube complete");
-                    metrics.static_critical_issues = Some(critical);
-                    metrics.static_major_issues = Some(major);
-                }
-                Err(e) => tracing::warn!("sonarqube failed, skipping static metrics: {e:#}"),
-            }
-        }
-
-        // --- Optional: static analysis ---------------------------------------
-
-        if let Some(ref image) = config.static_image {
-            tracing::info!(image = %image, "running static analysis");
-            match static_analysis::collect(image, &binary_config.path, workspace, timeout) {
-                Ok(warnings) => {
-                    tracing::info!(warnings, "static_analysis complete");
-                    metrics.static_warnings = Some(warnings);
-                }
-                Err(e) => tracing::warn!("static analysis failed: {e:#}"),
-            }
-        }
-
-        Ok(metrics)
+        let prepared = self.prepare(&ctx)?;
+        // Run then map; teardown runs unconditionally afterward (even on error).
+        let outcome = self.run(&ctx, &prepared).map(|raw| self.collect(raw));
+        self.teardown(prepared);
+        outcome
     }
 
-    fn hardware_info(&self) -> HardwareInfo {
-        self.hardware.clone()
+    fn describe(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            hardware: self.hardware.clone(),
+            target_id: self.target_id.clone(),
+            toolchain_versions: self.toolchain_versions.clone(),
+        }
     }
 }
 
