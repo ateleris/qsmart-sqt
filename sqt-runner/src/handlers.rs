@@ -10,8 +10,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use sqt_types::{
-    ApiError as ApiErrorBody, Attachment, DocsResponse, ErrorResponse, JobAccepted, JobRequest,
-    JobStatus, JobStatusResponse, MeasurementMode, StrictdocDocument, VersionResponse,
+    ApiError as ApiErrorBody, Attachment, DocsResponse, ErrorResponse, HealthCheckValue,
+    HealthChecks, HealthResponse, HealthStatus, JobAccepted, JobRequest, JobStatus,
+    JobStatusResponse, MeasurementMode, StrictdocDocument, VersionResponse,
 };
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -248,6 +249,59 @@ pub async fn get_version(State(state): State<AppState>) -> Json<VersionResponse>
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/health
+// ---------------------------------------------------------------------------
+
+/// Liveness/readiness probe. Unauthenticated (no Bearer token). Returns 200 for
+/// `healthy`/`degraded` and 503 for `unhealthy` (a critical check failed).
+pub async fn get_health(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    // job_store: accessible if the read lock can be taken (tokio RwLock never
+    // poisons, so this is effectively always ok — but we exercise it for real).
+    let job_store = {
+        let _guard = state.store.read().await;
+        HealthCheckValue::Ok
+    };
+
+    // workspace: critical — the directory must exist on disk.
+    let workspace =
+        if state.workspace.is_dir() { HealthCheckValue::Ok } else { HealthCheckValue::Missing };
+
+    // docs_dir: non-critical — contributes to `degraded`, never `unhealthy`.
+    let docs_dir = match state.docs_dir {
+        None => HealthCheckValue::NotConfigured,
+        Some(ref dir) if dir.is_dir() => HealthCheckValue::Ok,
+        Some(_) => HealthCheckValue::Missing,
+    };
+
+    let critical_ok = job_store == HealthCheckValue::Ok && workspace == HealthCheckValue::Ok;
+    let status = if !critical_ok {
+        HealthStatus::Unhealthy
+    } else if docs_dir == HealthCheckValue::Ok {
+        HealthStatus::Healthy
+    } else {
+        HealthStatus::Degraded
+    };
+
+    let code = if status == HealthStatus::Unhealthy {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+
+    tracing::debug!(?status, "GET /api/v1/health");
+
+    (
+        code,
+        Json(HealthResponse {
+            status,
+            runner_version: state.runner_version.clone(),
+            target_id: state.executor.describe().target_id,
+            checks: HealthChecks { job_store, workspace, docs_dir },
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/docs
 // ---------------------------------------------------------------------------
 
@@ -444,6 +498,7 @@ mod tests {
             .route("/api/v1/jobs/{job_id}", get(get_job))
             .route("/api/v1/docs", get(get_docs))
             .route("/api/v1/version", get(get_version))
+            .route("/api/v1/health", get(get_health))
             .with_state(state)
     }
 
@@ -735,5 +790,80 @@ mod tests {
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["target_id"], "test-target");
         assert_eq!(json["os"], "linux");
+    }
+
+    // ---- GET /api/v1/health -------------------------------------------------
+
+    #[tokio::test]
+    async fn get_health_healthy_when_workspace_and_docs_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        // test_app uses workspace "/tmp" (exists); docs points at an existing dir.
+        let app = test_app(Some(dir.path().to_path_buf()));
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "healthy");
+        assert_eq!(json["checks"]["job_store"], "ok");
+        assert_eq!(json["checks"]["workspace"], "ok");
+        assert_eq!(json["checks"]["docs_dir"], "ok");
+        assert_eq!(json["runner_version"], "0.0.0-test");
+        assert_eq!(json["target_id"], "test-target");
+    }
+
+    #[tokio::test]
+    async fn get_health_degraded_when_docs_not_configured() {
+        let app = test_app(None);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Non-critical: still 200, but degraded.
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "degraded");
+        assert_eq!(json["checks"]["docs_dir"], "not_configured");
+    }
+
+    #[tokio::test]
+    async fn get_health_degraded_when_docs_dir_missing() {
+        let app = test_app(Some(std::path::PathBuf::from("/nonexistent/docs/zzz")));
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "degraded");
+        assert_eq!(json["checks"]["docs_dir"], "missing");
+    }
+
+    #[tokio::test]
+    async fn get_health_unhealthy_when_workspace_missing() {
+        // Build a state whose workspace directory does not exist (critical check).
+        let state = AppState {
+            store: store::new_store(),
+            workspace: std::path::PathBuf::from("/nonexistent/workspace/zzz"),
+            executor: Arc::new(StubExecutor),
+            job_semaphore: Arc::new(Semaphore::new(1)),
+            docs_dir: None,
+            runner_version: "0.0.0-test".to_string(),
+            os: "linux".to_string(),
+        };
+        let app = Router::new().route("/api/v1/health", get(get_health)).with_state(state);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "unhealthy");
+        assert_eq!(json["checks"]["workspace"], "missing");
     }
 }

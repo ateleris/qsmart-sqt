@@ -28,6 +28,7 @@ inventory = { workspace = true }
 futures = { workspace = true }
 zip = "2"
 walkdir = "2"
+printpdf = "0.7"
 
 [dev-dependencies]
 tempfile = { workspace = true }

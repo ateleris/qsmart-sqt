@@ -10,3 +10,5 @@ ci/runner/.env
 # Runner runtime data (bind-mounted by ci/runner/docker-compose.yml)
 ci/runner/runner-work/
 ci/runner/dind-cache/
+# Reporter output from running the example config
+/examples/reports

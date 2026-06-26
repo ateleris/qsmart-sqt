@@ -332,6 +332,64 @@ pub struct VersionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/health
+// ---------------------------------------------------------------------------
+
+/// Overall runner health (`GET /api/v1/health`).
+///
+/// `healthy` (200): all checks passed. `degraded` (200): core functionality
+/// operational but a non-critical check (docs) failed. `unhealthy` (503): a
+/// critical check failed — do not submit jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+}
+
+/// Result of an individual health check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthCheckValue {
+    /// Check passed.
+    Ok,
+    /// The checked resource (directory, etc.) is absent.
+    Missing,
+    /// The resource is optional and not configured on this runner.
+    NotConfigured,
+    /// Check could not be completed (unexpected error).
+    Error,
+}
+
+/// Per-subsystem check results for `GET /api/v1/health`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthChecks {
+    /// In-memory job store is accessible. Critical.
+    pub job_store: HealthCheckValue,
+    /// Configured workspace directory exists. Critical.
+    pub workspace: HealthCheckValue,
+    /// Configured docs directory exists; `not_configured` when unset. Non-critical.
+    pub docs_dir: HealthCheckValue,
+}
+
+/// Response body for `GET /api/v1/health`.
+///
+/// `deny_unknown_fields` implements SRS-IF-007.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthResponse {
+    pub status: HealthStatus,
+    /// Crate version of the running runner binary.
+    pub runner_version: String,
+    /// Hardware target identifier configured in the runner.
+    pub target_id: String,
+    /// Per-subsystem check results.
+    pub checks: HealthChecks,
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/docs
 // ---------------------------------------------------------------------------
 

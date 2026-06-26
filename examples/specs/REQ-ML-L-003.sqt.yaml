@@ -1,0 +1,14 @@
+# REQ-ML-L-003 — CPU utilisation stays within a 4-core budget, and the
+# workload completes successfully. Demonstrates multiple constraints on one
+# requirement (both must pass for the requirement to PASS).
+
+requirement_uid: REQ-ML-L-003
+use_case: image_classification
+
+constraints:
+  - metric: cpu.avg_normalized_pct   # bare number (no unit); 400 ≈ 4 fully-used cores
+    operator: lte
+    value: 400
+  - metric: return_code
+    operator: eq
+    value: 0

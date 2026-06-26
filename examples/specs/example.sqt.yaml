@@ -1,0 +1,20 @@
+# Example SQT test spec — maps one ML-L requirement to measurable constraints.
+# Referenced by examples/sqt-reporter.example.yaml (test_specs.files).
+#
+# This spec runs against the sqt-test-binary fixture (see
+# examples/sqt-runner.test-binary.example.yaml): it exits 0 and runs for ~700ms,
+# so both constraints below PASS. Replace with real requirements + thresholds
+# for an actual ML-L qualification.
+
+requirement_uid: REQ-ML-L-001
+use_case: image_classification   # object_detection | image_classification | pixel_segmentation | classification | regression | time_series_forecasting
+# input: datasets/sample.bin     # optional: path delivered to the binary (stdin/arg/env per runner config)
+# timeout_secs: 300              # optional: per-spec timeout (defaults to runner.job_timeout_secs)
+
+constraints:
+  - metric: return_code          # process exit code
+    operator: eq
+    value: 0
+  - metric: time.avg_ms          # wall-clock execution time; units: ms/s/min accepted
+    operator: lte
+    value: "5s"

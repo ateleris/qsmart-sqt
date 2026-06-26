@@ -297,6 +297,7 @@ pub fn print_terminal(report: &Report) {
 pub fn write_qdp(
     output_dir: &Path,
     report_json_path: Option<&Path>,
+    report_pdf_path: Option<&Path>,
     traceability_json: Option<&Path>,
     traceability_txt: Option<&Path>,
     evidence_dir: Option<&Path>,
@@ -330,6 +331,11 @@ pub fn write_qdp(
         && p.exists()
     {
         add_file(&mut zip, "report.json", p)?;
+    }
+    if let Some(p) = report_pdf_path
+        && p.exists()
+    {
+        add_file(&mut zip, "report.pdf", p)?;
     }
     if let Some(p) = traceability_json
         && p.exists()
@@ -374,6 +380,143 @@ pub fn write_json(report: &Report, path: &Path) -> Result<()> {
     }
     let file = std::fs::File::create(path)?;
     serde_json::to_writer_pretty(file, report)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// PDF report (simple, unstyled — a richer typst/template engine comes later)
+// ---------------------------------------------------------------------------
+
+/// One pre-laid-out text line for the PDF renderer.
+struct PdfLine {
+    text: String,
+    size: f32,
+    bold: bool,
+}
+
+impl PdfLine {
+    fn normal(text: impl Into<String>) -> Self {
+        Self { text: text.into(), size: 10.0, bold: false }
+    }
+    fn bold(text: impl Into<String>, size: f32) -> Self {
+        Self { text: text.into(), size, bold: true }
+    }
+    fn blank() -> Self {
+        Self { text: String::new(), size: 10.0, bold: false }
+    }
+}
+
+/// Truncate a line so it does not run off the page (no word wrapping yet).
+fn clip(s: &str) -> String {
+    const MAX: usize = 110;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(MAX - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Flatten a [`Report`] into a top-to-bottom sequence of text lines.
+fn report_lines(report: &Report) -> Vec<PdfLine> {
+    let s = &report.summary;
+    let p = &report.provenance;
+    let interrupted = if report.interrupted { "  [INTERRUPTED]" } else { "" };
+
+    let mut lines = vec![
+        PdfLine::bold("SQT Qualification Report", 16.0),
+        PdfLine::normal(format!("Generated: {}", report.timestamp)),
+        PdfLine::normal(format!("Config version: {}", report.config_version)),
+        PdfLine::normal(format!(
+            "Reporter {} — Runner {} ({}, {})",
+            p.sqt_version, p.runner_version, p.runner_target_id, p.runner_os
+        )),
+        PdfLine::normal(format!("Runner URL: {}", p.config_summary.runner_url)),
+        PdfLine::blank(),
+        PdfLine::bold(
+            format!(
+                "Summary: {}/{} passed, {} failed, {} infra errors{interrupted}",
+                s.passed, s.total, s.failed, s.infra_errors
+            ),
+            12.0,
+        ),
+        PdfLine::blank(),
+    ];
+
+    for spec in &report.results {
+        let status = match spec.outcome_kind {
+            OutcomeKind::Pass => "PASS",
+            OutcomeKind::Fail => "FAIL",
+            OutcomeKind::InfraError => "INFRA",
+        };
+        lines.push(PdfLine::bold(format!("{}  [{status}]", spec.requirement_uid), 11.0));
+        for outcome in &spec.outcomes {
+            lines.push(PdfLine::normal(format!("    {}  {}", outcome.metric, outcome.message)));
+        }
+        if let Some(rc) = spec.target.result_consistent {
+            lines.push(PdfLine::normal(format!("    result_consistent: {rc}")));
+        }
+        lines.push(PdfLine::blank());
+    }
+
+    lines
+}
+
+/// Render the report as a simple, unstyled PDF at `path`.
+///
+/// Uses built-in (non-embedded) Helvetica so no font files are required. Layout
+/// is plain top-to-bottom text with naive pagination — styling, tables, and a
+/// proper template engine are deferred.
+///
+/// # Errors
+///
+/// Returns an error if the document cannot be built or the file cannot be written.
+pub fn write_pdf(report: &Report, path: &Path) -> Result<()> {
+    use std::io::BufWriter;
+
+    use anyhow::Context as _;
+    use printpdf::{BuiltinFont, Mm, PdfDocument};
+
+    // A4 portrait. Margins and cursor are in millimetres (printpdf uses f32).
+    const PAGE_W: f32 = 210.0;
+    const PAGE_H: f32 = 297.0;
+    const LEFT: f32 = 15.0;
+    const TOP: f32 = 280.0;
+    const BOTTOM: f32 = 15.0;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let (doc, page1, layer1) =
+        PdfDocument::new("SQT Qualification Report", Mm(PAGE_W), Mm(PAGE_H), "layer");
+    let regular =
+        doc.add_builtin_font(BuiltinFont::Helvetica).context("add Helvetica builtin font")?;
+    let bold =
+        doc.add_builtin_font(BuiltinFont::HelveticaBold).context("add Helvetica-Bold builtin")?;
+
+    let mut layer = doc.get_page(page1).get_layer(layer1);
+    let mut y = TOP;
+
+    for line in report_lines(report) {
+        let line_height = line.size * 0.5; // ~mm per pt, generous leading
+        if y - line_height < BOTTOM {
+            let (page, layer_idx) = doc.add_page(Mm(PAGE_W), Mm(PAGE_H), "layer");
+            layer = doc.get_page(page).get_layer(layer_idx);
+            y = TOP;
+        }
+        if !line.text.is_empty() {
+            let font = if line.bold { &bold } else { &regular };
+            layer.use_text(clip(&line.text), line.size, Mm(LEFT), Mm(y), font);
+        }
+        y -= line_height;
+    }
+
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("cannot create PDF report: {}", path.display()))?;
+    doc.save(&mut BufWriter::new(file)).context("failed to write PDF")?;
+    tracing::info!("PDF report written to {}", path.display());
     Ok(())
 }
 
@@ -627,8 +770,9 @@ mod tests {
         std::fs::create_dir_all(&ev_dir).unwrap();
         std::fs::write(ev_dir.join("run-001.json"), b"{\"job\":\"run-001\"}").unwrap();
 
-        let qdp = write_qdp(out, Some(&report_path), Some(&t_json), Some(&t_txt), Some(&ev_dir))
-            .expect("write_qdp must succeed");
+        let qdp =
+            write_qdp(out, Some(&report_path), None, Some(&t_json), Some(&t_txt), Some(&ev_dir))
+                .expect("write_qdp must succeed");
 
         assert!(qdp.exists(), "qdp.zip must be created");
         // Verify the archive contains the expected entries.
@@ -643,6 +787,24 @@ mod tests {
             names.iter().any(|n| n.ends_with("run-001.json")),
             "must contain evidence file; got {names:?}"
         );
+    }
+
+    #[test]
+    fn write_pdf_produces_a_valid_pdf_file() {
+        let result = make_run_result(vec![
+            passing_spec_result("REQ-001", "build/app"),
+            failing_spec_result("REQ-002", "build/app"),
+        ]);
+        let report = Report::from_run_result(&result, make_provenance());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.pdf");
+        write_pdf(&report, &path).expect("write_pdf must succeed");
+
+        assert!(path.exists(), "report.pdf must be created");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() > 200, "PDF should be non-trivial; got {} bytes", bytes.len());
+        assert!(bytes.starts_with(b"%PDF-"), "file must start with the PDF magic header");
     }
 
     #[test]
