@@ -14,7 +14,8 @@ mod handlers;
 mod store;
 mod tools;
 
-use config::{ServerConfig, ToolConfig};
+use config::{DocsConfig, ServerConfig, ToolConfig};
+use executor::ExecutionBackend;
 use executor::docker::DockerExecutor;
 use handlers::get_version;
 
@@ -42,37 +43,15 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn run_preflight_checks(server_config: &ServerConfig, tool_config: &ToolConfig) {
+/// Run startup readiness checks: the execution backend's own preflight (Docker
+/// daemon, images, binary) plus the core's docs-directory check, which is
+/// backend-independent.
+fn run_preflight_checks(executor: &dyn ExecutionBackend, docs: Option<&DocsConfig>) {
     tracing::info!("running preflight checks...");
 
-    docker::check_docker().expect("preflight: Docker check failed");
+    executor.preflight().expect("preflight: backend check failed");
 
-    let images: Vec<(&str, &str)> = [
-        (tool_config.run_image.as_deref(), "run"),
-        (tool_config.valgrind_image.as_deref(), "valgrind"),
-        (tool_config.coverage_image.as_deref(), "coverage"),
-        (tool_config.static_image.as_deref(), "static_analysis"),
-        (server_config.build.as_ref().map(|b| b.image.as_str()), "build"),
-    ]
-    .into_iter()
-    .filter_map(|(img, name)| img.map(|i| (i, name)))
-    .collect();
-
-    for (image, name) in &images {
-        docker::check_image(image)
-            .unwrap_or_else(|e| panic!("preflight: {name} image check failed: {e}"));
-        tracing::info!("{name} image OK: {image}");
-    }
-
-    if server_config.build.is_none()
-        && let Some(ref run_image) = tool_config.run_image
-    {
-        docker::check_binary_in_image(run_image, &server_config.binary.path)
-            .expect("preflight: binary check failed");
-        tracing::info!("binary OK: {} (in {})", server_config.binary.path, run_image);
-    }
-
-    if let Some(ref docs) = server_config.docs {
+    if let Some(docs) = docs {
         assert!(
             docs.directory.is_dir(),
             "preflight: docs directory not found or not a directory: {} — \
@@ -142,18 +121,18 @@ async fn main() {
         tracing::info!("static analysis image: {img}");
     }
 
-    run_preflight_checks(&server_config, &tool_config);
-
-    // Create workspace root directory (per-job subdirs are created at job start)
-    std::fs::create_dir_all(&server_config.workspace)
-        .expect("failed to create workspace directory");
-
     let executor = Arc::new(DockerExecutor::new(
         server_config.binary,
         server_config.build,
         tool_config,
         server_config.hardware,
     ));
+
+    run_preflight_checks(executor.as_ref(), server_config.docs.as_ref());
+
+    // Create workspace root directory (per-job subdirs are created at job start)
+    std::fs::create_dir_all(&server_config.workspace)
+        .expect("failed to create workspace directory");
 
     let state = handlers::AppState {
         store: store::new_store(),

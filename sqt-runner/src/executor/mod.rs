@@ -30,7 +30,22 @@ pub mod docker;
 /// 2. **Execute** - the binary (pre-built or freshly compiled) is invoked and
 ///    metrics are collected through the configured tool chain (Valgrind,
 ///    lcov, cppcheck, `SonarQube`, ...).
-pub trait JobExecutor: Send + Sync {
+///
+/// The trait is intentionally backend-agnostic: the HTTP/queue/store layer
+/// only ever calls these methods, so a non-Docker backend (e.g. an on-target
+/// GRMON or `LabGrid` runner) can be dropped in by implementing this trait. The
+/// startup readiness check is part of the contract via [`preflight`], so the
+/// core never reaches around the trait to probe Docker directly.
+///
+/// [`preflight`]: ExecutionBackend::preflight
+pub trait ExecutionBackend: Send + Sync {
+    /// One-time readiness check, run once at startup before the server binds.
+    ///
+    /// Implementations validate everything they need to execute jobs (for the
+    /// Docker backend: the daemon is up, configured images exist, the binary
+    /// is executable inside the run image). Returning `Err` aborts startup.
+    fn preflight(&self) -> Result<()>;
+
     /// Run a single job and return the collected metrics.
     ///
     /// `workspace` is a per-job scratch directory owned by the caller. The

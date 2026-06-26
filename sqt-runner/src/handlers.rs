@@ -16,7 +16,7 @@ use sqt_types::{
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use crate::executor::JobExecutor;
+use crate::executor::ExecutionBackend;
 use crate::store::{self, JobStore};
 
 /// Shared application state passed to all handlers.
@@ -24,7 +24,7 @@ use crate::store::{self, JobStore};
 pub struct AppState {
     pub store: JobStore,
     pub workspace: PathBuf,
-    pub executor: Arc<dyn JobExecutor>,
+    pub executor: Arc<dyn ExecutionBackend>,
     /// Limits concurrent job execution to one at a time (sequential queue).
     pub job_semaphore: Arc<Semaphore>,
     /// Directory scanned by GET /api/v1/docs (`.sdoc` → documents, rest → attachments).
@@ -400,11 +400,14 @@ mod tests {
     use tokio::sync::Semaphore;
     use tower::ServiceExt as _;
 
-    use crate::executor::JobExecutor;
+    use crate::executor::ExecutionBackend;
     use crate::store;
 
     struct StubExecutor;
-    impl JobExecutor for StubExecutor {
+    impl ExecutionBackend for StubExecutor {
+        fn preflight(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
         fn execute(
             &self,
             _req: &sqt_types::JobRequest,

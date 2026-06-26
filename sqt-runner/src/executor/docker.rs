@@ -8,7 +8,7 @@ use crate::config::{BinaryConfig, BuildConfig, ToolConfig};
 use crate::docker::{self, DockerRun};
 use crate::tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind};
 
-use super::JobExecutor;
+use super::ExecutionBackend;
 
 /// Default job executor: compiles (when configured) and runs workloads in
 /// Docker containers, then collects metrics via the configured tool chain.
@@ -16,8 +16,8 @@ use super::JobExecutor;
 /// # Customisation
 ///
 /// Fork `sqt-runner` and replace `DockerExecutor` with your own
-/// [`JobExecutor`] implementation in `main.rs` to integrate a different ML-L
-/// framework, compiler, or target architecture.
+/// [`ExecutionBackend`] implementation in `main.rs` to integrate a different
+/// ML-L framework, compiler, or target architecture.
 pub struct DockerExecutor {
     binary_config: BinaryConfig,
     build_config: Option<BuildConfig>,
@@ -112,7 +112,42 @@ impl DockerExecutor {
     }
 }
 
-impl JobExecutor for DockerExecutor {
+impl ExecutionBackend for DockerExecutor {
+    fn preflight(&self) -> Result<()> {
+        tracing::info!("running Docker backend preflight checks...");
+
+        docker::check_docker().context("Docker check failed")?;
+
+        let images: Vec<(&str, &str)> = [
+            (self.tool_config.run_image.as_deref(), "run"),
+            (self.tool_config.valgrind_image.as_deref(), "valgrind"),
+            (self.tool_config.coverage_image.as_deref(), "coverage"),
+            (self.tool_config.static_image.as_deref(), "static_analysis"),
+            (self.build_config.as_ref().map(|b| b.image.as_str()), "build"),
+        ]
+        .into_iter()
+        .filter_map(|(img, name)| img.map(|i| (i, name)))
+        .collect();
+
+        for (image, name) in &images {
+            docker::check_image(image).with_context(|| format!("{name} image check failed"))?;
+            tracing::info!("{name} image OK: {image}");
+        }
+
+        // When building per-job there is no pre-built binary to probe; the
+        // compile step validates the source instead.
+        if self.build_config.is_none()
+            && let Some(ref run_image) = self.tool_config.run_image
+        {
+            docker::check_binary_in_image(run_image, &self.binary_config.path)
+                .context("binary check failed")?;
+            tracing::info!("binary OK: {} (in {})", self.binary_config.path, run_image);
+        }
+
+        tracing::info!("Docker backend preflight passed");
+        Ok(())
+    }
+
     fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics> {
         let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(60));
 
