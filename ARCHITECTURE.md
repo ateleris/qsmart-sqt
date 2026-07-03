@@ -3,8 +3,18 @@
 **Project**: Qualified Software Machine Learning Toolkit for Space Hardware
 **Components**: SQT Runner + SQT Reporter (both Ateleris responsibility)
 **Technology**: Rust applications
-**Version**: 1.1
-**Date**: 2026-05-27
+**Version**: 1.2
+**Date**: 2026-07-03
+
+> **v1.2 revision note**: Sections 3 (configuration), 8 (Runner internals), 9
+> (report generation), 10 (metric extensibility), and 11 (technology stack /
+> project layout) were rewritten to describe the **target architecture that the
+> implemented workspace realises** — the three-crate layout (`sqt-types`,
+> `sqt-reporter`, `sqt-runner`), the `backend:`/`docker:` runner config, and the
+> `ExecutionBackend`/`LifecycleBackend` abstraction. Behavioural sections (2, 5,
+> 7) describe SRS-mandated behaviour and remain the target even where the current
+> implementation does not yet fully meet it; those deltas are tracked in
+> `REVIEW_FINDINGS.md` and reflected in `IMPLEMENTATION.md`, not softened here.
 
 ---
 
@@ -273,166 +283,157 @@ Two separate configuration files exist: one for the **SQT Reporter** and one for
 
 #### SQT Reporter Configuration: `sqt-reporter.yaml`
 
+The schema is deliberately minimal: the four sections below are the complete set
+of keys the Reporter reads. Unknown keys are ignored (serde default), so forward
+config additions do not break older binaries.
+
 ```yaml
-# Project Metadata
+# Project identity — stamped into report provenance (SRS-DATA-003)
 project:
-  name: "Klepsydra AI ML-L Qualification"
+  name: "AI ML-L Qualification"
   version: "1.0.0"
-  ecss_level: "D"                    # A, B, C, or D
-  target_trl: 6                      # Technology Readiness Level
 
-# SQT Runner connection
-runner:
-  url: "http://runner-host:8080"
-  auth:
-    type: "bearer"                   # bearer, none
-    token_env: "SQT_RUNNER_TOKEN"    # environment variable holding the token; redacted from all output
-  poll_interval_initial_secs: 1
-  poll_interval_max_secs: 30
-  job_timeout_secs: 3600             # project-default per-job timeout; overridable per spec
-  max_concurrent_jobs: 8             # SRS-PERF-002: max jobs in flight at once
-  retry_max: 3                       # SRS-IF-009: max retries on transient errors
-  retry_backoff_initial_secs: 1      # SRS-IF-009: initial retry backoff
-
-# Test specifications (declarative .test.yaml files)
-# Registered by explicit declaration — no directory scanning (SRS-MAINT-002)
+# Test specifications — explicit list of declarative spec files.
+# Registered by explicit declaration; no directory scanning (SRS-MAINT-002).
+# Relative paths resolve against this config file's directory.
 test_specs:
   files:
-    - "./specs/REQ-ML-L-001.test.yaml"
-    - "./specs/REQ-ML-L-003.test.yaml"
-    - "./specs/REQ-ML-L-004.test.yaml"
+    - "./specs/REQ-ML-L-001.sqt.yaml"
+    - "./specs/REQ-ML-L-003.sqt.yaml"
+    - "./specs/REQ-ML-L-004.sqt.yaml"
 
-# Report Generation
-reports:
-  output_dir: "./reports"
-  timestamp_format: "%Y-%m-%d_%H-%M-%S"
+# SQT Runner connection + operational tuning
+runner:
+  url: "http://runner-host:8080"     # http:// or https:// (validated at load)
+  token_env: "SQT_RUNNER_TOKEN"      # optional: env var holding the bearer token;
+                                     # value is redacted from all output (SRS-OPS-005).
+                                     # If set, the var must be present and non-empty
+                                     # at startup or the Reporter exits non-zero (SRS-IF-006).
 
-  formats:
-    pdf:
-      enabled: true
-      engine: "typst"                # typst, pdflatex, xelatex
+  # Operational tuning (defaults shown):
+  max_concurrent_jobs: 8             # in-flight submission bound (SRS-PERF-002)
+  job_timeout_secs: 300              # project-default per-job timeout; overridable per spec (SRS-PERF-004)
+  retry_max: 3                       # transient-error retry ceiling (SRS-IF-009)
+  retry_backoff_initial_secs: 1      # initial retry backoff (SRS-IF-009)
+  poll_interval_initial_secs: 1      # first polling interval (SRS-PERF-003)
+  poll_interval_max_secs: 30         # polling backoff cap (SRS-PERF-003)
 
-    html:
-      enabled: true
-
-    json:
-      enabled: true
-
-# CI/CD Integration
-ci_integration:
-  provider: "github_actions"         # github_actions, gitlab_ci, jenkins, none
-
-  artifacts:
-    upload: true
-    retention_days: 90
-    paths:
-      - "./reports/**"
-
-# Logging
-logging:
-  level: "info"                      # debug, info, warn, error
-  output: "stdout"                   # stdout, file, both
-  file_path: "./logs/sqt-reporter.log"
-  format: "json"
+# Report generation
+report:
+  output_dir: "./reports"            # relative paths resolve against this config file
 ```
+
+The Reporter emits, into `report.output_dir`: the machine-readable JSON report,
+a PDF summary, the traceability matrix (`.json` + `.txt`), per-job evidence under
+`evidence/`, and the QDP bundle (`qdp.zip`). Report *format selection* (choosing
+which of these to emit, alternate PDF engines, HTML) is not a config surface today
+— all outputs are always produced. See §9.
+
+> **Diagnostic verbosity** (SRS-OPS-002) is currently driven by the `RUST_LOG`
+> environment variable (`tracing` env-filter), not a config key or CLI flag.
 
 #### SQT Runner Configuration: `sqt-runner.yaml`
 
+The runner config is organised around a top-level **`backend:`** discriminant.
+Backend-specific settings live in a section named after the variant. Today the
+only backend is `docker`, whose settings (per-tool images and an optional build
+step) live under `docker:`. Adding a new backend (e.g. on-target hardware) is a
+new `Backend` enum variant plus its own config section — see §8.
+
 ```yaml
-# Binary under test (pre-built, or compiled per-job when [build] is present)
+backend: docker                       # execution backend (default: docker)
+
+# Binary under test (pre-built, or compiled per job when [docker.build] is present)
 binary:
-  path: ./artifacts/ml_l_inference
-  args: []
-  env:
+  path: ./artifacts/ml_l_inference    # relative paths resolved to absolute at load
+  args: []                            # optional: fixed args always appended
+  env:                                # optional: env vars set for every run
     LD_LIBRARY_PATH: /opt/libs
-  input_mode: stdin                   # stdin | arg | env:VAR_NAME
+  input_mode: stdin                   # stdin | arg | env:VAR_NAME  (default: stdin)
 
 # Per-job scratch directory for tool output (valgrind XML, coverage data, etc.)
-workspace: /var/sqt/workspace
+workspace: /var/sqt/workspace         # default: /tmp/sqt-dev-server
 
-# Per-tool Docker image configuration
-tools:
-  run:
-    image: sqt-run:latest             # required; image used for normal execution runs
-  valgrind:
-    image: sqt-valgrind:latest        # optional; enables memory.leaks_bytes
-  coverage:
-    image: sqt-coverage:latest        # optional; enables coverage.line_pct
-  sonarqube:
-    url: "http://sonar.local:9000"    # optional; enables static.critical_issues / major_issues
-    token_env: SONAR_TOKEN            # env var holding the auth token
-  static_analysis:
-    image: sqt-static:latest          # optional; enables static.warnings
+# Docker-backend-specific settings
+docker:
+  # Per-tool Docker image configuration
+  tools:
+    run:
+      image: sqt-run:latest           # required for run jobs; image used to execute the binary
+    valgrind:
+      image: sqt-valgrind:latest      # optional; enables memory.leaks_bytes
+    coverage:
+      image: sqt-coverage:latest      # optional; enables coverage.line_pct
+    sonarqube:
+      url: "http://sonar.local:9000"  # optional; enables static.critical_issues / major_issues
+      token_env: SONAR_TOKEN          # env var holding the auth token (default: SONAR_TOKEN)
+    static_analysis:
+      image: sqt-static:latest        # optional; enables static.warnings
 
-# Build step (optional; omit when using a pre-built binary)
-# When present, the runner compiles [build.source] against [build.engine_lib]
-# before each job using the instrumentation flags from the job request.
-build:
-  image: gcc:14-bookworm              # Docker image providing the compiler
-  source: ./src/main.cpp              # main program source file
-  engine_lib: ./artifacts/libengine.so  # ML-L engine shared library
-  compiler: g++                       # default: g++
-  extra_flags: ["-std=c++17"]
-  include_dirs: ["./include"]
-  compile_timeout_secs: 300
+  # Build step (optional; omit when using a pre-built binary).
+  # When present the runner compiles [build.source] against [build.engine_lib]
+  # before each job, choosing compiler flags from the job's instrumentation.
+  build:
+    image: gcc:14-bookworm            # Docker image providing the compiler
+    source: ./src/main.cpp            # main program source file
+    engine_lib: ./artifacts/libengine.so  # ML-L engine shared library (linked + copied to workspace)
+    compiler: g++                     # default: g++
+    extra_flags: ["-std=c++17"]
+    include_dirs: ["./include"]
+    compile_timeout_secs: 300
 
-# Target hardware descriptor (returned verbatim in every job response)
+# Target hardware descriptor (returned verbatim in JobStatusResponse.hardware).
+# All sub-fields optional; omit the section to report type: unknown.
 hardware:
-  hw_type: x86_64-linux
-  model: null
-  cores: null
-  memory_total_kb: null
+  type: x86_64                        # serde wire name is `type`
+  model: Intel Core i7-12700
+  cores: 20
+  memory_total_kb: 32768000
   clock_mhz: null
-  os: null
+  os: Ubuntu 24.04 LTS
 
-# Qualification documents served via GET /api/v1/docs
-# The runner scans this directory:
-#   *.sdoc -> documents[] (text, parsed client-side by Reporter)
-#   *.*    -> attachments[] (base64, included verbatim in QDP)
+# Runner identity + toolchain reported via GET /api/v1/version (SRS-DATA-003).
+runner_hardware:
+  target_id: x86_64-linux
+  toolchain_versions:
+    onnxruntime: "1.17"
+    gcc: "13.2"
+
+# Qualification documents served via GET /api/v1/docs (optional).
+# When absent the endpoint returns 404. The runner scans this directory
+# (non-recursively) at request time:
+#   *.sdoc -> documents[]   (raw UTF-8 text, parsed client-side by the Reporter)
+#   *.*    -> attachments[] (base64 blobs)
 docs:
   directory: ./docs
 ```
 
-The binary and artifacts are configured at Runner startup, not per job. To qualify a different version, restart the Runner with an updated config file.
+The binary and artifacts are configured at Runner startup, not per job (AD-018).
+To qualify a different version, restart the Runner with an updated config file.
 
 ### 3.2 Configuration Validation
 
-Both components validate their configuration files on startup:
+Both components validate on startup, before doing any real work.
 
-```rust
-// Reporter: validate sqt-reporter.yaml
-fn validate_reporter_config(config: &ReporterConfig) -> Result<(), ValidationError> {
-    if config.project.name.is_empty() {
-        return Err(ValidationError::MissingField("project.name"));
-    }
-    for spec_path in &config.test_specs.files {
-        if !Path::new(spec_path).exists() {
-            return Err(ValidationError::FileNotFound(spec_path.clone()));
-        }
-    }
-    check_api_connectivity(&config.runner.url)?;
-    Ok(())
-}
+**Reporter** (`SqtConfig::validate`, `sqt-reporter/src/config/schema.rs`): runs
+before the API client is constructed or any network call is made (SRS-FUNC-002).
+It rejects an empty `project.name`/`project.version`, a `runner.url` whose scheme
+is not `http`/`https` (case-insensitive), and an empty `test_specs.files`; when
+`runner.token_env` is set, the named environment variable must be present and
+non-empty (SRS-IF-006). Relative `test_specs.files` and `report.output_dir` paths
+are resolved against the config file's directory. Each error names the offending
+field so the operator can fix it without reading logs. Deeper checks (endpoint
+reachability, auth, docs) are performed by pre-flight mode (§6.2, SRS-OPS-007),
+not by config validation.
 
-// Runner: validate sqt-runner.yaml
-fn validate_runner_config(config: &RunnerConfig) -> Result<(), ValidationError> {
-    for path in [&config.runner.artifacts.inference_engine,
-                 &config.runner.artifacts.trained_model,
-                 &config.runner.artifacts.main_program] {
-        if !Path::new(path).exists() {
-            return Err(ValidationError::FileNotFound(path));
-        }
-    }
-    for doc in [&config.runner.docs.ecss_baseline,
-                &config.runner.docs.unit_test_results,
-                &config.runner.docs.validation_test_results] {
-        if !Path::new(doc).exists() {
-            return Err(ValidationError::FileNotFound(doc));
-        }
-    }
-    Ok(())
-}
-```
+**Runner** (`ServerConfig::load` + `run_preflight_checks`, `sqt-runner/src/`):
+`load` parses the YAML and resolves `binary.path`, `workspace`, `docs.directory`,
+and any `docker.build.*` paths to absolute (Docker bind mounts require absolute
+paths). Startup readiness is then delegated to the execution backend's own
+`preflight()` (for the Docker backend: daemon up, configured images present, the
+binary executable inside the run image) plus a backend-independent check that the
+configured `docs.directory`, if any, exists and is readable. A failing check
+aborts startup before the server binds.
 
 ---
 
@@ -770,7 +771,10 @@ for constraint in &spec.constraints {
 }
 ```
 
-The orchestrator never calls metric collectors directly - all tool execution happens server-side. The `MetricCollector` trait (and Phase 2 built-in collectors) remains valid as the implementation layer for the local dev API server. See Section 10 (Plugin Architecture) for how custom metrics are registered and invoked.
+The orchestrator never runs tools directly — all measurement happens server-side
+in the Runner (the Docker tool pipeline, §8.5). The orchestrator submits jobs and
+reads the flat `JobMetrics` response. See §10 for how metrics are produced and how
+the Runner is extended.
 
 ### 4.6 Compliant Requirements (Non-Testable)
 
@@ -837,10 +841,14 @@ different verification modes.
 
 ### 5.1 API Contract (OpenAPI Specification)
 
-The full interface contract is defined in **`job-api.openapi.yaml`** at the root of the
-repository. The spec is implemented by the **SQT Runner**. The **SQT Reporter** is the
-API client. During development, the existing local dev-server stub can stand in for the
-Runner until the real implementation is ready.
+The full interface contract is defined in **`job-api.openapi.yaml`** at the root of
+the repository. The spec is implemented by the **SQT Runner** (the `sqt-runner`
+crate is the reference implementation); the **SQT Reporter** is the API client.
+
+> **Known contract drift**: the OpenAPI file still names the workload field `model`
+> whereas the implementation (and this document) use `use_case`; `input` is typed
+> as a discriminated union in the contract but sent as a bare path string. The
+> OpenAPI file is the item to regenerate. Tracked as F-H2 in `REVIEW_FINDINGS.md`.
 
 #### Base URL
 ```
@@ -1646,48 +1654,71 @@ Requirement REQ-ML-L-003: VERIFIED
 
 ## 8. SQT Runner Target Architecture
 
-The SQT Runner is designed from the start to support multiple execution targets. The **Target Abstraction Layer** (TAL) isolates all target-specific logic so that new targets can be added without touching the REST API server, test execution engine, or the SQT Reporter.
+The SQT Runner is built around a pluggable **execution backend**. All
+target-specific logic (how a job is provisioned, run, and measured) sits behind a
+trait, so a new target — different hardware, a different ML-L framework — can be
+added without touching the HTTP layer, the job store, or the SQT Reporter. This is
+the concrete realisation of the Target Abstraction Layer (AD-023).
 
-### 8.1 Target Abstraction Layer Design
+### 8.1 Execution Backend Abstraction
 
-Each target implements a common `Target` trait:
+The HTTP/queue/store layer only ever holds an `Arc<dyn ExecutionBackend>` — an
+object-safe trait with three methods (`sqt-runner/src/executor/mod.rs`):
 
 ```rust
-pub trait Target: Send + Sync {
-    /// Unique identifier used in Runner config (e.g. "x86_64-linux", "gr740")
-    fn id(&self) -> &str;
+pub trait ExecutionBackend: Send + Sync {
+    /// One-time readiness check, run at startup before the server binds.
+    fn preflight(&self) -> anyhow::Result<()>;
 
-    /// Assemble the AI system (inference engine + model + main program)
-    /// into a state ready for test execution.
-    fn prepare(&self, config: &AiSystemConfig) -> anyhow::Result<PreparedSystem>;
+    /// Run one job in the caller-owned per-job workspace; return its metrics.
+    fn execute(&self, request: &JobRequest, workspace: &Path) -> anyhow::Result<JobMetrics>;
 
-    /// Execute the given test run and return collected metrics.
-    fn execute(&self, system: &PreparedSystem, job: &JobRequest) -> anyhow::Result<JobMetrics>;
-
-    /// Clean up any resources allocated during prepare/execute.
-    fn teardown(&self, system: PreparedSystem) -> anyhow::Result<()>;
+    /// Target hardware, identity, and toolchain versions —
+    /// feeds JobStatusResponse.hardware and GET /api/v1/version.
+    fn describe(&self) -> BackendDescriptor;
 }
 ```
 
-The active target is selected by a single config key; no code changes are needed to switch targets.
+New backends do **not** implement `ExecutionBackend` directly. They implement the
+ergonomic, lifecycle-oriented `LifecycleBackend` trait, and a blanket
+`impl<T: LifecycleBackend> ExecutionBackend for T` supplies the `execute`
+orchestration for free (prepare → run → collect, with teardown always run
+afterwards, even on failure):
+
+```rust
+pub trait LifecycleBackend: Send + Sync {
+    type Prepared;   // backend-private handle (compiled binary, container spec, board session)
+    type RawRun;     // backend-private raw output, mapped to metrics by `collect`
+
+    fn preflight(&self) -> anyhow::Result<()>;
+    fn describe(&self) -> BackendDescriptor;
+
+    fn prepare(&self, ctx: &JobContext) -> anyhow::Result<Self::Prepared>;               // provision (compile/flash/stage)
+    fn run(&self, ctx: &JobContext, prepared: &Self::Prepared) -> anyhow::Result<Self::RawRun>;  // run under measurement
+    fn collect(&self, ctx: &JobContext, raw: Self::RawRun) -> anyhow::Result<JobMetrics>;         // map raw → JobMetrics
+    fn teardown(&self, ctx: &JobContext, prepared: Self::Prepared) -> anyhow::Result<()> { Ok(()) }
+}
+```
+
+`JobContext` bundles the `JobRequest`, the per-job workspace path, and the
+resolved timeout, so backends never re-derive timeout policy. `Prepared`/`RawRun`
+stay private to the backend; only `JobContext` in and `JobMetrics` /
+`BackendDescriptor` out cross the boundary.
+
+**Backend selection.** The active backend is chosen by the top-level `backend:`
+config key (§3.1). `main.rs` has a small `build_executor()` factory that maps each
+`Backend` enum variant to its constructor. Adding a backend is therefore three
+localised edits — a new `Backend` variant, its config section, and a match arm —
+with no change to handlers, the store, `AppState`, or the trait boundary.
 
 ```yaml
-# sqt-runner.yaml
-runner:
-  target: x86_64-linux        # or: gr740, gr765
-
-  artifacts:
-    inference_engine: ./artifacts/klepsydra-engine
-    trained_model:    ./artifacts/model.onnx
-    main_program:     ./artifacts/main
-    input_data:       ./artifacts/input/
-    output_reference: ./artifacts/reference_output/
-
-  docs:
-    ecss_baseline:          ./docs/ecss-baseline.sdoc
-    unit_test_results:      ./docs/unit-test-results.sdoc
-    validation_test_results: ./docs/validation-test-results.sdoc
+# sqt-runner.yaml (see §3.1 for the full schema)
+backend: docker        # the shipped backend; future: an on-target hardware backend
 ```
+
+The shipped backend is `DockerExecutor` (`sqt-runner/src/executor/docker.rs`),
+which compiles the workload when a `docker.build` section is present and executes
+it inside per-tool Docker containers.
 
 ### 8.2 AI System Assembly
 
@@ -1698,17 +1729,28 @@ Before test execution the Runner assembles the AI system. The exact mechanism de
 - Linking or composing components into a single runnable process
 - Compiling a thin wrapper that binds the engine and model (if required by the delivery format)
 
-Assembly is performed once per qualification session (not per job) and cached for subsequent jobs. The `prepare()` method on the target trait encapsulates this step.
+The backend's `prepare()` lifecycle phase (§8.1) encapsulates this step. For the
+Docker backend with a `docker.build` section, "assembly" is compiling the
+customer-supplied main program against the ML-L engine shared library; the
+instrumentation flags come from the job request. When a pre-built binary is
+configured instead, `prepare()` simply stages it.
 
-### 8.3 Supported Targets
+### 8.3 Supported and Planned Backends
 
-| Target | Status | Execution Method | Notes |
+| Backend | Status | Execution Method | Notes |
 |--------|--------|-----------------|-------|
-| `x86_64-linux` | **In Scope (v1)** | Native process execution | Development and CI baseline |
-| `gr740` | **Planned - Out of Scope for v1** | Remote attachment (connection protocol TBD: serial / GDB server / network) | Customer provides the hardware; Runner connects to it |
-| `gr765` | **Planned - Out of Scope for v1** | Remote attachment (connection protocol TBD) | Same model as GR740 target |
+| `docker` (x86_64/Linux) | **In Scope (v1)** | Compile/execute inside Docker containers on the host | Development and CI baseline; the only shipped `Backend` variant |
+| GR740 | **Planned - Out of Scope for v1** | New backend: remote attachment (protocol TBD: serial / GDB stub / network) | Customer provides the hardware; backend connects to it |
+| GR765 | **Planned - Out of Scope for v1** | New backend: remote attachment (protocol TBD) | Same model as the GR740 backend |
 
-**Design constraint for GR740/GR765**: Ateleris does not have access to these processors. The Runner therefore operates in a "remote execution" mode: it transfers the assembled AI system to the customer-provided board over an attached link, triggers execution, and collects results back. The exact connection protocol (JTAG, GDB remote stub, serial, network) is TBD and will be defined once a concrete delivery from the ML-L Provider is available. The target abstraction ensures this can be added later without API changes.
+**Design constraint for GR740/GR765**: Ateleris does not have access to these
+processors. Support would be added as a new `Backend` variant implementing
+`LifecycleBackend` in "remote execution" mode: `prepare` transfers the assembled
+AI system to the customer-provided board over an attached link, `run` triggers
+execution, `collect` gathers results back. The exact connection protocol (JTAG,
+GDB remote stub, serial, network) is TBD and will be defined once a concrete
+delivery from the ML-L Provider is available. The backend abstraction (§8.1)
+ensures this can be added without touching the API, handlers, or store.
 
 **Note on emulation**: Gaisler provides **TSIM** (Time-accurate SIMulator), a commercial tool that emulates LEON4 (GR740) and exposes a GDB remote stub interface. In principle, the GR740 Runner target could support TSIM as a sub-mode alongside physical hardware - the binary and execution model are identical, only the connection differs. TSIM3 covers LEON4/GR740; LEON5/GR765 support (TSIM5) should be verified with Gaisler. This route is not currently planned but the TAL design does not preclude it.
 
@@ -1732,57 +1774,73 @@ Both test types use the same job submission flow; the `use_case` field in the jo
 
 ### 8.5 Docker Containerization
 
-The SQT Runner should support Docker for reproducible environments on x86\_64:
+The shipped `docker` backend does not run the SQT Runner *itself* in a container;
+it runs each **measurement tool** in its own purpose-built container, so the
+toolchain is isolated and reproducible without polluting the host. Images are
+configured per tool under `docker.tools` (§3.1); the repository ships Dockerfiles
+for them under `docker/` (`Dockerfile.run`, `.valgrind`, `.coverage`, `.static`,
+`.sonar`) built by `docker/build-all.sh`.
+
+For each job the backend creates a per-job workspace directory and bind-mounts it
+(plus the binary and any input) into the relevant tool container:
 
 ```yaml
 docker:
-  enabled: true
-  image: "ateleris/sqt-runner:latest"
-  volumes:
-    - "./artifacts:/runner/artifacts"
-    - "./docs:/runner/docs"
-  network: "host"   # Reporter and Runner on the same host during development
+  tools:
+    run:      { image: sqt-run:latest }        # required — executes the binary, measures time/RSS/CPU
+    valgrind: { image: sqt-valgrind:latest }   # optional — memory.leaks_bytes
+    coverage: { image: sqt-coverage:latest }   # optional — coverage.line_pct
+    static_analysis: { image: sqt-static:latest }  # optional — static.warnings
+    sonarqube:                                 # optional — static.critical_issues / major_issues
+      url: http://sonar.local:9000
+      token_env: SONAR_TOKEN
 ```
 
-**Benefits**:
-- Reproducible test environment
-- Toolchain isolation (valgrind, lcov, etc.)
-- Easy CI/CD integration for x86\_64 tests
+**Benefits**: reproducible tool environment, toolchain isolation per tool
+(valgrind, lcov, cppcheck, …), and easy CI/CD integration on x86_64. A tool whose
+image is not configured is simply skipped, and its metrics are reported as `null`.
 
 ---
 
 ## 9. Report Generation
 
-### 9.1 Report Types
+### 9.1 Report Outputs
 
-#### PDF Report (ECSS-Compliant)
+Every `sqt run` writes the following into `report.output_dir`. All are produced on
+every run — there is no per-format on/off switch.
+
+#### JSON Report (Machine-Readable) — the primary artefact
+- **Target audience**: CI/CD, automation, downstream tooling
+- **Contents**: one entry per spec with each constraint outcome and measured value,
+  plus run metadata: `schema_version` (SRS-DATA-001), provenance (SQT version,
+  Runner version/target/OS/toolchain, sanitised config — SRS-DATA-003), and the
+  `interrupted` flag (SRS-OPS-008)
+- **Requirement**: SRS-FUNC-009 mandates a single machine-readable report be
+  produced for every run
+
+#### PDF Report (ECSS-oriented summary)
 - **Target audience**: ESA, customers, certification
-- **Format**: Professional, structured, traceable
-- **Template**: LaTeX or Typst
-- **Sections**:
-  1. Executive Summary
-  2. Project Overview
-  3. Requirements Traceability Matrix
-  4. Test Results Summary
-  5. Detailed Test Results
-  6. Coverage Analysis
-  7. Static Analysis Results
-  8. Performance Metrics
-  9. Appendices (raw data, artifacts)
+- **Engine**: rendered with `printpdf` today; a richer template engine (e.g.
+  Typst) is a future substitution behind the same report data model (AD-006)
+- **Sections**: executive summary, requirements traceability, test-results
+  summary, per-requirement detail
 
-#### HTML Report (Developer-Friendly)
-- **Target audience**: Developers, CI dashboards
-- **Format**: Interactive, searchable
-- **Features**:
-  - Collapsible sections
-  - Search functionality
-  - Links to source code
-  - Trend graphs
+#### Traceability Matrix (dual-audience)
+- Emitted as both `traceability.json` and `traceability.txt` from one data model
+  (SRS-FUNC-010, SRS-DATA-002); produced when the Runner serves a baseline
 
-#### JSON Report (Machine-Readable)
-- **Target audience**: Automation, other tools
-- **Format**: Structured JSON
-- **Use case**: CI/CD integration, metrics tracking
+#### Terminal Summary
+- Printed at the end of every run: per-spec PASS / FAIL / INFRA_ERROR with counts
+  and evidence location (SRS-OPS-003)
+
+#### QDP (Quality Data Package)
+- `qdp.zip` bundling the report, traceability, and per-job evidence — the ECSS
+  qualification output artefact
+
+> **HTML report**: not implemented. It is a possible future developer-facing
+> output; it is not an SRS requirement and no code path emits it today. Earlier
+> drafts of this document listed it as a first-class format (AD-010) — treat that
+> as deferred, not current.
 
 ### 9.2 Report Structure Principles
 
@@ -1876,372 +1934,191 @@ Date: 2026-02-13 14:30:00 UTC
 ═══════════════════════════════════════════════════════════════
 ```
 
-### 9.4 Report Templates
+### 9.4 Report Generation Implementation
 
-#### PDF Template (Typst)
-```typst
-// ecss-report-template.typ
-#set document(title: "ML-L Qualification Report", author: "Ateleris GmbH")
-#set page(numbering: "1", number-align: center)
+Report generation lives in `sqt-reporter/src/report.rs` and
+`sqt-reporter/src/traceability/`. A single `Report` data model is built from the
+`RunResult` plus the `VersionResponse` provenance gathered at session start, then
+rendered to each output:
 
-#align(center)[
-  #text(size: 24pt, weight: "bold")[
-    Software Qualification Report
-  ]
-  #v(1em)
-  #text(size: 18pt)[
-    #project_name
-  ]
-  #v(2em)
-  #text(size: 12pt)[
-    Version: #version \
-    Date: #datetime.today().display()
-  ]
-]
+- `write_json` — the machine-readable report (`schema_version` first field)
+- `write_pdf` — the PDF summary via `printpdf`
+- `print_terminal` — the end-of-run terminal summary
+- `traceability::write_json` / `write_text` — the dual-audience matrix
+- `write_qdp` — zips report + traceability + evidence into `qdp.zip`
 
-#pagebreak()
-
-= Executive Summary
-
-#executive_summary_content
-
-= Requirements Traceability Matrix
-
-#table(
-  columns: 4,
-  [Requirement], [Test Cases], [Status], [Coverage],
-  ..#traceability_rows
-)
-
-// ... more sections ...
-```
-
-### 9.5 Report Generation Implementation
-
-```rust
-pub struct ReportGenerator {
-    config: ReportConfig,
-    template_engine: TemplateEngine,
-}
-
-impl ReportGenerator {
-    pub fn generate(&self, evidence: &Evidence) -> Result<Report> {
-        // 1. Prepare data model
-        let data = ReportData::from_evidence(evidence);
-
-        // 2. Generate sections
-        let sections = vec![
-            self.generate_executive_summary(&data)?,
-            self.generate_test_results(&data)?,
-            self.generate_traceability_matrix(&data)?,
-            self.generate_coverage_report(&data)?,
-            self.generate_static_analysis(&data)?,
-            self.generate_performance_metrics(&data)?,
-        ];
-
-        // 3. Render to formats
-        let pdf = self.render_pdf(&sections)?;
-        let html = self.render_html(&sections)?;
-        let json = self.render_json(&data)?;
-
-        Ok(Report { pdf, html, json })
-    }
-}
-```
+There is no template-engine layer today: the PDF is emitted directly by
+`printpdf`. Substituting a template engine (Typst/LaTeX) later is a change behind
+`write_pdf` only; the `Report` data model and every other output are unaffected.
 
 ---
 
 ## 10. Metric Extensibility
 
-### 10.0 Where Metrics Live
+### 10.0 Where Metrics Come From
 
-**All metric collection (tool execution) happens in the SQT Runner.** The Runner runs valgrind, lcov, sonar-scanner, and any other analysis tools on the target system and returns results as `JobMetrics` fields in the job response. The tools are configured in `sqt-runner.yaml` and run server-side; the Reporter never invokes them directly.
-
-**The SQT Reporter is responsible for consuming and formatting those metrics** for reports and constraint evaluation. On the Reporter side, the `MetricCollector` trait and the `inventory`-based registry described below are the extensibility mechanism for the **Runner** - not the Reporter. When someone adds a new tool to the Runner (e.g. a custom profiler), they add a new collector in the Runner's source tree. The Reporter side only needs a corresponding field in the `.test.yaml` spec schema and a label in the report template.
-
-To summarise:
-```
-SQT Runner                           SQT Reporter
-─────────────────────────────────────────────────────
-MetricCollector trait                Job response deserialization
-inventory-based registry             Constraint evaluation (metric vs. spec)
-Tool execution (valgrind, lcov, …)   Report formatting (metric → PDF/HTML row)
-Metric collection + JobMetrics fill  Traceability mapping
-```
-
-### Extensibility Decision: Compile-Time Only (Runner)
-
-The SQT Runner ships with a set of built-in metric collectors. When a project needs a metric that is not built-in, users extend the Runner by adding Rust code directly to its source tree, then recompiling. There is no runtime plugin protocol, no dynamic loading, and no external process bridge.
-
-**Architectural decision: compile-time extensibility only**
-
-| Approach | Chosen? | Reason |
-|---|---|---|
-| Dynamic `.so` / `.dll` | ❌ | No stable Rust ABI; version coupling; crash risk |
-| External process (stdio/JSON) | ❌ | Runtime overhead; IPC complexity; out-of-process failure modes |
-| WebAssembly (WASM) | ❌ | Complex toolchain for what is fundamentally a build-time concern |
-| Embedded scripting (Rhai/Lua) | ❌ | Limited capability for real measurement work |
-| **Compile-time Rust (`inventory` crate)** | ✅ | Zero runtime overhead; full Rust type safety; no central registration file; trivial to add, trivial to test |
-
-The intended extensibility model is: **clone the Runner repository, add a Rust file, compile**. The Runner is a qualification tool used by small, technically capable teams. Requiring a recompile is not a constraint - it is a feature, because it means every deployment is a single, auditable, statically-linked binary with a fixed set of collectors.
-
-### 10.1 The `MetricCollector` Trait
-
-Every collector - built-in or user-added - implements the same trait:
-
-```rust
-// src/metrics/mod.rs
-
-pub trait MetricCollector: Send + Sync {
-    /// Unique metric name, e.g. "memory.peak_rss_kb" or "custom.model_drift"
-    fn name(&self) -> &str;
-
-    /// Execute the measurement and return the value + evidence artifacts.
-    /// `config` carries the optional per-constraint YAML block from the test spec;
-    /// collectors that need no configuration may ignore it.
-    fn collect(
-        &self,
-        target: &Target,
-        config: &serde_yaml::Value,
-    ) -> anyhow::Result<MetricValue>;
-}
-```
-
-`MetricValue` carries the measured `f64`, its unit string, and an evidence map (label → file path or inline text) that is written into the QDP report.
-
-### 10.2 Auto-Registration via `inventory`
-
-The [`inventory`](https://crates.io/crates/inventory) crate uses linker sections to collect distributed static items at link time. Each collector file self-registers by calling one macro - no central list is ever maintained.
-
-**Declaration (once, in `src/metrics/mod.rs`):**
-
-```rust
-pub struct CollectorFactory {
-    pub name:   &'static str,
-    pub create: fn() -> Box<dyn MetricCollector>,
-}
-
-inventory::collect!(CollectorFactory);
-```
-
-**Per-collector self-registration (bottom of each collector file):**
-
-```rust
-// src/metrics/builtin/memory_rss.rs
-
-pub struct MemoryPeakRssCollector;
-
-impl MetricCollector for MemoryPeakRssCollector {
-    fn name(&self) -> &str { "memory.peak_rss_kb" }
-    fn collect(&self, target: &Target, _config: &serde_yaml::Value) -> anyhow::Result<MetricValue> {
-        // spawn /usr/bin/time -v, parse "Maximum resident set size"
-    }
-}
-
-inventory::submit! {
-    CollectorFactory { name: "memory.peak_rss", create: || Box::new(MemoryPeakRssCollector) }
-}
-```
-
-**Registry construction (in `src/metrics/registry.rs` - never edited):**
-
-```rust
-pub fn build_registry() -> MetricRegistry {
-    let mut r = MetricRegistry::new();
-    for factory in inventory::iter::<CollectorFactory> {
-        r.register_boxed(factory.name, (factory.create)());
-    }
-    r
-}
-```
-
-Adding a new collector requires no changes to `registry.rs` or any other existing file. The linker picks up the new `inventory::submit!` entry automatically.
-
-### 10.3 How Users Add a Custom Metric
+**All measurement happens in the SQT Runner.** For the shipped Docker backend, each
+metric is produced by a tool step in `sqt-runner/src/tools/` (`run_binary`,
+`valgrind`, `coverage`, `static_analysis`, `sonarqube`, `binary_size`), run inside
+its configured container and mapped into the flat `JobMetrics` DTO
+(`sqt-types::JobMetrics`). The **SQT Reporter never runs tools**; it reads
+`JobMetrics` off the job response and evaluates constraints against it.
 
 ```
-1. Create  src/metrics/custom/my_metric.rs
-2. Implement MetricCollector for your type
-3. Call inventory::submit! { CollectorFactory { ... } } at the bottom
-4. Add `mod my_metric;` to src/metrics/custom/mod.rs
-5. Run cargo build
+SQT Runner                              SQT Reporter
+──────────────────────────────────────────────────────────────
+tools/*.rs run inside containers        deserialize JobMetrics
+map raw tool output → JobMetrics        evaluate Constraint vs. JobMetrics field
+describe() → hardware/version           format metric → report row / traceability
 ```
 
-That is the complete workflow. There is no configuration file to update, no manifest to register, and no process boundary to cross. The resulting binary contains the new collector as a first-class citizen alongside all built-ins.
+### 10.1 Two Extension Axes
 
-### 10.4 Project Layout (Metric-Related)
+**(a) A new *target* (hardware or ML-L framework)** → implement a new
+`LifecycleBackend` (§8.1). This is the supported, first-class extension seam:
+clone the runner, add a `Backend` variant + config section + a `build_executor`
+match arm, implement `prepare/run/collect/describe`, recompile. The HTTP/store
+layer and the Reporter are untouched.
 
-```
-src/
-├── metrics/
-│   ├── mod.rs              ← MetricCollector trait, Target, MetricValue,
-│   │                         CollectorFactory + inventory::collect!
-│   ├── registry.rs         ← build_registry() - never edit this file
-│   ├── builtin/
-│   │   ├── mod.rs
-│   │   ├── return_code.rs
-│   │   ├── execution_time.rs
-│   │   ├── memory_rss.rs
-│   │   ├── memory_leaks.rs
-│   │   ├── coverage_line.rs
-│   │   └── sonar_issues.rs
-│   └── custom/
-│       └── mod.rs          ← users add their collectors here
-```
+**(b) A new *metric* from a new tool** on the existing Docker backend → add a step
+under `sqt-runner/src/tools/`, populate the corresponding `JobMetrics` field in
+`collect`, and add a matching constraint name on the Reporter side. There is no
+runtime plugin protocol, no dynamic loading, and no external process bridge — the
+Runner is a single auditable statically-linked binary, which suits a qualification
+tool. (The historic reporter-side `MetricCollector`/`inventory` collector tree in
+`sqt-reporter/src/metrics/` is **legacy reference code from the pre-workspace
+single-crate era**; it is not wired into either the orchestrator or the runner and
+is a deletion candidate — see `REVIEW_FINDINGS.md`.)
 
-There is no `sqt-plugin-sdk` crate, no Python package, and no separate plugin binary. The source tree is the SDK.
+### 10.2 The Closed-Vocabulary Constraint (open design point)
+
+The current implementation fixes the metric vocabulary on **both** sides:
+
+- `sqt-types::JobMetrics` uses `#[serde(deny_unknown_fields)]` — a Runner that
+  returns a metric the DTO does not know fails deserialization by design (this is
+  the SRS-IF-007 strictness guarantee).
+- The Reporter's `Constraint::from_name` recognises only a hardcoded set of metric
+  names; the spec loader rejects unknown metric names.
+
+**Consequence**: axis (b) is *not* purely local — a genuinely new metric name
+requires editing `sqt-types` (add the field) **and** `sqt-reporter`'s constraint
+vocabulary, then recompiling both. This tension with **SRS-FUNC-006**
+("project-extensible metric collection" without modifying core source) is a
+deliberate, currently-unresolved design decision, not an oversight. Two ways
+forward — (i) accept it and reword SRS-FUNC-006 to "extensible by recompilation of
+the open-source workspace", or (ii) introduce an explicit extension namespace
+(e.g. an open `custom.*` metric map on `JobMetrics` plus a generic constraint kind)
+— are tracked as a decision item in `REVIEW_FINDINGS.md`. This document does not
+pre-judge the outcome.
+
+### 10.3 The Core Metric Catalogue
+
+The canonical list of metric keys the Runner may populate and the Reporter may
+constrain is §4.5.3. Keys map 1:1 to `JobMetrics` fields and to
+`JobStatusResponse.metrics` in `job-api.openapi.yaml`.
 
 ---
 
 ## 11. Technology Stack
 
-### 11.1 Rust Dependencies
+### 11.1 Workspace and Dependencies
+
+The project is a **Cargo workspace** (`edition = "2024"`, resolver 2) with three
+member crates and a shared `[workspace.dependencies]` table. Key dependencies:
 
 ```toml
-[package]
-name = "sqt"
-version = "1.0.0"
-edition = "2024"
+# Shared
+serde, serde_json
+serde_yaml            # = serde_yaml_ng (maintained fork; aliased as serde_yaml)
+tokio                 # rt-multi-thread, macros, sync, signal
+reqwest = "0.12"      # json, rustls-tls, blocking
+chrono                # clock (no default features)
+tracing, tracing-subscriber (env-filter)
+clap = "4"            # derive, env
+anyhow
 
-[dependencies]
-# CLI Framework
-clap = { version = "4.5", features = ["derive", "env"] }
-clap_complete = "4.5"
+# sqt-reporter (client)
+tokio-util, futures   # concurrency + graceful shutdown
+zip, walkdir          # QDP bundling
+printpdf              # PDF report rendering
+inventory             # (legacy metric registry — see §10.1)
 
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-toml = "0.8"
+# sqt-runner (server)
+axum = "0.8"          # HTTP server
+uuid                  # job IDs (v4)
+base64                # docs attachments
 
-# HTTP Client (for REST API)
-reqwest = { version = "0.11", features = ["json", "blocking"] }
-tokio = { version = "1.35", features = ["full"] }
-
-# Async Runtime
-async-trait = "0.1"
-
-# Error Handling
-anyhow = "1.0"
-thiserror = "1.0"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-
-# Report Generation
-typst = "0.11"              # PDF generation (modern alternative to LaTeX)
-tera = "1.19"               # Template engine for HTML
-tinytemplate = "1.2"        # Lightweight templating
-
-# XML Parsing (for test results)
-quick-xml = { version = "0.31", features = ["serialize"] }
-
-# Code Coverage Parsing
-lcov = "0.8"
-
-# File System Operations
-walkdir = "2.4"
-glob = "0.3"
-
-# Date/Time
-chrono = { version = "0.4", features = ["serde"] }
-
-# Configuration Management
-config = "0.14"
-
-# Testing Frameworks
-[dev-dependencies]
-mockito = "1.2"
-assert_cmd = "2.0"
-predicates = "3.0"
-tempfile = "3.8"
+# dev
+tempfile, axum/tower/http-body-util (handler tests)
 ```
+
+Notably **not** present (contrary to earlier drafts): `typst`, `tera`,
+`tinytemplate`, `quick-xml`, `lcov`, `glob`, `config`, `thiserror`, `mockito`,
+`assert_cmd`. PDF is `printpdf`; XML/coverage/lcov parsing is done by the Runner's
+tool containers, not by a Reporter-side crate.
+
+Clippy is configured per crate: `pedantic = warn` with `module_name_repetitions`
+and `must_use_candidate` allowed (SRS-QUAL-001).
 
 ### 11.2 External Tools
 
-Tools that SQT orchestrates (must be installed separately):
+Tools the **Runner** orchestrates (packaged as Docker images under `docker/`, so
+they need not be installed on the host):
 
-| Tool | Purpose | Installation |
-|------|---------|--------------|
-| **SonarQube Scanner** | Static analysis | `sonar-scanner` |
-| **clang-tidy** | C++ linting | Part of LLVM/Clang |
-| **cppcheck** | Static analysis | `apt install cppcheck` |
-| **GoogleTest** | Unit testing | Built with CMake |
-| **lcov** | Coverage reporting | `apt install lcov` |
-| **CMake** | Build system | `apt install cmake` |
-| **QEMU** | Emulation | `apt install qemu-system` |
-| **Docker** | Containerization | Docker Desktop |
+| Tool | Purpose | Metric |
+|------|---------|--------|
+| `/usr/bin/time -v` | Execution time, peak RSS, CPU | `time.*`, `memory.peak_rss_kb`, `cpu.*` |
+| **Valgrind** | Leak detection | `memory.leaks_bytes` |
+| **lcov / gcov** | Line coverage | `coverage.line_pct` |
+| **cppcheck** | Static analysis | `static.warnings` |
+| **SonarQube Scanner** | Severity-graded issues | `static.critical_issues`, `static.major_issues` |
+| **Docker** | Container runtime for all of the above | — |
 
 ### 11.3 Project Structure
 
 ```
-sqt-reporter/                     # SQT Reporter application (orchestration + reporting)
-├── Cargo.toml
+ats-sqt/                          # Cargo workspace root
+├── Cargo.toml                    # [workspace] + [workspace.dependencies]
 ├── Cargo.lock
-├── README.md
 ├── ARCHITECTURE.md               # This document
-├── LICENSE
+├── IMPLEMENTATION.md             # Current implementation state
+├── REVIEW_FINDINGS.md            # Gaps / decisions from the 2026-07-03 review
+├── job-api.openapi.yaml          # Runner API contract
+├── docker/                       # Tool images (Dockerfile.run/.valgrind/.coverage/.static/.sonar)
+├── examples/                     # Example reporter/runner configs + specs
+├── ci/                           # CI Dockerfile + test scripts
 │
-├── src/
-│   ├── main.rs                   # CLI entry point
-│   ├── lib.rs                    # Library root
-│   │
-│   ├── config/                   # Configuration management
-│   │   ├── mod.rs
-│   │   ├── parser.rs             # YAML/JSON parsing
-│   │   ├── validator.rs          # Config validation
-│   │   └── schema.rs             # Config data structures
-│   │
-│   ├── requirements/             # Requirements management
-│   │   ├── mod.rs
-│   │   ├── strictdoc.rs          # Strictdoc parser
-│   │   ├── traceability.rs       # Traceability matrix
-│   │   ├── test_spec.rs          # Declarative test spec parser
-│   │   └── types.rs              # Requirement data structures
-│   │
-│   ├── orchestrator/             # Test orchestration
-│   │   ├── mod.rs
-│   │   ├── runner.rs             # Constraint-driven execution
-│   │   └── scheduler.rs          # Job scheduling (sequential queue)
-│   │
-│   ├── runner_api/               # REST API client for SQT Runner
-│   │   ├── mod.rs
-│   │   ├── client.rs             # HTTP client
-│   │   ├── types.rs              # API data structures
-│   │   └── polling.rs            # Job polling with exponential backoff
-│   │
-│   ├── evidence/                 # Evidence collection
-│   │   ├── mod.rs
-│   │   ├── collector.rs          # Aggregate results
-│   │   └── types.rs              # Evidence data structures
-│   │
-│   ├── reporting/                # Report generation
-│   │   ├── mod.rs
-│   │   ├── pdf.rs                # PDF generation (Typst)
-│   │   ├── html.rs               # HTML generation
-│   │   ├── json.rs               # JSON export
-│   │   └── templates/            # Report templates
-│   │
-│   └── utils/                    # Utilities
-│       ├── mod.rs
-│       ├── logging.rs
-│       └── fs.rs
+├── sqt-types/                    # Shared DTOs (the API contract in Rust)
+│   └── src/lib.rs                # JobRequest, JobStatusResponse, JobMetrics,
+│                                 #   JobOutput, HardwareInfo, VersionResponse,
+│                                 #   DocsResponse, HealthResponse, ErrorResponse
 │
-├── templates/                    # Report templates
-│   ├── ecss-report.typ           # Typst PDF template
-│   ├── report.html               # HTML template
-│   └── traceability.html
+├── sqt-reporter/                 # Client CLI (orchestration + evaluation + reporting)
+│   └── src/
+│       ├── main.rs               # clap CLI: `run` / `preflight`
+│       ├── config/               # SqtConfig schema + loader/validator
+│       ├── specs/                # loader.rs (explicit-file spec loading) + example specs
+│       ├── constraint/           # Constraint, Op, Value, evaluator
+│       ├── orchestrator/         # session protocol → submit → poll → evaluate
+│       ├── api/                  # ApiClient (REST client for the Runner)
+│       ├── accuracy/             # client-side accuracy + precision computation
+│       ├── baseline/             # baseline-doc parsing + coverage gate
+│       ├── evidence/             # per-run EvidenceStore
+│       ├── traceability/         # dual-audience matrix
+│       ├── report.rs             # Report model, JSON/PDF/terminal/QDP output
+│       ├── preflight.rs          # SRS-OPS-007 pre-flight mode
+│       └── metrics/              # legacy collectors (unwired; see §10.1)
 │
-├── tests/                        # Integration tests
-│   ├── integration_tests.rs
-│   ├── fixtures/
-│   └── snapshots/
-│
-└── examples/                     # Usage examples
-    ├── basic_usage.rs
-    └── ci_integration.rs
-
+└── sqt-runner/                   # Server (axum) — the reference SQT Runner
+    └── src/
+        ├── main.rs               # router, backend factory, startup preflight
+        ├── handlers.rs           # jobs / version / docs / health handlers
+        ├── config.rs             # ServerConfig (backend/docker/hardware/docs)
+        ├── store.rs              # in-memory job store
+        ├── executor/             # ExecutionBackend + LifecycleBackend + docker.rs
+        ├── tools/                # run_binary, valgrind, coverage, static_analysis, sonarqube, binary_size
+        ├── docker.rs             # container run/kill helpers
+        └── bin/test_binary.rs    # configurable fixture binary-under-test
 ```
 
 ---
@@ -2257,11 +2134,11 @@ sqt-reporter/                     # SQT Reporter application (orchestration + re
 | **AD-003** | REST API for ML-L interface | Language-agnostic, clear decoupling | gRPC (complex), direct linking (coupling) | ✅ Accepted |
 | **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based | ReqIF (complex), Excel (not traceable) | 🟡 Proposed |
 | **AD-005** | Ateleris builds generic SQT Runner (not delegated to ML-L Provider) | ML-L Provider focuses on delivering artifacts; Ateleris controls the test execution layer, enabling a generic and open implementation | Delegate to ML-L Provider (Klepsydra) - rejected: closes the runner to third parties and ties test execution to a single vendor | ✅ Accepted |
-| **AD-006** | Use Typst for PDF generation | Modern, fast, programmable | LaTeX (complex), Pandoc (limited) | 🟡 Proposed |
+| **AD-006** | Typst for PDF generation | Modern, fast, programmable | LaTeX (complex), Pandoc (limited) | 🟡 Proposed — **current implementation uses `printpdf`**; Typst is a future substitution behind `write_pdf` (§9.4) |
 | **AD-007** | ~~Convention-based req-to-test mapping~~ | Superseded by AD-024; SRS-MAINT-002 requires explicit listing | See AD-024 | ❌ Rejected |
 | **AD-008** | Docker containerization | Reproducibility, isolation | VM (heavy), native (env issues) | ✅ Accepted |
 | **AD-009** | Exponential backoff for polling | Efficient, respectful of API | Fixed interval (wasteful) | ✅ Accepted |
-| **AD-010** | Both PDF and HTML reports | ECSS compliance + developer UX | Only PDF (not dev-friendly) | ✅ Accepted |
+| **AD-010** | PDF + JSON + terminal + traceability + QDP outputs | ECSS compliance + machine-readability + CI UX | — | ✅ Accepted — **HTML report deferred** (not implemented, not SRS-required; §9.1) |
 | **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
 | **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
 | **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
@@ -2274,7 +2151,7 @@ sqt-reporter/                     # SQT Reporter application (orchestration + re
 | **AD-020** | SQT Reporter fetches docs from Runner (not directly from ML-L Provider) | Runner is the single point of contact; Reporter need not know the Provider's delivery mechanism; consistent with Runner-as-data-source model | Reporter contacts Provider directly for docs (couples Reporter to Provider, breaks single-interface design) | ✅ Accepted |
 | **AD-021** | 1:1 Reporter:Runner deployment model | Simplest correct model for the current use case; no concurrent client complexity; job queue is sufficient | Multi-client with session isolation (deferred; revisit if needed) | ✅ Accepted |
 | **AD-022** | Runner executes one job at a time (initial); Reporter submits+polls concurrently | SRS-PERF-001 requires concurrent submission with wall-clock ≤ longest job + 10%; the SRS permits any Runner-side concurrency bound ≥ 1. Reporter submits all jobs and polls all IDs concurrently (SRS compliant); Runner queues and runs sequentially for v1 (valid: wall-clock bounded by queue depth per SRS-PERF-001). | Fully parallel Runner execution (deferred; adds resource management complexity on space hardware) | ✅ Accepted |
-| **AD-023** | SQT Runner target abstraction layer (TAL) | Isolates target-specific code (x86\_64, GR740, GR765) behind a Rust trait; new targets can be added without touching the Reporter or the REST API; GR740/GR765 deferred but architecturally catered for | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
+| **AD-023** | SQT Runner execution-backend abstraction (TAL) | Isolates target-specific code behind the object-safe `ExecutionBackend` trait, with an ergonomic `LifecycleBackend` (prepare/run/collect/teardown) that new backends implement; backend chosen by the `backend:` config key + `build_executor` factory; new targets (GR740/GR765) added without touching handlers, store, or the Reporter (§8.1) | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
 | **AD-024** | Explicit spec registration (no auto-discovery) | SRS-MAINT-002 forbids auto-discovery from filesystem state; explicit listing in config makes the active spec set deterministic, auditable, and source-controllable | Directory scanning (rejected: environment-dependent, invisible in source history, incompatible with reproducible qualification) | ✅ Accepted |
 | **AD-025** | "Use Cases" per APCO Space Profile (RD-5), not "workload types" | SRS-IF-005 ties the job routing to APCO Space Profile Use Cases; aligning terminology ensures traceability to the standard | "Workload types" (rejected: generic term not traceable to APCO Space Profile) | ✅ Accepted |
 | **AD-026** | Pre-flight mode (`--preflight`) | SRS-OPS-007 requires a mode that validates config + endpoint + auth without submitting jobs; shortens CI feedback loop on configuration changes | No pre-flight (operator must run a full qualification to detect config errors) | ✅ Accepted |

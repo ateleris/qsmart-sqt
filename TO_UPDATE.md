@@ -1,5 +1,14 @@
 # TO_UPDATE – Required Code Changes
 
+> **Status (2026-07-03): superseded.** U-001…U-009 below are essentially all
+> implemented (the metric renames, `model_zip` removal, `api.*`→`runner.*` keys
+> are done). The only unimplemented remainders are cosmetic — `SqtConfig` was not
+> renamed to `ReporterConfig`, `token_env` is flat not nested, and `src/api/` was
+> not renamed to `src/runner_api/`; the architecture now documents the flat/real
+> form as the target, so these are candidates to close as "won't do". For the
+> current, prioritised backlog see **`REVIEW_FINDINGS.md`**. This file is retained
+> for history.
+
 This file tracks changes needed in already-implemented code to align with the
 current architecture (`ARCHITECTURE.md`) and API contract (`job-api.openapi.yaml`).
 Items here were identified during the IMPLEMENTATION.md alignment pass.
