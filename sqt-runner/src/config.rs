@@ -1,5 +1,7 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -183,6 +185,18 @@ pub struct HardwareConfig {
     pub toolchain_versions: std::collections::HashMap<String, String>,
 }
 
+/// Bearer-token authentication configuration (SRS-IF-006).
+///
+/// When present, the runner requires `Authorization: Bearer <token>` on every
+/// route except `GET /api/v1/health`. The expected token is read from the
+/// environment variable named here at startup. When absent, authentication is
+/// disabled (the runner logs a prominent warning).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthConfig {
+    /// Name of the environment variable holding the expected bearer token.
+    pub token_env: String,
+}
+
 /// Which execution backend the runner drives.
 ///
 /// Selected by the top-level `backend:` key. Backend-specific settings live in
@@ -218,6 +232,10 @@ pub struct ServerConfig {
     /// Which execution backend to use.
     #[serde(default)]
     pub backend: Backend,
+
+    /// Bearer-token authentication (SRS-IF-006). When absent, auth is disabled.
+    #[serde(default)]
+    pub auth: Option<AuthConfig>,
 
     /// Binary under test configuration.
     pub binary: BinaryConfig,
@@ -401,6 +419,20 @@ docker:
         assert!(config.docker.tools.valgrind.is_some());
         assert!(config.docker.tools.coverage.is_some());
         assert_eq!(config.docker.tools.sonarqube.as_ref().unwrap().token_env, "MY_SONAR_TOKEN");
+    }
+
+    #[test]
+    fn auth_absent_by_default() {
+        let yaml = "binary:\n  path: app\n";
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.auth.is_none());
+    }
+
+    #[test]
+    fn auth_parses_token_env() {
+        let yaml = "binary:\n  path: app\nauth:\n  token_env: SQT_RUNNER_TOKEN\n";
+        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.auth.as_ref().unwrap().token_env, "SQT_RUNNER_TOKEN");
     }
 
     #[test]
