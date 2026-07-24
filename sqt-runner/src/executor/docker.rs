@@ -362,6 +362,7 @@ impl LifecycleBackend for DockerExecutor {
             memory_leaks_bytes: raw.leaks_bytes,
             coverage_line_pct: raw.coverage_line_pct,
             binary_size_kb: raw.binary_size_kb,
+            harness_docker_overhead_ms: raw.primary.docker_overhead_ms,
             static_critical_issues,
             static_major_issues,
             static_warnings: raw.static_warnings,

@@ -123,6 +123,13 @@ pub enum Constraint {
         kb: f64,
     },
 
+    // -- Harness diagnostics --------------------------------------------------
+    /// Harness/Docker overhead in ms (wire name: `harness.docker_overhead_ms`).
+    HarnessDockerOverheadMs {
+        op: Op,
+        ms: f64,
+    },
+
     // -- ML accuracy (computed client-side, T-054) ----------------------------
     MlAccuracy {
         op: Op,
@@ -207,6 +214,9 @@ impl Constraint {
     pub fn binary_size_kb(op: Op, kb: f64) -> Self {
         Self::BinarySizeKb { op, kb }
     }
+    pub fn harness_docker_overhead_ms(op: Op, ms: f64) -> Self {
+        Self::HarnessDockerOverheadMs { op, ms }
+    }
     pub fn ml_accuracy(op: Op, value: f64) -> Self {
         Self::MlAccuracy { op, value }
     }
@@ -252,6 +262,7 @@ impl Constraint {
             "static.critical_issues" => Self::StaticCriticalIssues { op, value: value as i64 },
             "static.major_issues" => Self::StaticMajorIssues { op, value: value as i64 },
             "binary.size_kb" => Self::BinarySizeKb { op, kb: value },
+            "harness.docker_overhead_ms" => Self::HarnessDockerOverheadMs { op, ms: value },
             "ml.accuracy" => Self::MlAccuracy { op, value },
             "ml.f1_score" => Self::MlF1Score { op, value },
             "ml.recall" => Self::MlRecall { op, value },
@@ -287,6 +298,7 @@ impl Constraint {
             Self::StaticCriticalIssues { .. } => "static.critical_issues",
             Self::StaticMajorIssues { .. } => "static.major_issues",
             Self::BinarySizeKb { .. } => "binary.size_kb",
+            Self::HarnessDockerOverheadMs { .. } => "harness.docker_overhead_ms",
             Self::MlAccuracy { .. } => "ml.accuracy",
             Self::MlF1Score { .. } => "ml.f1_score",
             Self::MlRecall { .. } => "ml.recall",
@@ -317,7 +329,8 @@ impl Constraint {
             Self::ExecutionTime { .. }
             | Self::TimeLatencyP50Ms { .. }
             | Self::TimeLatencyP95Ms { .. }
-            | Self::TimeLatencyP99Ms { .. } => "ms",
+            | Self::TimeLatencyP99Ms { .. }
+            | Self::HarnessDockerOverheadMs { .. } => "ms",
             Self::MemoryPeakRss { .. }
             | Self::MemoryAvgRss { .. }
             | Self::MemoryStackKb { .. }
@@ -354,6 +367,7 @@ impl Constraint {
             | Self::StaticCriticalIssues { op, .. }
             | Self::StaticMajorIssues { op, .. }
             | Self::BinarySizeKb { op, .. }
+            | Self::HarnessDockerOverheadMs { op, .. }
             | Self::MlAccuracy { op, .. }
             | Self::MlF1Score { op, .. }
             | Self::MlRecall { op, .. }
@@ -374,7 +388,8 @@ impl Constraint {
             Self::ExecutionTime { ms, .. }
             | Self::TimeLatencyP50Ms { ms, .. }
             | Self::TimeLatencyP95Ms { ms, .. }
-            | Self::TimeLatencyP99Ms { ms, .. } => *ms,
+            | Self::TimeLatencyP99Ms { ms, .. }
+            | Self::HarnessDockerOverheadMs { ms, .. } => *ms,
             Self::TimeThroughputFps { fps, .. } => *fps,
             Self::MemoryPeakRss { kb, .. }
             | Self::MemoryAvgRss { kb, .. }
@@ -537,6 +552,7 @@ mod tests {
             ("static.critical_issues", 0.0),
             ("static.major_issues", 5.0),
             ("binary.size_kb", 1024.0),
+            ("harness.docker_overhead_ms", 250.0),
             ("ml.accuracy", 0.95),
             ("ml.f1_score", 0.9),
             ("ml.recall", 0.88),
@@ -588,6 +604,7 @@ mod tests {
             Constraint::static_critical_issues(Op::Eq, 0),
             Constraint::static_major_issues(Op::Lte, 5),
             Constraint::binary_size_kb(Op::Lte, 1024.0),
+            Constraint::harness_docker_overhead_ms(Op::Lte, 500.0),
         ];
 
         // Fully-populated metrics so get() returns Some for every valid name.
@@ -611,6 +628,7 @@ mod tests {
             static_critical_issues: Some(0),
             static_major_issues: Some(3),
             binary_size_kb: Some(412.0),
+            harness_docker_overhead_ms: Some(180.0),
             ..Default::default()
         };
 
