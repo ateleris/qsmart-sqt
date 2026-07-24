@@ -1,8 +1,6 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context as _;
-
 use axum::{
     Json,
     extract::{Path, State},
@@ -17,8 +15,10 @@ use sqt_types::{
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use crate::executor::ExecutionBackend;
-use crate::store::{self, JobStore};
+use crate::{
+    executor::ExecutionBackend,
+    store::{self, JobStore},
+};
 
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
@@ -110,18 +110,20 @@ pub async fn create_job(
         if let Some(job) = s.get_mut(&id) {
             job.completed_at = Some(crate::now_iso());
             match result {
-                Ok(Ok(metrics)) => {
+                Ok(Ok(outcome)) => {
                     job.status = JobStatus::Complete;
                     tracing::info!(
                         job_id = %id,
-                        return_code = ?metrics.return_code,
-                        time_ms = ?metrics.time_avg_ms,
-                        peak_rss_kb = ?metrics.memory_peak_rss_kb,
-                        cpu_pct = ?metrics.cpu_avg_normalized_pct,
-                        binary_size_kb = ?metrics.binary_size_kb,
+                        return_code = ?outcome.metrics.return_code,
+                        time_ms = ?outcome.metrics.time_avg_ms,
+                        peak_rss_kb = ?outcome.metrics.memory_peak_rss_kb,
+                        cpu_pct = ?outcome.metrics.cpu_avg_normalized_pct,
+                        binary_size_kb = ?outcome.metrics.binary_size_kb,
+                        has_output = outcome.output.is_some(),
                         "job complete"
                     );
-                    job.metrics = Some(metrics);
+                    job.metrics = Some(outcome.metrics);
+                    job.output = outcome.output;
                 }
                 Ok(Err(e)) => {
                     job.status = JobStatus::Failed;
@@ -175,6 +177,7 @@ pub async fn get_job(
                 job.completed_at.clone(),
                 job.error.clone(),
                 job.metrics.clone(),
+                job.output.clone(),
             )
         })
     }; // read lock released here
@@ -190,6 +193,7 @@ pub async fn get_job(
         completed_at,
         error,
         metrics,
+        output,
     ) = snapshot.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -229,7 +233,7 @@ pub async fn get_job(
         tags,
         hardware,
         metrics: metrics.unwrap_or_default(),
-        output: None,
+        output,
     }))
 }
 
@@ -444,18 +448,22 @@ fn mime_type_for(filename: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
 
-    use axum::Router;
-    use axum::routing::{get, post};
+    use axum::{
+        Router,
+        routing::{get, post},
+    };
     use http_body_util::BodyExt as _;
     use sqt_types::{HardwareInfo, JobMetrics};
     use tokio::sync::Semaphore;
     use tower::ServiceExt as _;
 
-    use crate::executor::{BackendDescriptor, JobContext, LifecycleBackend};
-    use crate::store;
+    use super::*;
+    use crate::{
+        executor::{BackendDescriptor, ExecutionOutcome, JobContext, LifecycleBackend},
+        store,
+    };
 
     struct StubExecutor;
     impl LifecycleBackend for StubExecutor {
@@ -478,8 +486,8 @@ mod tests {
         fn run(&self, _ctx: &JobContext, _prepared: &()) -> anyhow::Result<()> {
             Ok(())
         }
-        fn collect(&self, _ctx: &JobContext, _raw: ()) -> anyhow::Result<JobMetrics> {
-            Ok(JobMetrics::default())
+        fn collect(&self, _ctx: &JobContext, _raw: ()) -> anyhow::Result<ExecutionOutcome> {
+            Ok(ExecutionOutcome { metrics: JobMetrics::default(), output: None })
         }
     }
 
@@ -654,6 +662,58 @@ mod tests {
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["job_id"], job_id);
         assert_eq!(json["use_case"], "regression");
+    }
+
+    #[tokio::test]
+    async fn get_job_surfaces_captured_output() {
+        // F-H1: a completed job's captured output must reach the response
+        // (previously hardcoded to null, making ML precision/accuracy dead).
+        use sqt_types::JobOutput;
+
+        let state = AppState {
+            store: store::new_store(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            executor: Arc::new(StubExecutor),
+            job_semaphore: Arc::new(Semaphore::new(1)),
+            docs_dir: None,
+            runner_version: "0.0.0-test".to_string(),
+            os: "linux".to_string(),
+        };
+
+        // Insert a completed job carrying an output block.
+        {
+            let req = JobRequest {
+                use_case: sqt_types::WorkloadType::Regression,
+                input: None,
+                repetitions: 1,
+                instrumentation: sqt_types::Instrumentation::default(),
+                mode: MeasurementMode::default(),
+                warmup_repetitions: None,
+                timeout_secs: None,
+                tags: None,
+            };
+            let mut job = store::JobState::new("job-1".to_string(), &req);
+            job.status = JobStatus::Complete;
+            job.output = Some(JobOutput {
+                output_type: "regression".to_string(),
+                result_consistent: true,
+                outputs: Some(vec![serde_json::json!({ "prediction": 0.5 })]),
+                outputs_checksum: Some("deadbeef".to_string()),
+            });
+            state.store.write().await.insert("job-1".to_string(), job);
+        }
+
+        let app = Router::new().route("/api/v1/jobs/{job_id}", get(get_job)).with_state(state);
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/jobs/job-1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["output"]["result_consistent"], true);
+        assert_eq!(json["output"]["outputs_checksum"], "deadbeef");
+        assert_eq!(json["output"]["outputs"][0]["prediction"], 0.5);
     }
 
     #[test]

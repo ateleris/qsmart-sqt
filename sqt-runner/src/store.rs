@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use sqt_types::{JobMetrics, JobRequest, JobStatus, WorkloadType};
+use sqt_types::{JobMetrics, JobOutput, JobRequest, JobStatus, WorkloadType};
 use tokio::sync::RwLock;
 
 /// In-memory state for a single job.
@@ -16,6 +15,7 @@ pub struct JobState {
     pub completed_at: Option<String>,
     pub error: Option<String>,
     pub metrics: Option<JobMetrics>,
+    pub output: Option<JobOutput>,
 }
 
 impl JobState {
@@ -31,6 +31,7 @@ impl JobState {
             completed_at: None,
             error: None,
             metrics: None,
+            output: None,
         }
     }
 }

@@ -1,23 +1,25 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
+use sqt_types::{
+    Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
+};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::accuracy::AccuracyMetrics;
-use crate::accuracy::compute as accuracy_compute;
-use crate::api::ApiClient;
-use crate::baseline;
-use crate::config::SqtConfig;
-use crate::constraint::ConstraintOutcome;
-use crate::constraint::evaluator::evaluate;
-use crate::evidence::EvidenceStore;
-use crate::report::{ConfigSummary, RunProvenance};
-use crate::specs::{RunResult, SpecResult, TestSpec};
-use sqt_types::{
-    Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
+use crate::{
+    accuracy::{AccuracyMetrics, compute as accuracy_compute},
+    api::ApiClient,
+    baseline,
+    config::SqtConfig,
+    constraint::{ConstraintOutcome, evaluator::evaluate},
+    evidence::EvidenceStore,
+    report::{ConfigSummary, RunProvenance},
+    specs::{RunResult, SpecResult, TestSpec},
 };
 
 /// The API major version the Reporter was compiled against.
@@ -53,6 +55,24 @@ fn build_job_request(
 }
 
 /// Build a synthetic failing outcome for a metric that could not be evaluated.
+/// Explain why a client-side (`ml.*`) metric could not be computed, so the
+/// outcome message names the real cause instead of always blaming a missing
+/// `reference_outputs` (F-H1). The most common historic cause was the runner
+/// returning no `output` block at all.
+fn client_side_metric_unavailable_reason(
+    has_output: bool,
+    has_reference_outputs: bool,
+    has_precision_reference: bool,
+) -> &'static str {
+    if !has_output {
+        "runner returned no output block, so client-side metrics cannot be computed"
+    } else if !has_reference_outputs && !has_precision_reference {
+        "spec provides neither reference_outputs nor precision_reference"
+    } else {
+        "client-side metric could not be computed from the runner output"
+    }
+}
+
 fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
     ConstraintOutcome {
         passed: false,
@@ -385,7 +405,14 @@ pub async fn run(
                                 );
                                 outcome
                             }
-                            None => failing_outcome(name, "reference_outputs not provided in spec"),
+                            None => failing_outcome(
+                                name,
+                                client_side_metric_unavailable_reason(
+                                    response.output.is_some(),
+                                    spec.reference_outputs.is_some(),
+                                    spec.precision_reference.is_some(),
+                                ),
+                            ),
                         };
                     }
                     let maybe_value = response.metrics.get(name);
@@ -432,16 +459,18 @@ fn now_iso8601() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
-    use crate::constraint::evaluator::evaluate;
-    use crate::constraint::{Constraint, Op};
-    use crate::metrics::{Platform, Target};
-    use crate::specs::{OutcomeKind, SpecResult, TestSpec};
     use sqt_types::{JobMetrics, WorkloadType};
 
-    use super::{build_job_request, failing_outcome, group_key};
+    use super::{
+        build_job_request, client_side_metric_unavailable_reason, failing_outcome, group_key,
+    };
+    use crate::{
+        constraint::{Constraint, Op, evaluator::evaluate},
+        metrics::{Platform, Target},
+        specs::{OutcomeKind, SpecResult, TestSpec},
+    };
 
     fn make_target(input: Option<&str>, timeout_secs: u64) -> Target {
         Target {
@@ -582,6 +611,21 @@ mod tests {
             "outcome must mention reference_outputs: {}",
             outcome.message
         );
+    }
+
+    #[test]
+    fn client_side_reason_distinguishes_no_output_from_no_reference() {
+        // F-H1: when the runner returns no output block, the message must say so
+        // rather than misattributing it to a missing reference in the spec.
+        let no_output = client_side_metric_unavailable_reason(false, true, true);
+        assert!(no_output.contains("no output block"), "got: {no_output}");
+
+        let no_reference = client_side_metric_unavailable_reason(true, false, false);
+        assert!(no_reference.contains("reference_outputs"), "got: {no_reference}");
+
+        // Output present and a reference configured, but still uncomputable.
+        let uncomputable = client_side_metric_unavailable_reason(true, true, false);
+        assert!(uncomputable.contains("could not be computed"), "got: {uncomputable}");
     }
 
     // --- INFRA_ERROR does not propagate as Err (SRS-OPS-006) -----------------
