@@ -59,6 +59,8 @@ async fn main() -> Result<()> {
                 token_val.as_deref(),
                 cfg.runner.retry_max,
                 cfg.runner.retry_backoff_initial_secs,
+                cfg.runner.poll_interval_initial_secs,
+                cfg.runner.poll_interval_max_secs,
             )?;
 
             match preflight::preflight(&cfg, &client).await {
@@ -105,6 +107,8 @@ async fn main() -> Result<()> {
                 token_val.as_deref(),
                 cfg.runner.retry_max,
                 cfg.runner.retry_backoff_initial_secs,
+                cfg.runner.poll_interval_initial_secs,
+                cfg.runner.poll_interval_max_secs,
             )?;
 
             if do_preflight {

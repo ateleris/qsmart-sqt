@@ -109,6 +109,75 @@ fn build_provenance(version: &VersionResponse, config: &SqtConfig) -> RunProvena
     }
 }
 
+/// One group's execution outcome, produced by [`submit_and_poll_all`].
+struct JobOutcome {
+    key: GroupKey,
+    /// `Some` once the Runner accepted the job (a `job_id` was returned).
+    job_id: Option<String>,
+    /// Per-group server timeout (seconds), threaded back for evidence/reporting.
+    timeout_secs: u64,
+    result: Result<sqt_types::JobStatusResponse>,
+}
+
+/// Submit every grouped job and poll each to completion **concurrently**, each
+/// job holding a semaphore permit for its whole lifetime (submit → complete)
+/// so at most `max_concurrent_jobs` are in flight at once (SRS-PERF-001/002).
+/// The shutdown token short-circuits both submit and poll (SRS-OPS-008).
+///
+/// Returns one [`JobOutcome`] per group; individual submit/poll failures are
+/// carried in `result` rather than aborting the whole session.
+async fn submit_and_poll_all(
+    client: &ApiClient,
+    semaphore: &Arc<Semaphore>,
+    shutdown: &CancellationToken,
+    group_items: &[(GroupKey, JobRequest, u64)],
+) -> Vec<JobOutcome> {
+    let tasks = group_items.iter().map(|(key, request, timeout_secs)| {
+        let semaphore = Arc::clone(semaphore);
+        let timeout_secs = *timeout_secs;
+        async move {
+            // Hold a permit for the whole submit+poll lifetime (SRS-PERF-002).
+            let Ok(_permit) = semaphore.acquire_owned().await else {
+                return JobOutcome {
+                    key: key.clone(),
+                    job_id: None,
+                    timeout_secs,
+                    result: Err(anyhow::anyhow!("concurrency semaphore closed")),
+                };
+            };
+            if shutdown.is_cancelled() {
+                return JobOutcome {
+                    key: key.clone(),
+                    job_id: None,
+                    timeout_secs,
+                    result: Err(anyhow::anyhow!("shutdown received before submit")),
+                };
+            }
+            let job_id = match client.submit_job(request).await {
+                Ok(id) => id,
+                Err(e) => {
+                    return JobOutcome {
+                        key: key.clone(),
+                        job_id: None,
+                        timeout_secs,
+                        result: Err(e),
+                    };
+                }
+            };
+            tracing::info!(use_case = ?key.0, input = ?key.1, job_id = %job_id, "submitted job");
+
+            let poll_timeout = Duration::from_secs(timeout_secs + 60);
+            let result = tokio::select! {
+                res = client.wait_for_job(&job_id, poll_timeout) => res,
+                () = shutdown.cancelled() =>
+                    Err(anyhow::anyhow!("shutdown received while waiting for job {job_id}")),
+            };
+            JobOutcome { key: key.clone(), job_id: Some(job_id), timeout_secs, result }
+        }
+    });
+    futures::future::join_all(tasks).await
+}
+
 /// Run all specs against the single-endpoint API.
 ///
 /// Groups specs by (`workload_type`, input), submits one job per group,
@@ -217,80 +286,64 @@ pub async fn run(
     }
 
     // -----------------------------------------------------------------------
-    // Concurrency semaphore (SRS-PERF-002)
+    // Submit + poll all jobs concurrently, bounded by max_concurrent_jobs.
+    //
+    // Each job holds a semaphore permit for its whole lifetime (submit through
+    // completion), so at most `max_concurrent_jobs` are in flight on the Runner
+    // at once (SRS-PERF-002); polling runs concurrently so the session's
+    // wall-clock envelope is ~the slowest job, not the sum (SRS-PERF-001).
+    // Respects the shutdown token (SRS-OPS-008).
     // -----------------------------------------------------------------------
     let semaphore = Arc::new(Semaphore::new(config.runner.max_concurrent_jobs as usize));
 
-    // Submit one job per group, tracking the per-group server timeout.
-    tracing::info!("Submitting {} job(s) to {}", groups.len(), config.runner.url);
-    let total = groups.len();
+    let group_items: Vec<(GroupKey, JobRequest, u64)> = groups
+        .iter()
+        .map(|((workload_type, input), group)| {
+            let request = build_job_request(workload_type, input.as_ref(), group);
+            let timeout_secs = request.timeout_secs.unwrap_or(30);
+            ((workload_type.clone(), input.clone()), request, timeout_secs)
+        })
+        .collect();
+
+    tracing::info!(
+        "Submitting {} job(s) to {} (max {} concurrent)",
+        group_items.len(),
+        config.runner.url,
+        config.runner.max_concurrent_jobs,
+    );
+
+    let started = Instant::now();
+    let outcomes = submit_and_poll_all(client, &semaphore, &shutdown, &group_items).await;
+    let interrupted = shutdown.is_cancelled();
+    tracing::info!(
+        elapsed_secs = started.elapsed().as_secs_f64(),
+        "All jobs finished in {:.1}s",
+        started.elapsed().as_secs_f64(),
+    );
+
+    // Fold the concurrent outcomes back into the per-group maps the constraint
+    // evaluation below expects, persisting evidence sequentially (the evidence
+    // store is not shared across the concurrent tasks).
     let mut job_ids: HashMap<GroupKey, (String, u64)> = HashMap::new();
-    for (i, ((workload_type, input), group)) in groups.iter().enumerate() {
-        let request = build_job_request(workload_type, input.as_ref(), group);
-        let timeout_secs = request.timeout_secs.unwrap_or(30);
-
-        // Acquire semaphore slot before submission; release immediately after.
-        let permit = semaphore.acquire().await?;
-        let job_id = client.submit_job(&request).await?;
-        drop(permit);
-
-        tracing::info!(
-            job = i + 1,
-            total,
-            use_case = ?workload_type,
-            input = ?input,
-            job_id = %job_id,
-            "[{}/{}] Submitting use_case={:?} input={:?} -> job_id={}",
-            i + 1,
-            total,
-            workload_type,
-            input,
-            job_id,
-        );
-        job_ids.insert((workload_type.clone(), input.clone()), (job_id, timeout_secs));
-    }
-
-    // -----------------------------------------------------------------------
-    // Poll all jobs, respecting the shutdown token (SRS-OPS-008)
-    // -----------------------------------------------------------------------
     let mut job_responses: HashMap<GroupKey, Result<sqt_types::JobStatusResponse>> = HashMap::new();
-    let mut interrupted = false;
-
-    for (key, (job_id, timeout_secs)) in &job_ids {
-        let poll_timeout = Duration::from_secs(*timeout_secs + 60);
-        let start = Instant::now();
-
-        let result = tokio::select! {
-            res = client.wait_for_job(job_id, poll_timeout) => res,
-            () = shutdown.cancelled() => {
-                interrupted = true;
-                Err(anyhow::anyhow!("shutdown signal received while waiting for job {job_id}"))
-            }
-        };
-
-        match &result {
+    for outcome in outcomes {
+        if let Some(ref job_id) = outcome.job_id {
+            job_ids.insert(outcome.key.clone(), (job_id.clone(), outcome.timeout_secs));
+        }
+        match &outcome.result {
             Ok(resp) => {
-                let elapsed = start.elapsed().as_secs_f64();
-                tracing::info!(
-                    job_id = %job_id,
-                    status = ?resp.status,
-                    "[job_id={job_id}] {:?} in {elapsed:.1}s",
-                    resp.status,
-                );
-                if let Err(e) = evidence_store.store_json(job_id, "job_response.json", resp) {
+                tracing::info!(job_id = ?outcome.job_id, status = ?resp.status, "job finished");
+                if let Some(ref job_id) = outcome.job_id
+                    && let Err(e) = evidence_store.store_json(job_id, "job_response.json", resp)
+                {
                     tracing::warn!(job_id = %job_id, error = %e, "Failed to persist job response evidence");
                 }
             }
             Err(e) => {
-                tracing::warn!(job_id = %job_id, error = %e, "Job polling failed");
+                tracing::warn!(job_id = ?outcome.job_id, error = %e, "Job submit/poll failed");
             }
         }
-
-        job_responses.insert(key.clone(), result);
-
-        if interrupted {
-            break;
-        }
+        job_responses.insert(outcome.key, outcome.result);
     }
 
     // -----------------------------------------------------------------------
@@ -465,6 +518,7 @@ mod tests {
 
     use super::{
         build_job_request, client_side_metric_unavailable_reason, failing_outcome, group_key,
+        submit_and_poll_all,
     };
     use crate::{
         constraint::{Constraint, Op, evaluator::evaluate},
@@ -652,5 +706,119 @@ mod tests {
         let result = SpecResult::new(spec, vec![]);
         assert!(!result.passed, "zero-constraint spec must fail (vacuous pass prevention)");
         assert_eq!(result.outcome, OutcomeKind::Fail);
+    }
+
+    // --- Concurrency envelope (SRS-PERF-001/002) -----------------------------
+
+    /// Mock Runner: `POST /jobs` accepts instantly; `GET /jobs/{id}` sleeps
+    /// `delay_ms` then reports `complete`. Returns the base URL.
+    async fn spawn_mock_runner(delay_ms: u64) -> String {
+        use axum::{
+            Json, Router,
+            extract::{Path as AxPath, State},
+            routing::{get, post},
+        };
+
+        async fn create() -> Json<sqt_types::JobAccepted> {
+            Json(sqt_types::JobAccepted {
+                job_id: "job-mock".to_string(),
+                status: "accepted".to_string(),
+                queue_position: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            })
+        }
+        async fn status(
+            State(delay_ms): State<u64>,
+            AxPath(job_id): AxPath<String>,
+        ) -> Json<sqt_types::JobStatusResponse> {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            Json(sqt_types::JobStatusResponse {
+                job_id,
+                use_case: WorkloadType::Regression,
+                mode: sqt_types::MeasurementMode::default(),
+                repetitions: 1,
+                status: sqt_types::JobStatus::Complete,
+                queue_position: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                started_at: None,
+                completed_at: Some("2026-01-01T00:00:01Z".to_string()),
+                error: None,
+                tags: None,
+                hardware: None,
+                metrics: JobMetrics::default(),
+                output: None,
+            })
+        }
+
+        let app = Router::new()
+            .route("/api/v1/jobs", post(create))
+            .route("/api/v1/jobs/{job_id}", get(status))
+            .with_state(delay_ms);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    /// Submit+poll `njobs` against a mock runner with `concurrency` permits and
+    /// a `delay_ms` per-poll, returning the wall-clock time.
+    async fn measure(njobs: usize, concurrency: usize, delay_ms: u64) -> Duration {
+        let base = spawn_mock_runner(delay_ms).await;
+        let client = crate::api::ApiClient::new(&base, None, 2, 0, 1, 1).expect("client builds");
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let shutdown = tokio_util::sync::CancellationToken::new();
+
+        let items: Vec<((WorkloadType, Option<String>), sqt_types::JobRequest, u64)> = (0..njobs)
+            .map(|i| {
+                let input = Some(format!("in-{i}"));
+                let request = sqt_types::JobRequest {
+                    use_case: WorkloadType::Regression,
+                    input: input.clone().map(serde_json::Value::String),
+                    repetitions: 1,
+                    instrumentation: sqt_types::Instrumentation::default(),
+                    mode: sqt_types::MeasurementMode::default(),
+                    warmup_repetitions: None,
+                    timeout_secs: Some(30),
+                    tags: None,
+                };
+                ((WorkloadType::Regression, input), request, 30)
+            })
+            .collect();
+
+        let start = std::time::Instant::now();
+        let outcomes = submit_and_poll_all(&client, &semaphore, &shutdown, &items).await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcomes.len(), njobs);
+        assert!(outcomes.iter().all(|o| o.result.is_ok()), "every mock job should complete");
+        elapsed
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_polling_beats_serialization() {
+        let njobs = 5;
+        let delay = 200;
+
+        // Enough permits: all jobs poll concurrently -> ~one delay.
+        let concurrent = measure(njobs, njobs, delay).await;
+        // One permit: the semaphore must serialize jobs -> ~njobs delays.
+        let serialized = measure(njobs, 1, delay).await;
+
+        let sequential_bound = Duration::from_millis(delay * njobs as u64);
+        assert!(
+            concurrent < sequential_bound,
+            "concurrent ({concurrent:?}) must beat the sequential bound ({sequential_bound:?})"
+        );
+        assert!(
+            serialized >= Duration::from_millis(delay * (njobs as u64 - 1)),
+            "semaphore(1) must hold a permit across each job's lifetime (SRS-PERF-002): {serialized:?}"
+        );
+        assert!(
+            concurrent * 2 < serialized,
+            "concurrency must materially beat serialization (SRS-PERF-001): \
+             concurrent={concurrent:?} serialized={serialized:?}"
+        );
     }
 }
