@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -90,6 +89,17 @@ pub struct Summary {
     pub passed: usize,
     pub failed: usize,
     pub infra_errors: usize,
+}
+
+impl Summary {
+    /// Whether the run should fail the CI gate (non-zero exit).
+    ///
+    /// A spec that failed a constraint *or* infra-errored is a gate failure
+    /// (SRS-OPS-001, SRS-OPS-006). Checking only `failed` would let a run where
+    /// every spec is an `INFRA_ERROR` — `failed == 0` — exit 0 (F-C4).
+    pub fn is_gate_failure(&self) -> bool {
+        self.failed > 0 || self.infra_errors > 0
+    }
 }
 
 #[derive(Serialize)]
@@ -526,13 +536,14 @@ pub fn write_pdf(report: &Report, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     use super::*;
-    use crate::constraint::{Constraint, ConstraintOutcome, Op};
-    use crate::metrics::{Platform, Target};
-    use crate::specs::{RunResult, SpecResult, TestSpec};
+    use crate::{
+        constraint::{Constraint, ConstraintOutcome, Op},
+        metrics::{Platform, Target},
+        specs::{RunResult, SpecResult, TestSpec},
+    };
 
     fn make_target(binary: &str) -> Target {
         Target {
@@ -600,6 +611,32 @@ mod tests {
             interrupted: false,
             requirement_set: None,
         }
+    }
+
+    #[test]
+    fn gate_failure_when_a_spec_failed() {
+        let s = Summary { total: 2, passed: 1, failed: 1, infra_errors: 0 };
+        assert!(s.is_gate_failure());
+    }
+
+    #[test]
+    fn gate_failure_when_all_infra_errors_even_with_zero_failed() {
+        // The regression this guards (F-C4): a run where every spec is an
+        // INFRA_ERROR has failed == 0, but it must still fail the CI gate.
+        let s = Summary { total: 3, passed: 0, failed: 0, infra_errors: 3 };
+        assert!(s.is_gate_failure());
+    }
+
+    #[test]
+    fn no_gate_failure_when_all_pass() {
+        let s = Summary { total: 2, passed: 2, failed: 0, infra_errors: 0 };
+        assert!(!s.is_gate_failure());
+    }
+
+    #[test]
+    fn no_gate_failure_for_empty_run() {
+        let s = Summary { total: 0, passed: 0, failed: 0, infra_errors: 0 };
+        assert!(!s.is_gate_failure());
     }
 
     #[test]

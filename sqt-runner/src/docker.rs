@@ -1,8 +1,10 @@
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
@@ -153,6 +155,17 @@ fn kill_container(container_name: &str, child: &mut std::process::Child) {
         .output();
     child.kill().ok();
     child.wait().ok();
+}
+
+/// Single-quote a string for safe use as one `sh` word.
+///
+/// Wrapping in single quotes disables all shell interpretation (word splitting,
+/// globbing, command substitution, redirection); an embedded single quote is
+/// closed, escaped as `\'`, and reopened. This is the canonical POSIX-safe
+/// quoting used for every argument interpolated into a `sh -c` command,
+/// including untrusted, client-supplied values (SRS security, F-C1).
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Helper: create a volume mount pair from a host path, mapping it to

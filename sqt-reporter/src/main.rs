@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-
 use sqt_reporter::{api, config, orchestrator, preflight, report, specs};
 
 #[derive(Parser)]
@@ -163,11 +162,12 @@ async fn main() -> Result<()> {
             )?;
             tracing::info!("QDP bundle: {}", qdp_path.display());
 
-            // Exit code 2 for interrupted, 1 for any failure, 0 for all-pass.
+            // Exit code 2 for interrupted, 1 for any failed or infra-errored
+            // spec (SRS-OPS-001/006), 0 only when everything passed.
             if result.interrupted {
                 std::process::exit(2);
             }
-            if rep.summary.failed > 0 {
+            if rep.summary.is_gate_failure() {
                 std::process::exit(1);
             }
         }

@@ -9,7 +9,7 @@ use sqt_types::{HardwareInfo, Instrumentation, JobMetrics, JobRequest};
 use super::{BackendDescriptor, JobContext, LifecycleBackend};
 use crate::{
     config::{BinaryConfig, BuildConfig, ToolConfig},
-    docker::{self, DockerRun},
+    docker::{self, DockerRun, shell_quote},
     tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind},
 };
 
@@ -383,11 +383,6 @@ fn instrumentation_flags(instrumentation: &Instrumentation) -> &'static [&'stati
         Instrumentation::Valgrind => &["-g", "-O1"],
         Instrumentation::Gprof => &["-pg", "-g", "-O2"],
     }
-}
-
-/// Single-quote a shell argument to prevent word splitting and glob expansion.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Remove duplicate volume mounts (same host path), keeping the first entry.

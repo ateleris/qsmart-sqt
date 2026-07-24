@@ -3,6 +3,13 @@
 
 backend: docker                      # execution backend (default: docker)
 
+# Bearer-token authentication (SRS-IF-006). When present, every endpoint
+# except GET /api/v1/health requires `Authorization: Bearer <token>`, where
+# <token> is read from the named environment variable at startup. Omit this
+# section to disable auth (the runner logs a prominent warning).
+# auth:
+#   token_env: SQT_RUNNER_TOKEN
+
 binary:
   path: /usr/bin/hostname  # relative or absolute; resolved to absolute at load time
   # args: ["--model", "resnet50"]    # optional: fixed args always appended
