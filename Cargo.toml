@@ -2,6 +2,11 @@
 members = ["sqt-types", "sqt-reporter", "sqt-runner"]
 resolver = "2"
 
+[workspace.package]
+authors = ["Ateleris"]
+license-file = "LICENSE"
+repository = "https://github.com/ateleris/qsmart-sqt"
+
 [workspace.dependencies]
 sqt-types = { path = "./sqt-types" }
 serde = { version = "1", features = ["derive"] }
