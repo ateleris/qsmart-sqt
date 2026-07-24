@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-
 use sqt_reporter::{api, config, orchestrator, preflight, report, specs};
 
 #[derive(Parser)]

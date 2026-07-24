@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -537,13 +536,14 @@ pub fn write_pdf(report: &Report, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     use super::*;
-    use crate::constraint::{Constraint, ConstraintOutcome, Op};
-    use crate::metrics::{Platform, Target};
-    use crate::specs::{RunResult, SpecResult, TestSpec};
+    use crate::{
+        constraint::{Constraint, ConstraintOutcome, Op},
+        metrics::{Platform, Target},
+        specs::{RunResult, SpecResult, TestSpec},
+    };
 
     fn make_target(binary: &str) -> Target {
         Target {
