@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use clap::Parser;
 use tokio::sync::Semaphore;
 
+mod auth;
 mod config;
 mod docker;
 mod executor;
@@ -15,8 +16,8 @@ mod store;
 mod tools;
 
 use config::{
-    Backend, BinaryConfig, DockerBackendConfig, DocsConfig, HardwareConfig, ServerConfig,
-    ToolConfig,
+    AuthConfig, Backend, BinaryConfig, DockerBackendConfig, DocsConfig, HardwareConfig,
+    ServerConfig, ToolConfig,
 };
 use executor::ExecutionBackend;
 use executor::docker::DockerExecutor;
@@ -97,6 +98,32 @@ fn build_executor(
     }
 }
 
+/// Resolve the expected bearer token from the auth config (SRS-IF-006).
+///
+/// Returns `None` when authentication is disabled (no `auth:` section), logging
+/// a prominent warning. Aborts startup if auth is configured but the named
+/// environment variable is unset or empty — a misconfiguration that would
+/// otherwise silently leave every endpoint open.
+fn resolve_auth_token(auth: Option<&AuthConfig>) -> Option<String> {
+    let Some(cfg) = auth else {
+        tracing::warn!(
+            "bearer authentication DISABLED — no `auth:` section in config; \
+             all endpoints except /health are unauthenticated (SRS-IF-006)"
+        );
+        return None;
+    };
+
+    let token = std::env::var(&cfg.token_env).ok().filter(|t| !t.is_empty()).unwrap_or_else(|| {
+        panic!(
+            "auth is configured (auth.token_env = {}) but that environment \
+                 variable is unset or empty — set it or remove the auth section",
+            cfg.token_env
+        )
+    });
+    tracing::info!("bearer authentication enabled (token from ${})", cfg.token_env);
+    Some(token)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -149,6 +176,8 @@ async fn main() {
         tracing::info!("static analysis image: {}", t.image);
     }
 
+    let auth_token = resolve_auth_token(server_config.auth.as_ref());
+
     let executor = build_executor(
         server_config.backend,
         server_config.binary,
@@ -173,12 +202,24 @@ async fn main() {
         os: std::env::consts::OS.to_string(),
     };
 
-    let app = Router::new()
+    // All routes require bearer auth (SRS-IF-006) except /health, the
+    // unauthenticated liveness probe. When no token is configured the auth
+    // layer is omitted (a warning was already logged by resolve_auth_token).
+    let mut protected = Router::new()
         .route("/api/v1/jobs", post(handlers::create_job))
         .route("/api/v1/jobs/{job_id}", get(handlers::get_job))
         .route("/api/v1/docs", get(handlers::get_docs))
-        .route("/api/v1/version", get(get_version))
+        .route("/api/v1/version", get(get_version));
+    if let Some(token) = auth_token {
+        protected = protected.route_layer(axum::middleware::from_fn_with_state(
+            Arc::new(token),
+            auth::require_bearer,
+        ));
+    }
+
+    let app = Router::new()
         .route("/api/v1/health", get(handlers::get_health))
+        .merge(protected)
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse().expect("invalid host:port");

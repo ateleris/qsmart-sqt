@@ -116,7 +116,10 @@ fn build_binary_invocation(config: &BinaryConfig, input: Option<&str>) -> String
 
     match (&config.input_mode, input) {
         (InputMode::Stdin, Some(inp)) => {
-            format!("{} < {inp}", shell_join(&parts))
+            // `inp` is the untrusted client-supplied path; quote it so shell
+            // metacharacters (`;`, `|`, `$`, backticks, …) cannot break out of
+            // the redirection into a second command (F-C1).
+            format!("{} < {}", shell_join(&parts), docker::shell_quote(inp))
         }
         (InputMode::Arg, Some(inp)) => {
             parts.push(inp.to_string());
@@ -127,19 +130,11 @@ fn build_binary_invocation(config: &BinaryConfig, input: Option<&str>) -> String
     }
 }
 
-/// Join parts with spaces, quoting any that contain special characters.
+/// Join parts into a single `sh` command line, single-quoting every part so
+/// that no element — trusted binary/args or untrusted input — can be
+/// interpreted as shell syntax.
 fn shell_join(parts: &[String]) -> String {
-    parts
-        .iter()
-        .map(|p| {
-            if p.contains(' ') || p.contains('\'') || p.contains('"') {
-                format!("'{}'", p.replace('\'', "'\\''"))
-            } else {
-                p.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    parts.iter().map(|p| docker::shell_quote(p)).collect::<Vec<_>>().join(" ")
 }
 
 /// Parse a numeric value from GNU time `-v` output.
@@ -184,16 +179,19 @@ mod tests {
         assert_eq!(parse_time_field("no such line", "Maximum resident set size (kbytes):"), None);
     }
 
+    // Every element is single-quoted (safe by construction); quoted trusted
+    // args are still passed verbatim to the program by the shell.
+
     #[test]
     fn invocation_no_args_no_input() {
         let config = make_config("./app", &[], InputMode::Stdin);
-        assert_eq!(build_binary_invocation(&config, None), "./app");
+        assert_eq!(build_binary_invocation(&config, None), "'./app'");
     }
 
     #[test]
     fn invocation_with_args_no_input() {
         let config = make_config("./app", &["--model", "resnet50"], InputMode::Stdin);
-        assert_eq!(build_binary_invocation(&config, None), "./app --model resnet50");
+        assert_eq!(build_binary_invocation(&config, None), "'./app' '--model' 'resnet50'");
     }
 
     #[test]
@@ -201,7 +199,7 @@ mod tests {
         let config = make_config("./app", &["--flag"], InputMode::Stdin);
         assert_eq!(
             build_binary_invocation(&config, Some("/data/input.bin")),
-            "./app --flag < /data/input.bin"
+            "'./app' '--flag' < '/data/input.bin'"
         );
     }
 
@@ -210,7 +208,7 @@ mod tests {
         let config = make_config("./app", &["--flag"], InputMode::Arg);
         assert_eq!(
             build_binary_invocation(&config, Some("/data/input.bin")),
-            "./app --flag /data/input.bin"
+            "'./app' '--flag' '/data/input.bin'"
         );
     }
 
@@ -218,33 +216,59 @@ mod tests {
     fn invocation_env_with_input() {
         let config = make_config("./app", &[], InputMode::Env("INPUT_FILE".into()));
         // Env mode doesn't modify the command - it's handled via Docker -e
-        assert_eq!(build_binary_invocation(&config, Some("/data/input.bin")), "./app");
+        assert_eq!(build_binary_invocation(&config, Some("/data/input.bin")), "'./app'");
     }
 
     #[test]
     fn invocation_stdin_no_input() {
         let config = make_config("./app", &["--flag"], InputMode::Stdin);
-        assert_eq!(build_binary_invocation(&config, None), "./app --flag");
+        assert_eq!(build_binary_invocation(&config, None), "'./app' '--flag'");
+    }
+
+    // --- Security: client-supplied `input` must never break out of the shell ---
+    // (F-C1) `input` originates from the untrusted `JobRequest.input`.
+
+    #[test]
+    fn invocation_stdin_input_with_metachars_is_neutralised() {
+        let config = make_config("./app", &[], InputMode::Stdin);
+        let inv = build_binary_invocation(&config, Some("/tmp/x; touch /tmp/pwned"));
+        // The malicious payload must be a single quoted redirection target, not
+        // a second command.
+        assert_eq!(inv, "'./app' < '/tmp/x; touch /tmp/pwned'");
+    }
+
+    #[test]
+    fn invocation_arg_input_with_metachars_is_neutralised() {
+        let config = make_config("./app", &[], InputMode::Arg);
+        let inv = build_binary_invocation(&config, Some("$(reboot)"));
+        assert_eq!(inv, "'./app' '$(reboot)'");
+    }
+
+    #[test]
+    fn invocation_input_with_single_quote_is_escaped() {
+        let config = make_config("./app", &[], InputMode::Stdin);
+        let inv = build_binary_invocation(&config, Some("a'b"));
+        assert_eq!(inv, "'./app' < 'a'\\''b'");
     }
 
     #[test]
     fn shell_join_quotes_spaces() {
         let parts = vec!["/usr/bin/app".to_string(), "arg with space".to_string()];
         let result = shell_join(&parts);
-        assert_eq!(result, "/usr/bin/app 'arg with space'");
+        assert_eq!(result, "'/usr/bin/app' 'arg with space'");
     }
 
     #[test]
     fn shell_join_escapes_single_quotes() {
         let parts = vec!["./app".to_string(), "it's".to_string()];
         let result = shell_join(&parts);
-        assert_eq!(result, "./app 'it'\\''s'");
+        assert_eq!(result, "'./app' 'it'\\''s'");
     }
 
     #[test]
-    fn shell_join_plain_args_unquoted() {
+    fn shell_join_quotes_every_part() {
         let parts = vec!["./app".to_string(), "--model".to_string(), "resnet50".to_string()];
-        assert_eq!(shell_join(&parts), "./app --model resnet50");
+        assert_eq!(shell_join(&parts), "'./app' '--model' 'resnet50'");
     }
 
     #[test]
