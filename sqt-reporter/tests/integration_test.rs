@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use axum::Router;
-use axum::response::Json as AJson;
-use axum::routing::{get, post};
+use axum::{
+    Router,
+    response::Json as AJson,
+    routing::{get, post},
+};
 use sqt_reporter::{api, config, evidence, orchestrator, specs};
 use sqt_types::{
     JobAccepted, JobMetrics, JobStatus, JobStatusResponse, MeasurementMode, VersionResponse,
@@ -154,6 +156,8 @@ constraints:
         None,
         cfg.runner.retry_max,
         cfg.runner.retry_backoff_initial_secs,
+        cfg.runner.poll_interval_initial_secs,
+        cfg.runner.poll_interval_max_secs,
     )
     .unwrap();
     let mut ev_store = evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
@@ -200,6 +204,8 @@ constraints:
         None,
         cfg.runner.retry_max,
         cfg.runner.retry_backoff_initial_secs,
+        cfg.runner.poll_interval_initial_secs,
+        cfg.runner.poll_interval_max_secs,
     )
     .unwrap();
     let mut ev_store = evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();

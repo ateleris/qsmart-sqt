@@ -1,9 +1,10 @@
-use std::future::Future;
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use reqwest::header::HeaderValue;
-
 use sqt_types::{
     DocsResponse, ErrorResponse, JobAccepted, JobRequest, JobStatus, JobStatusResponse,
     VersionResponse,
@@ -42,6 +43,10 @@ pub struct ApiClient {
     token: Option<Redacted>,
     retry_max: u32,
     retry_backoff_initial_secs: u64,
+    /// Initial delay between job-status polls; doubles each poll up to
+    /// `poll_interval_max_secs` (SRS-PERF-003).
+    poll_interval_initial_secs: u64,
+    poll_interval_max_secs: u64,
 }
 
 impl ApiClient {
@@ -59,6 +64,8 @@ impl ApiClient {
         token: Option<&str>,
         retry_max: u32,
         retry_backoff_initial_secs: u64,
+        poll_interval_initial_secs: u64,
+        poll_interval_max_secs: u64,
     ) -> Result<Self> {
         // Validate the token up-front so `new` fails fast on bad characters.
         if let Some(tok) = token {
@@ -72,6 +79,8 @@ impl ApiClient {
             token: token.map(|t| Redacted(t.to_owned())),
             retry_max,
             retry_backoff_initial_secs,
+            poll_interval_initial_secs,
+            poll_interval_max_secs,
         })
     }
 
@@ -249,18 +258,21 @@ impl ApiClient {
 
     /// Poll until the job reaches `complete`, or fail fast on any terminal error.
     ///
-    /// Uses exponential backoff: 1 s initial, ×2 per poll, 30 s cap.
-    /// Bails immediately when the server reports `failed`, embedding the
-    /// server-side error field. Bails with a timeout error after `timeout`.
+    /// Uses exponential backoff between polls, configured by
+    /// `poll_interval_initial_secs` (×2 per poll) up to `poll_interval_max_secs`
+    /// (SRS-PERF-003). Bails immediately when the server reports `failed`,
+    /// embedding the server-side error field. Bails with a timeout error after
+    /// `timeout`.
     ///
     /// # Errors
     ///
     /// Returns an error if a poll request fails, the job transitions to `failed`,
     /// or `timeout` is exceeded before the job completes.
     pub async fn wait_for_job(&self, job_id: &str, timeout: Duration) -> Result<JobStatusResponse> {
-        const MAX_DELAY: Duration = Duration::from_secs(30);
+        // Clamp to a sane floor so a misconfigured 0 can't busy-loop.
+        let max_delay = Duration::from_secs(self.poll_interval_max_secs.max(1));
         let deadline = Instant::now() + timeout;
-        let mut delay = Duration::from_secs(1);
+        let mut delay = Duration::from_secs(self.poll_interval_initial_secs.max(1)).min(max_delay);
 
         loop {
             let resp = self.get_job_status(job_id).await?;
@@ -282,7 +294,7 @@ impl ApiClient {
             }
 
             tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(MAX_DELAY);
+            delay = (delay * 2).min(max_delay);
         }
     }
 }
@@ -325,7 +337,7 @@ mod tests {
     use super::*;
 
     fn make_client(retry_max: u32) -> ApiClient {
-        ApiClient::new("http://localhost:9999", Some("secret-token"), retry_max, 0)
+        ApiClient::new("http://localhost:9999", Some("secret-token"), retry_max, 0, 1, 30)
             .expect("client should build")
     }
 
@@ -349,17 +361,20 @@ mod tests {
 
     #[test]
     fn client_builds_without_token() {
-        let client = ApiClient::new("http://localhost:9999", None, 3, 1)
+        let client = ApiClient::new("http://localhost:9999", None, 3, 1, 1, 30)
             .expect("client without token should build");
         assert!(client.token.is_none());
     }
 
     #[test]
-    fn client_builds_with_retry_params() {
-        let client = ApiClient::new("http://localhost:9999", Some("tok"), 5, 2)
+    fn client_builds_with_retry_and_poll_params() {
+        let client = ApiClient::new("http://localhost:9999", Some("tok"), 5, 2, 3, 45)
             .expect("client should build");
         assert_eq!(client.retry_max, 5);
         assert_eq!(client.retry_backoff_initial_secs, 2);
+        // SRS-PERF-003: poll cadence must come from config, not be hardcoded.
+        assert_eq!(client.poll_interval_initial_secs, 3);
+        assert_eq!(client.poll_interval_max_secs, 45);
     }
 
     // -----------------------------------------------------------------------
