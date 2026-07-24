@@ -62,11 +62,10 @@ fn unauthorized() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    use axum::Router;
-    use axum::routing::get;
+    use axum::{Router, routing::get};
     use tower::ServiceExt as _;
+
+    use super::*;
 
     async fn ok() -> &'static str {
         "ok"

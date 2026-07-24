@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
-use axum::Router;
-use axum::routing::{get, post};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 use clap::Parser;
 use tokio::sync::Semaphore;
 
@@ -19,8 +19,7 @@ use config::{
     AuthConfig, Backend, BinaryConfig, DockerBackendConfig, DocsConfig, HardwareConfig,
     ServerConfig, ToolConfig,
 };
-use executor::ExecutionBackend;
-use executor::docker::DockerExecutor;
+use executor::{ExecutionBackend, docker::DockerExecutor};
 use handlers::get_version;
 use sqt_types::HardwareInfo;
 
