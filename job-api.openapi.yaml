@@ -14,7 +14,7 @@ info:
     Runner at startup (via `sqt-runner.yaml` or CLI flags). They are **not**
     transmitted per job. Clients supply only:
 
-    - **Which workload** to run (`model` field - one of the predefined workload types)
+    - **Which workload** to run (`use_case` field - one of the predefined workload types)
     - **What input** to feed it (workload-specific: images, tabular data, time series,
       or a server-side dataset reference)
     - **How many times** to repeat (`repetitions`)
@@ -253,11 +253,8 @@ paths:
               image_classification_latency:
                 summary: Image classification, 10 repetitions, latency mode
                 value:
-                  model: image_classification
-                  input:
-                    type: images
-                    images:
-                      - "<base64-encoded-image>"
+                  use_case: image_classification
+                  input: "datasets/imagenet_sample"
                   repetitions: 10
                   instrumentation: none
                   mode: latency
@@ -265,10 +262,8 @@ paths:
               object_detection_valgrind:
                 summary: Object detection with Valgrind, dataset reference
                 value:
-                  model: object_detection
-                  input:
-                    type: dataset_ref
-                    dataset_ref: "datasets/coco_val2017_sample"
+                  use_case: object_detection
+                  input: "datasets/coco_val2017_sample"
                   repetitions: 5
                   instrumentation: valgrind
                   mode: latency
@@ -276,12 +271,8 @@ paths:
               regression_throughput:
                 summary: Regression model, throughput mode
                 value:
-                  model: regression
-                  input:
-                    type: tabular
-                    data:
-                      - [1.0, 2.3, 0.7]
-                      - [4.1, 0.9, 3.2]
+                  use_case: regression
+                  input: "datasets/tabular_sample"
                   repetitions: 100
                   instrumentation: none
                   mode: throughput
@@ -337,7 +328,7 @@ paths:
                   summary: Image classification job - complete
                   value:
                     job_id: "job-abc123"
-                    model: "image_classification"
+                    use_case: "image_classification"
                     mode: "latency"
                     repetitions: 10
                     status: "complete"
@@ -381,7 +372,7 @@ paths:
                   summary: Pixel segmentation - large output, only sample transferred
                   value:
                     job_id: "job-def456"
-                    model: "pixel_segmentation"
+                    use_case: "pixel_segmentation"
                     mode: "latency"
                     repetitions: 5
                     status: "complete"
@@ -581,7 +572,7 @@ components:
           example:
             error:
               code: "VALIDATION_ERROR"
-              message: "unknown model type: 'depth_estimation'"
+              message: "unknown use_case: 'depth_estimation'"
               timestamp: "2026-03-06T10:00:00Z"
 
     Unauthorized:
@@ -938,20 +929,26 @@ components:
 
     JobRequest:
       type: object
-      required: [model]
+      required: [use_case]
       description: |
         A qualification job request. The AI model, inference engine, and main
         program are configured on the Runner at startup (via `sqt-runner.yaml`
         or CLI flags) and are not transmitted per job. The client specifies
         only what to measure and how.
       properties:
-        model:
+        use_case:
           $ref: "#/components/schemas/WorkloadType"
         input:
-          $ref: "#/components/schemas/JobInput"
           description: |
-            Workload input. Optional when the server has a default dataset
-            configured for the given workload type. Required otherwise.
+            Workload input. Any JSON value is accepted by the wire type; the
+            reference runner interprets a **string** as an input file path
+            (delivered to the binary via stdin/arg/env per the runner's config).
+            Optional when the runner has a default dataset for the use case.
+
+            Note: the `JobInput` discriminated-union schema below describes a
+            richer structured-input design that the reference implementation
+            does not yet parse — its shape is a pending contract decision.
+          example: "datasets/coco_val2017_sample"
         repetitions:
           type: integer
           minimum: 1
@@ -977,16 +974,6 @@ components:
             Results from warmed and cold runs are NOT comparable; document
             which mode a spec uses.
           example: 3
-        batch_size:
-          type: integer
-          minimum: 1
-          nullable: true
-          description: |
-            Number of inference calls to group into one forward pass. Only
-            meaningful in `throughput` mode - in `latency` mode the server shall
-            ignore this field and use a batch size of 1. When null, the
-            server chooses the optimal batch size for the hardware.
-          example: 8
         tags:
           type: object
           additionalProperties:
@@ -1041,12 +1028,12 @@ components:
 
     JobStatusResponse:
       type: object
-      required: [job_id, model, mode, repetitions, status, created_at]
+      required: [job_id, use_case, mode, repetitions, status, created_at]
       properties:
         job_id:
           type: string
           example: "job-abc123"
-        model:
+        use_case:
           $ref: "#/components/schemas/WorkloadType"
         mode:
           $ref: "#/components/schemas/MeasurementMode"
