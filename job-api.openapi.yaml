@@ -1343,6 +1343,19 @@ components:
           description: Binary size on disk in kilobytes.
           example: 412.0
 
+        harness.docker_overhead_ms:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            Harness/Docker overhead in milliseconds: the outer container
+            wall clock minus the binary's own elapsed time (which is what
+            `time.avg_ms` reports). Diagnostic only — lets the reporter gauge
+            how much of a naive end-to-end measurement is container lifecycle
+            rather than the workload. Null when the binary's own elapsed time
+            could not be measured (e.g. GNU time unavailable in the image).
+          example: 180.0
+
         time.startup_ms:
           type: number
           format: double

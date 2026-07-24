@@ -8,10 +8,17 @@ use crate::config::{BinaryConfig, InputMode};
 /// Execution metrics produced by running the binary in a container.
 pub struct RunBinaryOutput {
     pub return_code: Option<i64>,
+    /// The binary's own execution time. When GNU time is available inside the
+    /// container this is its "Elapsed (wall clock) time"; otherwise it falls
+    /// back to the outer `docker run` wall clock.
     pub time_execution_ms: Option<f64>,
     pub memory_peak_rss_kb: Option<f64>,
     pub memory_avg_rss_kb: Option<f64>,
     pub cpu_pct: Option<f64>,
+    /// Harness/Docker overhead = outer `docker run` wall clock − inner elapsed
+    /// time. `None` when GNU time was unavailable (no inner measurement to
+    /// subtract). Diagnostic only.
+    pub docker_overhead_ms: Option<f64>,
 }
 use crate::docker::{self, DockerRun};
 
@@ -93,15 +100,31 @@ pub fn collect(
         tracing::info!("/usr/bin/time not found in container - peak RSS and CPU% unavailable");
     }
 
-    // Wall time is always measured on the host side, independent of GNU time.
-    let time_execution = output.wall_time.as_secs_f64() * 1000.0; // ms
+    // The outer wall clock covers the whole `docker run`, including container
+    // create/start/teardown. The primary latency metric must reflect the
+    // binary's own execution (SRS-FUNC-005), so prefer GNU time's inner
+    // "Elapsed (wall clock) time" when present and record the difference as
+    // harness/Docker overhead. Without GNU time there is no inner measurement,
+    // so fall back to the outer wall clock and report no overhead.
+    let outer_wall_ms = output.wall_time.as_secs_f64() * 1000.0;
+    let (time_execution_ms, docker_overhead_ms) =
+        if let Some(inner_ms) = parse_elapsed_ms(&combined) {
+            (Some(inner_ms), Some((outer_wall_ms - inner_ms).max(0.0)))
+        } else {
+            tracing::info!(
+                "/usr/bin/time elapsed line unavailable - reporting outer docker wall clock \
+                 as time.avg_ms (includes container overhead)"
+            );
+            (Some(outer_wall_ms), None)
+        };
 
     Ok(RunBinaryOutput {
         return_code: Some(i64::from(output.exit_code)),
-        time_execution_ms: Some(time_execution),
+        time_execution_ms,
         memory_peak_rss_kb: memory_peak_rss,
         memory_avg_rss_kb: None,
         cpu_pct,
+        docker_overhead_ms,
     })
 }
 
@@ -154,6 +177,28 @@ fn parse_time_field(text: &str, label: &str) -> Option<f64> {
         }
     }
     None
+}
+
+/// Parse GNU time `-v`'s "Elapsed (wall clock) time" line into milliseconds.
+///
+/// The value is formatted as `h:mm:ss`, `m:ss`, or `m:ss.ss` (e.g. `1:02:03`
+/// or `0:01.23`). Returns `None` when the line is absent or unparseable.
+fn parse_elapsed_ms(text: &str) -> Option<f64> {
+    let line = text.lines().find(|l| l.trim().starts_with("Elapsed (wall clock) time"))?;
+    let value = line.trim().rsplit_once(": ")?.1.trim();
+    parse_hms_to_ms(value)
+}
+
+/// Parse an `h:mm:ss` / `m:ss` / `ss[.ss]` duration into milliseconds.
+fn parse_hms_to_ms(s: &str) -> Option<f64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    let (h, m, sec) = match parts.as_slice() {
+        [s] => (0.0, 0.0, s.parse::<f64>().ok()?),
+        [m, s] => (0.0, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
+        [h, m, s] => (h.parse::<f64>().ok()?, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
+        _ => return None,
+    };
+    Some((h * 3600.0 + m * 60.0 + sec) * 1000.0)
 }
 
 #[cfg(test)]
@@ -257,5 +302,30 @@ mod tests {
     fn parse_time_field_returns_none_for_non_numeric() {
         let text = "\tSome field: not-a-number\n";
         assert_eq!(parse_time_field(text, "Some field:"), None);
+    }
+
+    // --- Inner elapsed time (F-C3, SRS-FUNC-005) -----------------------------
+
+    #[test]
+    fn parse_elapsed_ms_m_ss_format() {
+        let text = "\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:01.23\n";
+        assert_eq!(parse_elapsed_ms(text), Some(1230.0));
+    }
+
+    #[test]
+    fn parse_elapsed_ms_h_mm_ss_format() {
+        let text = "\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:02:03\n";
+        assert_eq!(parse_elapsed_ms(text), Some(3_723_000.0));
+    }
+
+    #[test]
+    fn parse_elapsed_ms_seconds_only() {
+        let text = "\tElapsed (wall clock) time (h:mm:ss or m:ss): 12.50\n";
+        assert_eq!(parse_elapsed_ms(text), Some(12_500.0));
+    }
+
+    #[test]
+    fn parse_elapsed_ms_absent_returns_none() {
+        assert_eq!(parse_elapsed_ms("no time output here"), None);
     }
 }

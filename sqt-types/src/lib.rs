@@ -207,6 +207,13 @@ pub struct JobMetrics {
     #[serde(rename = "binary.size_kb")]
     pub binary_size_kb: Option<f64>,
 
+    /// Harness/Docker overhead (outer `docker run` wall clock − the binary's
+    /// own elapsed time), in milliseconds. Diagnostic: lets the reporter see
+    /// how much of a naive wall-clock measurement is container lifecycle rather
+    /// than the workload (SRS-FUNC-005). `null` when it could not be measured.
+    #[serde(rename = "harness.docker_overhead_ms")]
+    pub harness_docker_overhead_ms: Option<f64>,
+
     #[serde(rename = "power.avg_watts")]
     pub power_avg_watts: Option<f64>,
     #[serde(rename = "power.peak_watts")]
@@ -245,6 +252,7 @@ impl JobMetrics {
             "static.critical_issues" => self.static_critical_issues.map(|v| v as f64),
             "static.major_issues" => self.static_major_issues.map(|v| v as f64),
             "binary.size_kb" => self.binary_size_kb,
+            "harness.docker_overhead_ms" => self.harness_docker_overhead_ms,
             "power.avg_watts" => self.power_avg_watts,
             "power.peak_watts" => self.power_peak_watts,
             "hardware.temperature_celsius" => self.hardware_temperature_celsius,
