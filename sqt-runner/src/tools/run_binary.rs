@@ -1,5 +1,4 @@
-use std::path::Path;
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
 
@@ -203,8 +202,9 @@ fn parse_hms_to_ms(s: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn make_config(path: &str, args: &[&str], input_mode: InputMode) -> BinaryConfig {
         BinaryConfig {

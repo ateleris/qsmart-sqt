@@ -1,14 +1,17 @@
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use sqt_types::{HardwareInfo, Instrumentation, JobMetrics, JobRequest};
 
-use crate::config::{BinaryConfig, BuildConfig, ToolConfig};
-use crate::docker::{self, DockerRun};
-use crate::tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind};
-
 use super::{BackendDescriptor, JobContext, LifecycleBackend};
+use crate::{
+    config::{BinaryConfig, BuildConfig, ToolConfig},
+    docker::{self, DockerRun},
+    tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind},
+};
 
 /// Default job executor: compiles (when configured) and runs workloads in
 /// Docker containers, then collects metrics via the configured tool chain.
