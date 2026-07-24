@@ -1,11 +1,16 @@
-use std::collections::HashMap;
-use std::path::Path;
-use std::time::Duration;
+use std::{collections::HashMap, path::Path, time::Duration};
 
 use anyhow::Result;
-use sqt_types::{HardwareInfo, JobMetrics, JobRequest};
+use sqt_types::{HardwareInfo, JobMetrics, JobOutput, JobRequest};
 
 pub mod docker;
+
+/// Result of executing one job: the collected metrics plus the binary's
+/// captured inference output (if any).
+pub struct ExecutionOutcome {
+    pub metrics: JobMetrics,
+    pub output: Option<JobOutput>,
+}
 
 /// Backend-agnostic bundle of everything a backend needs to run one job.
 ///
@@ -78,12 +83,12 @@ pub trait ExecutionBackend: Send + Sync {
     /// is executable inside the run image). Returning `Err` aborts startup.
     fn preflight(&self) -> Result<()>;
 
-    /// Run a single job and return the collected metrics.
+    /// Run a single job and return the collected metrics plus captured output.
     ///
     /// `workspace` is a per-job scratch directory owned by the caller. The
     /// executor may write intermediate files there (Valgrind XML, coverage
     /// data, ...). The caller creates and owns the directory.
-    fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics>;
+    fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<ExecutionOutcome>;
 
     /// Describe the backend: target hardware, identity, and toolchain versions.
     ///
@@ -124,8 +129,9 @@ pub trait LifecycleBackend: Send + Sync {
     /// Phase 2: run the workload under measurement, gathering raw output.
     fn run(&self, ctx: &JobContext, prepared: &Self::Prepared) -> Result<Self::RawRun>;
 
-    /// Phase 3: map raw output into the `JobMetrics` DTO.
-    fn collect(&self, ctx: &JobContext, raw: Self::RawRun) -> Result<JobMetrics>;
+    /// Phase 3: map raw output into the `JobMetrics` DTO plus the captured
+    /// [`JobOutput`].
+    fn collect(&self, ctx: &JobContext, raw: Self::RawRun) -> Result<ExecutionOutcome>;
 
     /// Phase 4: release per-job resources. Runs even when an earlier phase
     /// failed. Defaults to dropping `Prepared` with no extra work.
@@ -143,7 +149,7 @@ impl<T: LifecycleBackend> ExecutionBackend for T {
         LifecycleBackend::describe(self)
     }
 
-    fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<JobMetrics> {
+    fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<ExecutionOutcome> {
         let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(60));
         let ctx = JobContext { request, workspace, timeout };
 

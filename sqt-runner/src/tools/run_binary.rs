@@ -18,6 +18,9 @@ pub struct RunBinaryOutput {
     /// time. `None` when GNU time was unavailable (no inner measurement to
     /// subtract). Diagnostic only.
     pub docker_overhead_ms: Option<f64>,
+    /// The binary's own stdout (its inference output). GNU time writes its
+    /// report to stderr, so stdout is the clean workload output (F-H1).
+    pub stdout: Vec<u8>,
 }
 use crate::docker::{self, DockerRun};
 
@@ -44,8 +47,13 @@ pub fn collect(
     // Use GNU time if available, otherwise fall back to plain execution.
     // The shell snippet checks for /usr/bin/time at runtime so we work with
     // any container image.
+    //
+    // GNU time writes its `-v` report to stderr; we deliberately do NOT merge
+    // it into stdout (no `2>&1`). That keeps the binary's stdout clean so it
+    // can be captured as the inference output (F-H1); the time report is
+    // parsed out of stderr below.
     let shell_cmd = format!(
-        "if [ -x /usr/bin/time ]; then /usr/bin/time -v {binary_with_args} 2>&1; \
+        "if [ -x /usr/bin/time ]; then /usr/bin/time -v {binary_with_args}; \
          else {binary_with_args}; fi"
     );
     let command = vec!["sh".to_string(), "-c".to_string(), shell_cmd];
@@ -88,12 +96,13 @@ pub fn collect(
 
     let output = docker::run_container(&spec).context("run_binary: docker execution failed")?;
 
-    // When GNU time is present, its output ends up in stdout via 2>&1.
-    // When it's absent, stdout is just the binary's own output.
-    let combined = String::from_utf8_lossy(&output.stdout);
+    // GNU time's `-v` report is on stderr (alongside any binary stderr); the
+    // binary's own inference output is on stdout, captured separately. Parse
+    // the time metrics by their distinctive labels out of stderr.
+    let report = String::from_utf8_lossy(&output.stderr);
 
-    let memory_peak_rss = parse_time_field(&combined, "Maximum resident set size (kbytes):");
-    let cpu_pct = parse_time_field(&combined, "Percent of CPU this job got:");
+    let memory_peak_rss = parse_time_field(&report, "Maximum resident set size (kbytes):");
+    let cpu_pct = parse_time_field(&report, "Percent of CPU this job got:");
 
     if memory_peak_rss.is_none() {
         tracing::info!("/usr/bin/time not found in container - peak RSS and CPU% unavailable");
@@ -106,16 +115,16 @@ pub fn collect(
     // harness/Docker overhead. Without GNU time there is no inner measurement,
     // so fall back to the outer wall clock and report no overhead.
     let outer_wall_ms = output.wall_time.as_secs_f64() * 1000.0;
-    let (time_execution_ms, docker_overhead_ms) =
-        if let Some(inner_ms) = parse_elapsed_ms(&combined) {
-            (Some(inner_ms), Some((outer_wall_ms - inner_ms).max(0.0)))
-        } else {
-            tracing::info!(
-                "/usr/bin/time elapsed line unavailable - reporting outer docker wall clock \
+    let (time_execution_ms, docker_overhead_ms) = if let Some(inner_ms) = parse_elapsed_ms(&report)
+    {
+        (Some(inner_ms), Some((outer_wall_ms - inner_ms).max(0.0)))
+    } else {
+        tracing::info!(
+            "/usr/bin/time elapsed line unavailable - reporting outer docker wall clock \
                  as time.avg_ms (includes container overhead)"
-            );
-            (Some(outer_wall_ms), None)
-        };
+        );
+        (Some(outer_wall_ms), None)
+    };
 
     Ok(RunBinaryOutput {
         return_code: Some(i64::from(output.exit_code)),
@@ -124,6 +133,7 @@ pub fn collect(
         memory_avg_rss_kb: None,
         cpu_pct,
         docker_overhead_ms,
+        stdout: output.stdout,
     })
 }
 

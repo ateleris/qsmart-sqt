@@ -6,11 +6,13 @@ use std::{
 use anyhow::{Context, Result};
 use sqt_types::{HardwareInfo, Instrumentation, JobMetrics, JobRequest};
 
-use super::{BackendDescriptor, JobContext, LifecycleBackend};
+use super::{BackendDescriptor, ExecutionOutcome, JobContext, LifecycleBackend};
 use crate::{
     config::{BinaryConfig, BuildConfig, ToolConfig},
     docker::{self, DockerRun, shell_quote},
-    tools::{binary_size, coverage, run_binary, sonarqube, static_analysis, valgrind},
+    tools::{
+        binary_size, coverage, output_capture, run_binary, sonarqube, static_analysis, valgrind,
+    },
 };
 
 /// Default job executor: compiles (when configured) and runs workloads in
@@ -345,15 +347,23 @@ impl LifecycleBackend for DockerExecutor {
         })
     }
 
-    /// Phase 3: map raw measurements into the `JobMetrics` DTO. Pure, no IO.
+    /// Phase 3: map raw measurements into the `JobMetrics` DTO and capture the
+    /// binary's stdout as the job's [`sqt_types::JobOutput`]. Pure, no IO.
     /// Consumes `RawRun` by value as the terminal owner of the run's output.
-    fn collect(&self, _ctx: &JobContext, raw: Self::RawRun) -> Result<JobMetrics> {
+    fn collect(&self, ctx: &JobContext, raw: Self::RawRun) -> Result<ExecutionOutcome> {
         let (static_critical_issues, static_major_issues) = match raw.sonar_issues {
             Some((critical, major)) => (Some(critical), Some(major)),
             None => (None, None),
         };
 
-        Ok(JobMetrics {
+        // Label the output with the workload's wire name (e.g. "regression").
+        let output_type = serde_json::to_value(&ctx.request.use_case)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "output".to_string());
+        let output = output_capture::build_job_output(&output_type, &raw.primary.stdout);
+
+        let metrics = JobMetrics {
             return_code: raw.primary.return_code,
             time_avg_ms: raw.primary.time_execution_ms,
             memory_peak_rss_kb: raw.primary.memory_peak_rss_kb,
@@ -367,7 +377,9 @@ impl LifecycleBackend for DockerExecutor {
             static_major_issues,
             static_warnings: raw.static_warnings,
             ..Default::default()
-        })
+        };
+
+        Ok(ExecutionOutcome { metrics, output })
     }
 
     // Phase 4 (teardown): the default no-op suffices — `docker run --rm` removes
