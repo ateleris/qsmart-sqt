@@ -12,3 +12,6 @@ ci/runner/runner-work/
 ci/runner/dind-cache/
 # Reporter output from running the example config
 /examples/reports
+
+# Documentation stored in separate repository
+/documentation

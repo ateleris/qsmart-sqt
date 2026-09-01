@@ -65,6 +65,13 @@ infrastructure-errored spec, `2` interrupted.
 - [`IMPLEMENTATION.md`](IMPLEMENTATION.md) — current implementation state.
 - [`job-api.openapi.yaml`](job-api.openapi.yaml) — the runner ↔ reporter contract.
 
+Additional strictdoc project at https://github.com/ateleris/qsmart-sqt-documentation.  
+Can be linked in:
+```bash
+cd documentation
+git clone git@github.com:ateleris/qsmart-sqt-documentation.git
+```
+
 ## Licence
 
 Copyright © Ateleris.
