@@ -26,8 +26,9 @@
 - [4. Requirements Management](#4-requirements-management)
   - [4.5 Declarative Test Specifications](#45-declarative-test-specifications)
   - [4.6 Compliant Requirements (Non-Testable)](#46-compliant-requirements-non-testable)
+  - [4.7 API-Profile Qualification](#47-api-profile-qualification)
 - [5. REST API Interface (SQT Runner)](#5-rest-api-interface-sqt-runner)
-  - [5.2 APCO Space Profile Use Cases](#52-apco-space-profile-use-cases)
+  - [5.2 Workload Types](#52-workload-types)
   - [5.5 API Endpoints](#55-api-endpoints)
   - [5.5.3 Health Check](#553-health-check)
   - [5.10 Requirements Documents Endpoint](#510-requirements-documents-endpoint)
@@ -52,7 +53,7 @@ The Software Qualification Toolkit (SQT) is the Ateleris-developed component of 
 The SQT Runner is a REST API server deployed on **customer-provided hardware**. It is the component that actually executes tests against the AI system under qualification. It:
 
 - **Assembles the AI system** from the ML-L Provider's artifacts (inference engine, trained model, main program) into a fully runnable task
-- **Executes Space Profile tests** (functional tests defined by ESA and Klepsydra) and **Performance tests** (timing, memory, throughput) against the assembled system
+- **Executes workload tests** (representative workloads per workload type: does the ML-L load each one, execute it and return a valid result) and **Performance tests** (timing, memory, throughput) against the assembled system
 - **Serves static qualification artifacts** (ECSS documentation baseline, unit test results, validation test results) pre-placed on its filesystem by the ML-L Provider
 - **Exposes a REST API** (`job-api.openapi.yaml`) that the SQT Reporter calls to trigger and monitor test jobs
 - **Supports multiple execution targets** via a pluggable target layer (x86\_64/Linux native in scope; GR740 and GR765 planned for future extension)
@@ -65,6 +66,7 @@ The SQT Reporter is a CLI application that **orchestrates the full qualification
 - **Checks requirements compliance** before allowing test execution to proceed
 - **Submits all test jobs concurrently** to the SQT Runner via REST API (receives job IDs immediately; a configurable concurrency bound limits in-flight submissions) and polls all outstanding jobs concurrently until completion
 - **Evaluates metric constraints** against returned results (declarative test specifications), with unit-aware comparison
+- **Reports API-profile coverage**: relates the workload outcomes to the declared API profile and reports which of its elements were exercised and which were not (SRS-FUNC-021 to SRS-FUNC-023, from SQT-SW-1)
 - **Generates ECSS-compliant reports** (PDF, HTML) and the QDP (Quality Data Package) with full requirements traceability
 
 ### Key Principles
@@ -73,7 +75,7 @@ The SQT Reporter is a CLI application that **orchestrates the full qualification
 2. **Deployment flexibility**: The SQT Runner deploys on the customer's hardware (where access to the target systems exists); the SQT Reporter can run anywhere
 3. **Target extensibility**: The Runner's target abstraction layer allows adding new execution targets (GR740, GR765) without changing the Reporter or the REST API contract
 4. **Configuration-driven**: All aspects configurable via YAML; test specifications registered by explicit declaration (no auto-discovery)
-5. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment; Use Cases per the APCO Space Profile (RD-5 / ML-TN-T1)
+5. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment; workload types and the declared API profile per the ML Space Profile (RD-5 / ML-TN-T1)
 6. **Evidence-based**: Comprehensive traceability from requirements to test results
 7. **Concurrent orchestration**: The Reporter submits all jobs and polls all outcomes concurrently, bounded by a configurable concurrency limit; the Runner queues and executes jobs sequentially (initial implementation: one at a time)
 
@@ -118,9 +120,9 @@ The overall qualification process follows a three-tier swimlane model:
 ║            │                            │  Test Execution Engine      │     ║
 ║  ┌─────────▼────────────────────────┐   │                             │     ║
 ║  │  REST API Server                 │   │  ┌─────────────────────┐    │     ║
-║  │  (implements job-api.openapi)    │◄──┤  │ Space Profile Tests  │    │     ║
-║  │                                  │   │  │ (Ateleris-defined    │    │     ║
-║  │  GET  /api/v1/version → compat   │   │  │  functional tests)   │    │     ║
+║  │  (implements job-api.openapi)    │◄──┤  │ Workload Tests       │    │     ║
+║  │                                  │   │  │ (representative,     │    │     ║
+║  │  GET  /api/v1/version → compat   │   │  │  workload types)     │    │     ║
 ║  │  GET  /api/v1/health → liveness  │   │  └─────────────────────┘    │     ║
 ║  │  POST /api/v1/jobs  → enqueue    │   │  ┌─────────────────────┐    │     ║
 ║  │  GET  /api/v1/jobs/{id} → poll   │   │  │ Performance Tests    │    │     ║
@@ -226,7 +228,7 @@ SQT Reporter                            SQT Runner
 | REST API server | Implements `job-api.openapi.yaml`; accepts jobs, returns metrics |
 | Document store | Serves pre-placed ML-L Provider artifacts via `GET /api/v1/docs` |
 | AI system assembly | Links inference engine + model + main program into runnable task |
-| Space Profile test execution | functional tests for space AI systems, defined by ESA and Klepsydra |
+| Workload test execution | representative workloads per workload type: load, execute, valid result (SRS-FUNC-022) |
 | Performance test execution | Timing, memory, throughput benchmarks |
 | Target abstraction | Pluggable backend: x86\_64 native (in scope); GR740/GR765 (planned) |
 | Configuration | All artifact paths and target settings configurable via a config file; minimal changes needed to deploy |
@@ -264,7 +266,7 @@ SQT Reporter                    │  SQT Runner
 YAML config parsing             │  REST API server
 Requirements parsing            │  Document store (pre-placed artifacts)
 Baseline compliance check       │  AI system assembly
-Job submission + polling        │  Space Profile test execution
+Job submission + polling        │  Workload test execution
 Metric constraint evaluation    │  Performance test execution
 Evidence collection             │  Target abstraction (x64, GR740, GR765)
 Report generation (PDF/HTML)    │  Job queue + sequential execution
@@ -313,8 +315,8 @@ runner:
   # Operational tuning (defaults shown):
   max_concurrent_jobs: 8             # in-flight submission bound (SRS-PERF-002)
   job_timeout_secs: 300              # project-default per-job timeout; overridable per spec (SRS-PERF-004)
-  retry_max: 3                       # transient-error retry ceiling (SRS-IF-009)
-  retry_backoff_initial_secs: 1      # initial retry backoff (SRS-IF-009)
+  retry_max: 3                       # transient-error retry ceiling (SRS-FUNC-020)
+  retry_backoff_initial_secs: 1      # initial retry backoff (SRS-FUNC-020)
   poll_interval_initial_secs: 1      # first polling interval (SRS-PERF-003)
   poll_interval_max_secs: 30         # polling backoff cap (SRS-PERF-003)
 
@@ -396,7 +398,7 @@ hardware:
 runner_hardware:
   target_id: x86_64-linux
   toolchain_versions:
-    onnxruntime: "1.17"
+    inference_engine: "2.1.0"
     gcc: "13.2"
 
 # Qualification documents served via GET /api/v1/docs (optional).
@@ -473,9 +475,9 @@ RELATIONS:
 [REQUIREMENT]
 UID: REQ-ML-L-002
 STATUS: Active
-TITLE: ONNX model format support
-STATEMENT: The ML-L shall support loading and executing models in ONNX format version 1.13 or later.
-RATIONALE: ONNX is the industry-standard format for ML model interchange.
+TITLE: Model format support
+STATEMENT: The ML-L shall load and execute models in the model format of its declared API profile.
+RATIONALE: The API and the model format are selected in the ML Space Profile, not by the SQT.
 VERIFICATION: Test, Inspection
 RELATIONS:
 - TYPE: Parent
@@ -589,7 +591,7 @@ Each spec file names the requirement it covers:
 ```yaml
 # specs/REQ-ML-L-001.test.yaml
 requirement_uid: REQ-ML-L-001
-use_case: image_classification      # APCO Space Profile Use Case
+use_case: image_classification      # workload type (SRS-FUNC-019)
 constraints:
   - metric: return_code
     operator: eq
@@ -650,7 +652,7 @@ Test spec files are listed explicitly in the Reporter config (see §3.1):
 ```yaml
 # specs/REQ-ML-L-003.test.yaml
 requirement_uid: REQ-ML-L-003
-use_case: image_classification        # APCO Space Profile Use Case (SRS-IF-005)
+use_case: image_classification        # workload type (SRS-FUNC-019)
 input: datasets/reference_mnist.bin
 timeout_secs: 120                     # optional; overrides project-default (SRS-PERF-004)
 
@@ -750,7 +752,7 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 
 // Submit one job per testable requirement
 let job_id = api_client.submit_job(&JobRequest {
-    use_case: spec.use_case,           // APCO Space Profile Use Case
+    use_case: spec.use_case,           // workload type (SRS-FUNC-019)
     input: spec.input.clone(),
     repetitions: spec.repetitions,
     instrumentation: spec.instrumentation,
@@ -837,6 +839,38 @@ different verification modes.
 
 ---
 
+### 4.7 API-Profile Qualification
+
+*Target design for SQT-SW-1 (SRS-FUNC-021 to SRS-FUNC-023; ADD components C-ORC-02,
+C-ORC-04, C-ORC-07, C-ORC-08 and LLR-035). Not implemented in SQT-SW-0.*
+
+The SQT qualifies the ML-L against a **declared API profile**: the API elements
+inside the qualification boundary. The SQT does not select the API or its elements
+and is not tied to a particular API or model format; the selection is made and
+justified in the ML Space Profile and the API and ML-L analysis (ML-TN-T1/T2,
+APCO, WP100).
+
+- **Declared API profile** (SRS-FUNC-021): a version-controllable artefact with a
+  stable identifier, registered in the Reporter configuration like a test
+  specification. The Reporter treats its elements as opaque names and records the
+  profile with its identifier in the evidence of every run.
+- **Workload set** (SRS-FUNC-022): the SQT is delivered with a generic,
+  representative workload set covering the workload types of the ML Space Profile
+  (§5.2), as test specifications plus the data they reference, so it runs against
+  the reference Runner and any conformant Runner alike. A project narrows or
+  extends the set through its configuration; mission use cases (WP420) are added
+  the same way. Each workload is one job, and the Reporter records whether the
+  ML-L loaded it, executed it and returned a valid result.
+- **Declared elements**: each workload specification lists the profile elements it
+  exercises.
+- **Coverage report** (SRS-FUNC-023): the Reporter relates the workload outcomes to
+  the profile and reports every element as *exercised* — with the outcomes of the
+  workloads exercising it — or *not exercised*. A coverage gap is reported, not
+  failed: the exit code stays governed by the specification outcomes (SRS-OPS-001,
+  AD-028).
+
+---
+
 ## 5. REST API Interface (SQT Runner)
 
 ### 5.1 API Contract (OpenAPI Specification)
@@ -865,7 +899,7 @@ Content-Type: application/json
 
 The Runner is configured at startup (via `sqt-runner.yaml` or CLI flags) with the
 hardware target, inference engine, trained model, and main program. These are
-**not** transmitted per job. The client (SQT Reporter) specifies only the Use Case
+**not** transmitted per job. The client (SQT Reporter) specifies only the workload type
 (§5.2) and measurement parameters; the Runner returns everything it can measure.
 
 A single job type covers all qualification activities: execution runs, instrumented
@@ -880,7 +914,7 @@ non-zero exit with a clear mismatch message.
 against the published contract schema before consumption. A non-conformant response
 causes the affected job to be recorded as infrastructure-failed.
 
-**Transient error retry (SRS-IF-009):** Network resets, connection timeouts, and
+**Transient error retry (SRS-FUNC-020):** Network resets, connection timeouts, and
 recoverable 5xx responses trigger bounded retries with exponential backoff (up to
 `runner.retry_max` attempts). After exhausting retries, the affected job is
 recorded as infrastructure-failed. This is distinct from the steady-state polling
@@ -890,14 +924,16 @@ backoff in §5.9.
 operational output (log lines, terminal summary, persisted evidence, verbose
 request/response traces) at every verbosity level without exception.
 
-### 5.2 APCO Space Profile Use Cases
+### 5.2 Workload Types
 
-The set of supported Use Cases is defined by the **APCO Space Profile** (RD-5 /
-ML-TN-T1) and enumerated in the SQT Reporter. Both Reporter and Runner reason over
-the same closed set; the Runner maps each Use Case to the appropriate binary
-invocation, input handling, and output interpretation (SRS-IF-005).
+The workload types are taken from the **ML Space Profile** (RD-5 / ML-TN-T1) and
+enumerated once, in `sqt-types::WorkloadType`, so Reporter and Runner reason over
+the same closed set; the Runner maps each workload type to the appropriate binary
+invocation, input handling, and output interpretation (SRS-FUNC-019). On the wire
+the field is named `use_case`, as published in `job-api.openapi.yaml`; the SRS, the
+ADD and this document call it the *workload type* (AD-025).
 
-| Use Case | Domain | Typical Input | Typical Output |
+| Workload type | Domain | Typical Input | Typical Output |
 |---|---|---|---|
 | `object_detection` | Computer vision | Images | Bounding boxes + class labels |
 | `image_classification` | Computer vision | Images | Class label + confidence score |
@@ -906,13 +942,13 @@ invocation, input handling, and output interpretation (SRS-IF-005).
 | `regression` | Tabular ML | Feature vectors | Scalar prediction |
 | `time_series_forecasting` | Sequential ML | Time series sequences | Forecast sequence |
 
-**Default session**: when a spec does not declare a Use Case, the SQT Reporter
-submits one job per supported Use Case (SRS-IF-005). Jobs are queued on the Runner
+**Default session**: when a spec does not declare a workload type, the SQT Reporter
+submits one job per supported workload type (SRS-FUNC-019). Jobs are queued on the Runner
 side and polled concurrently by the Reporter.
 
 ### 5.3 Measurement Modes
 
-Each job runs in one of two modes, set by the `mode` field. The Use Case is set by the `use_case` field (§5.2):
+Each job runs in one of two modes, set by the `mode` field. The workload type is set by the `use_case` field (§5.2):
 
 | Mode | Behaviour | Populated metrics |
 |---|---|---|
@@ -981,8 +1017,8 @@ into every report for provenance (SRS-DATA-003).
 ```
 
 The Runner uses the model, inference engine, and main program configured at startup.
-The Reporter does not transmit the model — it only specifies the APCO Space Profile
-Use Case and measurement parameters.
+The Reporter does not transmit the model — it only specifies the workload type
+and measurement parameters.
 
 For large image batches (hundreds or thousands of images), the request body will be
 proportionally large. The server's HTTP frontend must be configured to accept it
@@ -1157,7 +1193,7 @@ The server returns model outputs directly in the job response. `output.outputs`
 always contains **one entry per input item** - never one per repetition.
 Repetitions exist for statistical measurement only.
 
-For all Use Cases (including `pixel_segmentation`), the server executes all
+For all workload types (including `pixel_segmentation`), the server executes all
 `repetitions` and transfers the output batch once. `result_consistent` records
 whether every repetition produced bit-identical results:
 
@@ -1206,7 +1242,7 @@ cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100
 {
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "unknown Use Case: 'depth_estimation'",
+    "message": "unknown workload type: 'depth_estimation'",
     "details": "Supported types: object_detection, image_classification, ...",
     "timestamp": "2026-03-06T10:00:00Z"
   }
@@ -1214,7 +1250,7 @@ cpu.avg_normalized_pct = (average CPU used across all cores) / (core_count * 100
 ```
 
 **Error Codes**:
-- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown Use Case)
+- `VALIDATION_ERROR`: Invalid request parameters (e.g., unknown workload type)
 - `NOT_FOUND`: Job not found
 - `TIMEOUT`: Operation exceeded timeout
 - `UNAUTHORIZED`: Missing or invalid Bearer token
@@ -1307,8 +1343,8 @@ See **Section 4.6** for the full rationale and report output format.
    - Assemble inference engine + trained model + main program into a runnable task
    - Exact mechanism TBD (depends on ML-L Provider delivery format; see Section 8)
 
-4. **Space Profile Test Execution**
-   - Execute Space Profile functional tests (ESA/Klepsydra-defined) against the assembled AI system
+4. **Workload Test Execution**
+   - Execute each representative workload against the assembled AI system: load, execute, return a valid result (SRS-FUNC-022)
    - Collect and return results as job metrics
 
 5. **Performance Test Execution**
@@ -1351,13 +1387,13 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
 
 4. **Document Baseline Check**
    - Fetch documents from the SQT Runner via `GET /api/v1/docs`
-   - If empty document set → proceed with project-declared specs + emit diagnostic (SRS-IF-004)
+   - If empty document set → proceed with project-declared specs + emit diagnostic (SRS-FUNC-018)
    - Parse ECSS documentation baseline and static test results
    - Gate the qualification session: halt if compliance criteria are not met
 
 5. **Requirements Management**
    - Parse Strictdoc requirements from fetched documents
-   - Classify by verification method: Test-verifiable vs compliant-by-Runner-declaration (SRS-IF-004)
+   - Classify by verification method: Test-verifiable vs compliant-by-Runner-declaration (SRS-FUNC-018)
    - Build requirements database and traceability matrix
 
 6. **REST API Client (to SQT Runner)**
@@ -1366,14 +1402,14 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
    - Concurrent polling of all outstanding IDs with exponential backoff (SRS-PERF-003)
    - Per-job timeout enforcement; project-default applied when spec omits one (SRS-PERF-004)
    - Response schema validation before consuming (SRS-IF-007)
-   - Transient error retry with bounded back-off (SRS-IF-009)
+   - Transient error retry with bounded back-off (SRS-FUNC-020)
 
 7. **Metric Constraint Evaluation**
    - Unit-aware evaluation: reconcile compatible units (ms↔s, KB↔bytes) (SRS-FUNC-004)
    - Map null/absent metrics to failed constraints (SRS-REL-002)
    - Reject vacuous passes: zero-constraint specs recorded as FAIL (SRS-REL-001)
    - Numerical output precision comparison against reference values (SRS-FUNC-016)
-   - Client-side accuracy metric computation per Use Case (SRS-FUNC-017):
+   - Client-side accuracy metric computation per workload type (SRS-FUNC-017):
      - `image_classification` / `classification`: accuracy, F1, precision, recall
      - `object_detection`: mAP, IoU@50, IoU@75
      - `regression`: MSE, MAE, R²
@@ -1415,6 +1451,11 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
     - Operator-configurable diagnostic verbosity; full request/response trace at max verbosity (SRS-OPS-002)
     - No implicit network access beyond the configured Runner endpoint (SRS-RES-002)
 
+14. **API-Profile Qualification (SQT-SW-1; §4.7)**
+    - Accept the declared API profile and record it with its identifier in the evidence of every run (SRS-FUNC-021)
+    - Run the workload set — the generic set delivered with the SQT, narrowed or extended by the project — and record per workload whether the ML-L loaded it, executed it and returned a valid result (SRS-FUNC-022)
+    - Report each profile element as exercised (with the outcomes of the workloads exercising it) or not exercised; coverage does not change the exit code (SRS-FUNC-023)
+
 #### ❌ OUT OF SCOPE for SQT Reporter
 
 1. **Test execution** — the Runner handles all test execution
@@ -1448,9 +1489,9 @@ SQT Reporter                    SQT Runner
 
 "Are documents compliant?"      Gate in Reporter: proceed or halt
 
-"Execute Use Case: image_classification"
+"Execute workload: image_classification"
                                 → Assemble AI system
-                                  Run Space Profile + Performance tests
+                                  Run workload + Performance tests
                                   Return metrics
 
 "What's the status?"            → "Running… 65%"
@@ -1494,7 +1535,7 @@ SQT Reporter                    SQT Runner
 │    ← Unit test results (static, .sdoc)                          │
 │    ← Validation test results (static, .sdoc)                    │
 │    If empty → proceed with project-declared specs + WARN         │
-│    (SRS-IF-004)                                                  │
+│    (SRS-FUNC-018)                                                │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
                              ▼
@@ -1556,7 +1597,7 @@ SQT Reporter                    SQT Runner
 │                                                                  │
 │  Runner (one job at a time in current implementation):           │
 │    • Assemble AI system (inference engine + model + main prog)   │
-│    • Execute Space Profile tests (ESA/Klepsydra-defined)         │
+│    • Execute workload tests (one job per workload)               │
 │    • Execute Performance tests (timing, memory, throughput)      │
 │    • Collect all metrics; update job status → complete           │
 │                                                                  │
@@ -1621,7 +1662,7 @@ VERIFICATION: Test
 **Test Spec** (`specs/REQ-ML-L-003.test.yaml`):
 ```yaml
 requirement_uid: REQ-ML-L-003
-use_case: image_classification         # APCO Space Profile Use Case
+use_case: image_classification         # workload type (SRS-FUNC-019)
 constraints:
   - metric: time.avg_ms
     operator: lte
@@ -1754,14 +1795,14 @@ ensures this can be added without touching the API, handlers, or store.
 
 **Note on emulation**: Gaisler provides **TSIM** (Time-accurate SIMulator), a commercial tool that emulates LEON4 (GR740) and exposes a GDB remote stub interface. In principle, the GR740 Runner target could support TSIM as a sub-mode alongside physical hardware - the binary and execution model are identical, only the connection differs. TSIM3 covers LEON4/GR740; LEON5/GR765 support (TSIM5) should be verified with Gaisler. This route is not currently planned but the TAL design does not preclude it.
 
-### 8.4 Space Profile Tests and Performance Tests
+### 8.4 Workload Tests and Performance Tests
 
 Both test types are executed by the Runner's Test Execution Engine for each job:
 
-**Space Profile Tests** (defined by ESA and Klepsydra; implemented in the Runner by Ateleris):
-- Functional correctness tests specific to space AI applications
-- Defined and maintained by Ateleris
-- Verify that the AI system behaves correctly on the target hardware (e.g. input/output format compliance, determinism, error handling)
+**Workload tests** (SRS-FUNC-022):
+- One job per representative workload, from the generic set delivered with the SQT, narrowed or extended by the project
+- Verify that the ML-L loads the workload, executes it and returns a valid result on the target
+- Each workload specification declares which elements of the declared API profile it exercises, which is what API-profile coverage is computed from (§4.7)
 - Results reported as standard job metrics
 
 **Performance Tests**:
@@ -1770,7 +1811,7 @@ Both test types are executed by the Runner's Test Execution Engine for each job:
 - Power and temperature metrics (where the target exposes them)
 - Results reported as standard job metrics
 
-Both test types use the same job submission flow; the `use_case` field in the job request (an APCO Space Profile Use Case, §5.2) determines which test suite is exercised.
+Both test types use the same job submission flow; the workload type in the job request (`use_case`, §5.2) determines how the Runner invokes the binary and interprets its output.
 
 ### 8.5 Docker Containerization
 
@@ -1990,7 +2031,7 @@ tool. (The historic reporter-side `MetricCollector`/`inventory` collector tree i
 single-crate era**; it is not wired into either the orchestrator or the runner and
 is a deletion candidate — see `REVIEW_FINDINGS.md`.)
 
-### 10.2 The Closed-Vocabulary Constraint (open design point)
+### 10.2 The Closed-Vocabulary Constraint (decided: open namespace in SQT-SW-1)
 
 The current implementation fixes the metric vocabulary on **both** sides:
 
@@ -2000,16 +2041,16 @@ The current implementation fixes the metric vocabulary on **both** sides:
 - The Reporter's `Constraint::from_name` recognises only a hardcoded set of metric
   names; the spec loader rejects unknown metric names.
 
-**Consequence**: axis (b) is *not* purely local — a genuinely new metric name
+**Consequence**: axis (b) is *not* purely local today — a genuinely new metric name
 requires editing `sqt-types` (add the field) **and** `sqt-reporter`'s constraint
-vocabulary, then recompiling both. This tension with **SRS-FUNC-006**
-("project-extensible metric collection" without modifying core source) is a
-deliberate, currently-unresolved design decision, not an oversight. Two ways
-forward — (i) accept it and reword SRS-FUNC-006 to "extensible by recompilation of
-the open-source workspace", or (ii) introduce an explicit extension namespace
-(e.g. an open `custom.*` metric map on `JobMetrics` plus a generic constraint kind)
-— are tracked as a decision item in `REVIEW_FINDINGS.md`. This document does not
-pre-judge the outcome.
+vocabulary, then recompiling both, which falls short of **SRS-FUNC-006(a)** ("no
+Orchestrator source file requires modification").
+
+**Decision** (ADD review for PDR): SRS-FUNC-006 stands and the ADD designs the
+namespace as open (component C-ORC-05, LLR-019). The implementation follows in
+SQT-SW-1 (issue #17): known metrics stay typed, an open extension map carries
+Runner-declared metrics, and a generic numeric constraint evaluates names that are
+not built in. See AD-029.
 
 ### 10.3 The Core Metric Catalogue
 
@@ -2142,10 +2183,10 @@ ats-sqt/                          # Cargo workspace root
 | **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
 | **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
 | **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
-| **AD-014** | APCO Space Profile Use Cases as a closed enum | Use Cases (object_detection, image_classification, etc.) are defined by the APCO Space Profile (RD-5); both Reporter and Runner reason over the same closed set; no open-ended task dispatch needed | Open task-name dispatch (Runner accepts arbitrary strings — fragile, hard to validate, not traceable to APCO) | ✅ Accepted |
+| **AD-014** | Workload types as a closed enum | The workload types (object_detection, image_classification, etc.) are taken from the ML Space Profile (RD-5); both Reporter and Runner reason over the same closed set; no open-ended task dispatch needed | Open task-name dispatch (Runner accepts arbitrary strings — fragile, hard to validate, not traceable to APCO) | ✅ Accepted |
 | **AD-015** | CPU utilisation normalised Runner-side | Runner knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (Runner would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
 | **AD-016** | ML accuracy metrics computed Reporter-side | Runner returns raw outputs; SQT Reporter computes accuracy/F1/IoU/L2 etc. against reference labels; keeps Runner hardware-agnostic and reference-data-free | Runner computes accuracy (requires Runner-side reference dataset per workload - complex, leaks qualification logic into the Runner) | ✅ Accepted |
-| **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all Use Cases including pixel_segmentation. | Split `sample_output` / `all_outputs` per Use Case (added complexity, inconsistent semantics) | ✅ Accepted |
+| **AD-017** | Unified `outputs` field: one entry per input item, transferred once | Repetitions are for statistics only; outputs are per-input-item, not per-repetition. `result_consistent` captures determinism evidence. Applies uniformly to all workload types including pixel_segmentation. | Split `sample_output` / `all_outputs` per workload type (added complexity, inconsistent semantics) | ✅ Accepted |
 | **AD-018** | Model and artifacts configured on Runner at startup, not per job | No per-job model transfer; ONNX models can be hundreds of MB; re-sending per job is impractical. Runner is purpose-configured for one model version. To qualify a different version, restart Runner with updated config or CLI flags. | Per-job `model_zip` field (removed: inconsistent with session assembly model, impractical at production model sizes) | ✅ Accepted |
 | **AD-019** | ML-L Provider artifacts pre-placed on Runner filesystem | No network transfer from Provider at qualification time; configurable paths in `sqt-runner.yaml`; simplest possible delivery model | Pull artifacts from Provider API at session start (adds Provider-side API requirement, network dependency, latency) | ✅ Accepted |
 | **AD-020** | SQT Reporter fetches docs from Runner (not directly from ML-L Provider) | Runner is the single point of contact; Reporter need not know the Provider's delivery mechanism; consistent with Runner-as-data-source model | Reporter contacts Provider directly for docs (couples Reporter to Provider, breaks single-interface design) | ✅ Accepted |
@@ -2153,9 +2194,11 @@ ats-sqt/                          # Cargo workspace root
 | **AD-022** | Runner executes one job at a time (initial); Reporter submits+polls concurrently | SRS-PERF-001 requires concurrent submission with wall-clock ≤ longest job + 10%; the SRS permits any Runner-side concurrency bound ≥ 1. Reporter submits all jobs and polls all IDs concurrently (SRS compliant); Runner queues and runs sequentially for v1 (valid: wall-clock bounded by queue depth per SRS-PERF-001). | Fully parallel Runner execution (deferred; adds resource management complexity on space hardware) | ✅ Accepted |
 | **AD-023** | SQT Runner execution-backend abstraction (TAL) | Isolates target-specific code behind the object-safe `ExecutionBackend` trait, with an ergonomic `LifecycleBackend` (prepare/run/collect/teardown) that new backends implement; backend chosen by the `backend:` config key + `build_executor` factory; new targets (GR740/GR765) added without touching handlers, store, or the Reporter (§8.1) | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
 | **AD-024** | Explicit spec registration (no auto-discovery) | SRS-MAINT-002 forbids auto-discovery from filesystem state; explicit listing in config makes the active spec set deterministic, auditable, and source-controllable | Directory scanning (rejected: environment-dependent, invisible in source history, incompatible with reproducible qualification) | ✅ Accepted |
-| **AD-025** | "Use Cases" per APCO Space Profile (RD-5), not "workload types" | SRS-IF-005 ties the job routing to APCO Space Profile Use Cases; aligning terminology ensures traceability to the standard | "Workload types" (rejected: generic term not traceable to APCO Space Profile) | ✅ Accepted |
+| **AD-025** | Term *workload type*; the wire field keeps the name `use_case` | The SRS (SRS-FUNC-019), the ADD and the OpenAPI schema (`WorkloadType`) say workload type; renaming the field would change the published contract for no functional gain | APCO "workload types" as the term (superseded: the SRS and ADD use workload type); renaming the field to `workload_type` (rejected: contract change) | ✅ Accepted |
 | **AD-026** | Pre-flight mode (`--preflight`) | SRS-OPS-007 requires a mode that validates config + endpoint + auth without submitting jobs; shortens CI feedback loop on configuration changes | No pre-flight (operator must run a full qualification to detect config errors) | ✅ Accepted |
 | **AD-027** | Exit code 2 for interrupted runs | SRS-OPS-008 requires SIGTERM exit distinguishable from completed-pass (0) and completed-fail (1); exit 2 = interrupted | Single non-zero code for all non-pass outcomes (rejected: loses diagnostic information) | ✅ Accepted |
+| **AD-028** | API-profile coverage from the elements each workload spec declares; coverage never changes the exit code | Keeps coverage independent of any API, model format or Runner — the Reporter compares names it was given (SRS-FUNC-021 to SRS-FUNC-023; ADD LLR-035). Separates "did the workloads pass" from "how much of the profile do they reach" | Runner reports exercised elements (ties the Runner to the API); coverage gaps fail the run (masks a passing run) | 🟡 Proposed — SQT-SW-1 |
+| **AD-029** | Open metric namespace for Runner-declared metrics | SRS-FUNC-006(a): a new metric needs no Orchestrator source change; known metrics stay typed for SRS-IF-007 (§10.2; ADD LLR-019) | Keep the closed vocabulary and reword SRS-FUNC-006 (rejected at the ADD review) | 🟡 Proposed — SQT-SW-1 (#17) |
 
 ### Trade-offs
 
@@ -2189,9 +2232,10 @@ ats-sqt/                          # Cargo workspace root
    - **Concern**: The `prepare()` step in the TAL cannot be fully specified until the ML-L Provider's delivery format is known
    - **Action**: Obtain a sample delivery bundle from Klepsydra; define the assembly interface based on it
 
-2. **Space Profile Test Definition**
-   - **Question**: What exactly are the Space Profile tests? What functional properties do they verify?
-   - **Action**: Obtain the Space Profile test specification from ESA/Klepsydra; Ateleris implements it in the Runner
+2. **Workload Set and API Profile** — *decided*
+   - The SQT ships a generic, representative workload set per workload type; a project narrows or extends it (SRS-FUNC-022)
+   - The API and the API profile are selected outside the SQT, in ML-TN-T1/T2 (APCO, WP100); the SQT takes the profile as a declared input (SRS-FUNC-021)
+   - Mission use cases (WP420, APCO) extend the workload set as they become available
 
 3. **GR740/GR765 Connection Protocol**
    - **Question**: What protocol connects the Runner to the GR740/GR765? (JTAG, GDB remote stub, UART serial, Ethernet?)
@@ -2240,9 +2284,9 @@ ats-sqt/                          # Cargo workspace root
    - Understand the "Prepare AI System" step concretely
    - Document in Runner config schema and TAL design
 
-2. **Obtain Space Profile Test Specification**
-   - ESA and Klepsydra define the Space Profile; Ateleris implements it in the Runner
-   - Obtain the formal Space Profile test specification from Klepsydra/ESA
+2. **API-profile qualification (SQT-SW-1)**
+   - Obtain the declared API profile from ML-TN-T1/T2 (APCO) in a machine-readable form
+   - Build the generic workload set and the API-profile coverage report (§4.7)
    - Agree on pass/fail criteria and metric mapping for the Runner's job response schema
 
 3. **Validate REST API contract**
@@ -2260,8 +2304,8 @@ ats-sqt/                          # Cargo workspace root
    - AI system assembly for x86\_64 (based on agreed delivery format)
    - Basic Performance test execution (timing, memory via `/usr/bin/time` / valgrind)
 
-6. **Runner: Space Profile tests (first set)**
-   - Implement first Space Profile tests for x86\_64
+6. **Runner: workload tests (first set)**
+   - Implement the first representative workloads for x86\_64
    - Map results to job metric schema
 
 ### 14.3 Phase 2: SQT Reporter - Core Functionality
@@ -2316,7 +2360,9 @@ ats-sqt/                          # Cargo workspace root
 | **SQT Reporter** | Ateleris-developed CLI that orchestrates qualification sessions and generates reports |
 | **TAL** | Target Abstraction Layer - pluggable backend in the SQT Runner for different execution targets |
 | **QDP** | Quality Data Package - the ECSS-compliant qualification output artifact |
-| **Space Profile Tests** | functional tests for space AI systems, defined by ESA and Klepsydra, executed by the SQT Runner |
+| **API profile** | The API elements inside the qualification boundary, declared per ML Space Profile (ML-TN-T1/T2); an SQT input (SRS-FUNC-021) |
+| **Workload type** | The kind of AI workload a job runs (`use_case` on the wire), from the ML Space Profile (SRS-FUNC-019) |
+| **Workload tests** | Representative workloads the SQT Runner executes to check that the ML-L loads, executes and returns a valid result (SRS-FUNC-022) |
 | **PBF** | Performance Benchmark Framework (Klepsydra's internal tool - not used by SQT Runner) |
 | **TRL** | Technology Readiness Level (1-9 scale) |
 | **Strictdoc** | Requirements management tool (text-based format) |
