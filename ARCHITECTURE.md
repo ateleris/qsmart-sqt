@@ -3,9 +3,22 @@
 **Project**: Qualified Software Machine Learning Toolkit for Space Hardware
 **Components**: SQT Runner + SQT Reporter (both Ateleris responsibility)
 **Technology**: Rust applications
-**Version**: 1.2
-**Date**: 2026-07-03
+**Version**: 1.3
+**Date**: 2026-10-15
 
+> **Authority**: the Architectural Design Document (ADD, SQT-DD-0001-ATS) is the
+> authoritative design; this document is the developers' working view of it and
+> follows it wherever the two differ. §2.4 maps the sections and crate modules
+> here to the ADD component identifiers (C-ORC-nn, C-RNR-nn, C-SHR-01). The ADD
+> calls the SQT Reporter the **Orchestrator** and the `sqt-runner` crate the
+> **reference Runner**; its design is normative for the Orchestrator and the
+> Runner API contract, and non-normative for third-party Runners.
+>
+> **v1.3 revision note**: aligned with the PDR documents (SRS SQT-SP-0001-ATS
+> Issue 1 Rev 2, ADD, SQT-TN-AP): component mapping (§2.4), external interfaces
+> (§6.4), run lifecycle and exit status (§7.3), target emulation (§8.3), decided
+> open questions (§13), and the SQT-SW-0..3 release plan (§14).
+>
 > **v1.2 revision note**: Sections 3 (configuration), 8 (Runner internals), 9
 > (report generation), 10 (metric extensibility), and 11 (technology stack /
 > project layout) were rewritten to describe the **target architecture that the
@@ -22,6 +35,7 @@
 
 - [1. Executive Summary](#1-executive-summary)
 - [2. System Architecture](#2-system-architecture)
+  - [2.4 Mapping to ADD Components](#24-mapping-to-add-components)
 - [3. Configuration Management](#3-configuration-management)
 - [4. Requirements Management](#4-requirements-management)
   - [4.5 Declarative Test Specifications](#45-declarative-test-specifications)
@@ -33,7 +47,9 @@
   - [5.5.3 Health Check](#553-health-check)
   - [5.10 Requirements Documents Endpoint](#510-requirements-documents-endpoint)
 - [6. Scope Definition](#6-scope-definition)
+  - [6.4 Interface Contract](#64-interface-contract)
 - [7. Qualification Workflow](#7-qualification-workflow)
+  - [7.3 Run Lifecycle and Exit Status](#73-run-lifecycle-and-exit-status)
 - [8. SQT Runner Target Architecture](#8-sqt-runner-target-architecture)
 - [9. Report Generation](#9-report-generation)
 - [10. Metric Extensibility](#10-metric-extensibility)
@@ -41,6 +57,8 @@
 - [12. Key Architectural Decisions](#12-key-architectural-decisions)
 - [13. Open Questions](#13-open-questions)
 - [14. Next Steps](#14-next-steps)
+  - [14.1 Release Plan](#141-release-plan)
+- [Appendices](#appendices)
 
 ---
 
@@ -56,26 +74,26 @@ The SQT Runner is a REST API server deployed on **customer-provided hardware**. 
 - **Executes workload tests** (representative workloads per workload type: does the ML-L load each one, execute it and return a valid result) and **Performance tests** (timing, memory, throughput) against the assembled system
 - **Serves static qualification artifacts** (ECSS documentation baseline, unit test results, validation test results) pre-placed on its filesystem by the ML-L Provider
 - **Exposes a REST API** (`job-api.openapi.yaml`) that the SQT Reporter calls to trigger and monitor test jobs
-- **Supports multiple execution targets** via a pluggable target layer (x86\_64/Linux native in scope; GR740 and GR765 planned for future extension)
+- **Supports multiple execution targets** via a pluggable execution backend (x86\_64/Linux via Docker today; the GR740 and GR765/NOEL-V through emulation behind the Runner in SQT-SW-2, §8.3)
 
 ### SQT Reporter
 
 The SQT Reporter is a CLI application that **orchestrates the full qualification session**. It:
 
-- **Fetches and validates** the ECSS documentation baseline and static test results from the SQT Runner
-- **Checks requirements compliance** before allowing test execution to proceed
+- **Fetches the Runner-declared requirements** and their compliance evidence (ECSS documentation baseline, static test results) from the SQT Runner
+- **Partitions them by verification method** before any job is submitted: non-Test requirements are recorded as compliant by Runner declaration, Test requirements must be covered by a registered specification (SRS-FUNC-018)
 - **Submits all test jobs concurrently** to the SQT Runner via REST API (receives job IDs immediately; a configurable concurrency bound limits in-flight submissions) and polls all outstanding jobs concurrently until completion
 - **Evaluates metric constraints** against returned results (declarative test specifications), with unit-aware comparison
 - **Reports API-profile coverage**: relates the workload outcomes to the declared API profile and reports which of its elements were exercised and which were not (SRS-FUNC-021 to SRS-FUNC-023, from SQT-SW-1)
-- **Generates ECSS-compliant reports** (PDF, HTML) and the QDP (Quality Data Package) with full requirements traceability
+- **Generates the qualification record**: per-run evidence, a machine-readable JSON report, a PDF summary, the dual-audience traceability matrix and the QDP (Quality Data Package) bundle (§9)
 
 ### Key Principles
 
 1. **Separation of concerns**: The SQT Runner handles test execution and artifact serving; the SQT Reporter handles orchestration, requirements checking, and reporting
-2. **Deployment flexibility**: The SQT Runner deploys on the customer's hardware (where access to the target systems exists); the SQT Reporter can run anywhere
-3. **Target extensibility**: The Runner's target abstraction layer allows adding new execution targets (GR740, GR765) without changing the Reporter or the REST API contract
+2. **Deployment flexibility**: The SQT Runner deploys on the customer's hardware (where access to the target systems exists); the SQT Reporter runs on any commodity x86-64 Linux host (SRS-PORT-001; other hosts are permitted but not a normative property), needs no inbound connectivity, and contacts only the configured Runner (SRS-RES-002)
+3. **Contract-first, target-agnostic Reporter**: the Reporter is designed against the versioned Runner API contract (`job-api.openapi.yaml`), not against a Runner; all target-specific behaviour lives on the Runner side (SRS-PORT-002, ADD LLR-032). New execution targets (GR740, GR765) are added behind the Runner's execution backend without changing the Reporter or the contract
 4. **Configuration-driven**: All aspects configurable via YAML; test specifications registered by explicit declaration (no auto-discovery)
-5. **Standards-compliant**: ECSS E-ST-40C and Q-ST-80C alignment; workload types and the declared API profile per the ML Space Profile (RD-5 / ML-TN-T1)
+5. **Qualification capability, not qualified tool**: the SQT enables qualification of the ML-L to ECSS-E-ST-40C / ECSS-Q-ST-80C criticality level C (SRS-GEN-002); the SQT itself is assigned no criticality category (SRS-DES-005). Workload types and the declared API profile follow the ML Space Profile (ML-TN-T1/T2)
 6. **Evidence-based**: Comprehensive traceability from requirements to test results
 7. **Concurrent orchestration**: The Reporter submits all jobs and polls all outcomes concurrently, bounded by a configurable concurrency limit; the Runner queues and executes jobs sequentially (initial implementation: one at a time)
 
@@ -127,44 +145,43 @@ The overall qualification process follows a three-tier swimlane model:
 ║  │  POST /api/v1/jobs  → enqueue    │   │  ┌─────────────────────┐    │     ║
 ║  │  GET  /api/v1/jobs/{id} → poll   │   │  │ Performance Tests    │    │     ║
 ║  │  GET  /api/v1/docs  → serve docs │   │  │ (timing, memory,     │    │     ║
-║  └──────────────────────────────────┘   │  │ (timing, memory,     │    │     ║
-║                                         │  │ (timing, memory,     │    │     ║
-║                                         │  │  throughput)         │    │     ║
+║  └──────────────────────────────────┘   │  │  throughput)         │    │     ║
 ║                                         │  └─────────────────────┘    │     ║
 ║                                         └─────────────┬───────────────┘     ║
 ║                                                       │                     ║
 ║  ┌────────────────────────────────────────────────────▼─────────────────┐   ║
-║  │                      Target Abstraction Layer                         │   ║
+║  │                  Execution Backend Abstraction (TAL)                  │   ║
 ║  │                                                                       │   ║
 ║  │   ┌──────────────────┐   ┌─────────────────────┐  ┌───────────────┐  │   ║
-║  │   │ x86_64 / Linux   │   │ GR740  [Out of Scope]│  │ GR765  [OOS] │  │   ║
-║  │   │ Native execution │   │ Remote attachment    │  │ Remote attach│  │   ║
-║  │   │ [In Scope]       │   │ (serial/network TBD) │  │ (TBD)        │  │   ║
+║  │   │ x86_64 / Linux   │   │ GR740 (LEON4)       │  │ GR765/NOEL-V  │  │   ║
+║  │   │ Docker backend   │   │ Emulated: QEMU,     │  │ Emulated      │  │   ║
+║  │   │ [shipped]        │   │ Renode, SIS [SW-2]  │  │ [SQT-SW-2]    │  │   ║
 ║  │   └──────────────────┘   └─────────────────────┘  └───────────────┘  │   ║
 ║  └───────────────────────────────────────────────────────────────────────┘   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
                                │
          REST API  (job-api.openapi.yaml)
-         • GET  /api/v1/health    - liveness / readiness probe
+         • GET  /api/v1/version   - contract version (session start)
+         • GET  /api/v1/health    - liveness probe (not used by the Reporter)
          • POST /api/v1/jobs      - submit test request
          • GET  /api/v1/jobs/{id} - poll for results + metrics
          • GET  /api/v1/docs      - fetch document baseline
                                │
                                ▼
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║        SQT Reporter  (Ateleris - Rust)  [Any x86_64 system]                 ║
+║        SQT Reporter  (Ateleris - Rust)  [x86-64 Linux host]                 ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                              ║
 ║  ┌──────────────────┐  ┌──────────────────────┐  ┌────────────────────────┐ ║
-║  │ Baseline Checker │  │  Orchestrator        │  │  Report Generator      │ ║
+║  │ Baseline Checker │  │  Session Control     │  │  Report Generator      │ ║
 ║  │                  │  │                      │  │                        │ ║
 ║  │ • GET /api/v1/   │  │ • Submit test jobs   │  │ • System Test Report   │ ║
 ║  │   docs           │  │   via POST           │  │ • QDP                  │ ║
-║  │ • Parse ECSS     │  │ • Poll until done    │  │ • ECSS PDF / HTML      │ ║
-║  │   docs & static  │  │ • Evaluate metric    │  │ • Traceability matrix  │ ║
-║  │   test results   │  │   constraints        │  │                        │ ║
-║  │ • Gate: halt if  │  │ • Collect evidence   │  │                        │ ║
-║  │   not compliant  │  └──────────────────────┘  └────────────────────────┘ ║
+║  │ • Partition by   │  │ • Poll until done    │  │ • JSON report + PDF    │ ║
+║  │   VERIFICATION   │  │ • Evaluate metric    │  │ • Traceability matrix  │ ║
+║  │   (FUNC-018)     │  │   constraints        │  │                        │ ║
+║  │ • Halt if a Test │  │ • Collect evidence   │  │                        │ ║
+║  │   req has no spec│  └──────────────────────┘  └────────────────────────┘ ║
 ║  └──────────────────┘                                                        ║
 ║  ┌──────────────────────────────────────────────────────────────────────┐    ║
 ║  │  Requirements Manager + Traceability                                 │    ║
@@ -196,11 +213,13 @@ SQT Reporter                            SQT Runner
                             ◄── ECSS baseline + static test results
    If empty → proceed with project-declared specs + emit diagnostic.
 
-3. Parse docs; check ECSS compliance and static test results
-   Gate: if not compliant → halt with error report
+3. Parse Strictdoc requirements from fetched docs; partition by
+   VERIFICATION (SRS-FUNC-018): non-Test → compliant by Runner
+   declaration, no further evaluation; Test → needs a registered spec
 
-4. Parse Strictdoc requirements from fetched docs
-   Identify testable requirements (VERIFICATION: Test)
+4. Match registered specs to Test requirements by UID (SRS-MAINT-002)
+   Gate: Test requirement without a spec → UNCOVERED → non-zero exit
+   before any job is submitted (see §13.2 item 9)
 
 5. Submit ALL jobs concurrently (up to max_concurrent_jobs in flight):
    POST /api/v1/jobs  ─────────────────────────────────────────────►
@@ -216,8 +235,14 @@ SQT Reporter                            SQT Runner
 
 7. Evaluate metric constraints against results (unit-aware)
 
-8. Generate System Test Report + QDP
+8. Persist evidence, then render report + traceability matrix + QDP
+   (persisting precedes rendering: ADD LLR-025)
 ```
+
+The ordering is normative in the ADD ("Static, dynamic and behavioural
+architecture"): configuration is validated before any contract operation, the
+contract version is negotiated before any job is submitted, requirement discovery
+precedes submission, and evidence is persisted before reports are rendered.
 
 ### 2.3 Component Responsibilities
 
@@ -230,7 +255,7 @@ SQT Reporter                            SQT Runner
 | AI system assembly | Links inference engine + model + main program into runnable task |
 | Workload test execution | representative workloads per workload type: load, execute, valid result (SRS-FUNC-022) |
 | Performance test execution | Timing, memory, throughput benchmarks |
-| Target abstraction | Pluggable backend: x86\_64 native (in scope); GR740/GR765 (planned) |
+| Target abstraction | Pluggable execution backend: Docker on x86\_64/Linux (shipped); GR740 and GR765/NOEL-V through emulation (SQT-SW-2, §8.3) |
 | Configuration | All artifact paths and target settings configurable via a config file; minimal changes needed to deploy |
 
 #### SQT Reporter (Ateleris - formerly "SQT Generic")
@@ -238,11 +263,11 @@ SQT Reporter                            SQT Runner
 | Responsibility | Detail |
 |---|---|
 | Configuration management | Parse and validate YAML config |
-| Document baseline check | Fetch docs from Runner, verify ECSS compliance before proceeding |
-| Requirements management | Parse Strictdoc from fetched docs; build traceability database |
+| Requirement discovery | Fetch the Runner-declared requirements and evidence; partition by verification method (SRS-FUNC-018) |
+| Requirements management | Parse Strictdoc from fetched docs; match Test requirements to registered specs |
 | Job orchestration | Submit test jobs; poll for results; evaluate metric constraints |
-| Evidence collection | Aggregate results; build traceability matrix |
-| Report generation | ECSS-compliant PDF/HTML; QDP |
+| Evidence collection | Persist raw responses and outcomes per run |
+| Report generation | JSON report, PDF summary, traceability matrix, QDP |
 
 #### ML-L Provider (e.g. Klepsydra - out of scope / stubs during development)
 
@@ -269,9 +294,43 @@ Baseline compliance check       │  AI system assembly
 Job submission + polling        │  Workload test execution
 Metric constraint evaluation    │  Performance test execution
 Evidence collection             │  Target abstraction (x64, GR740, GR765)
-Report generation (PDF/HTML)    │  Job queue + sequential execution
+Report generation (JSON/PDF)    │  Job queue + sequential execution
 QDP production                  │  Metric collection and reporting
 ```
+
+### 2.4 Mapping to ADD Components
+
+The ADD decomposes the Orchestrator (SQT Reporter) into nine components arranged
+as a four-stage pipeline (Input → Execution → Assessment → Output), the reference
+Runner into five, and the contract data types into one shared unit. The ADD keeps
+the component-to-implementation mapping in the source repository rather than in
+the ADD (ADD "Component references"); this table is that mapping for the current
+workspace.
+
+| ADD component | Stage | Realised by (crate module) | Sections here |
+|---|---|---|---|
+| C-ORC-01 Configuration | Input | `sqt-reporter/src/config/` (`SqtConfig`, `load_config`, `validate`) | §3 |
+| C-ORC-02 Specification Model | Input | `sqt-reporter/src/specs/` (`TestSpec`, `loader.rs`); constraint types in `constraint/mod.rs` | §4.3, §4.5, §4.7 |
+| C-ORC-03 Runner Contract Client | Execution | `sqt-reporter/src/api/client.rs` (`ApiClient`, retry, response validation, `Redacted` token) | §5 |
+| C-ORC-04 Session Control | Execution | `sqt-reporter/src/orchestrator/mod.rs` (version check, discovery, semaphore, polling, drain); `baseline/` (requirement partition, coverage gate); `preflight.rs` | §2.2, §4.6, §7 |
+| C-ORC-05 Measurement Collection | Assessment | No module of its own yet: metrics are looked up by name in `sqt-types::JobMetrics` inside `orchestrator/mod.rs` (open namespace in SQT-SW-1, §10.2) | §4.5.3, §10 |
+| C-ORC-06 Constraint Evaluation | Assessment | `sqt-reporter/src/constraint/` (`evaluator.rs`), `accuracy/` (accuracy and precision) | §4.5, §5.6 |
+| C-ORC-07 Evidence Store | Output | `sqt-reporter/src/evidence/` (`EvidenceStore`) | §9 |
+| C-ORC-08 Reporting & Traceability | Output | `sqt-reporter/src/report.rs`, `traceability/` | §4.4, §9 |
+| C-ORC-09 Operator Interface | Input/Output | `sqt-reporter/src/main.rs` (CLI, signal handling, exit status); terminal summary in `report::print_terminal` | §7.3 |
+| C-RNR-01 Contract Server | Runner | `sqt-runner/src/main.rs` (router), `handlers.rs`, `auth.rs` | §5 |
+| C-RNR-02 Job Store & Queue | Runner | `sqt-runner/src/store.rs`; one-job execution semaphore in `main.rs` | §5.9 |
+| C-RNR-03 Execution Backend Abstraction | Runner | `sqt-runner/src/executor/` (`ExecutionBackend`, `LifecycleBackend`, `docker.rs`); `Backend` in `config.rs` | §8.1–§8.3 |
+| C-RNR-04 Measurement Tool Pipeline | Runner | `sqt-runner/src/tools/`, `docker.rs` | §8.5, §10 |
+| C-RNR-05 Document & Evidence Store | Runner | `get_docs` in `sqt-runner/src/handlers.rs` (scans `docs.directory`) | §5.10 |
+| C-SHR-01 Contract Data Types | Shared | `sqt-types/src/lib.rs`; drift test `sqt-types/tests/openapi_contract.rs` | §5, §11.3 |
+
+Where the code departs from the ADD's allocation: the bearer token is read in
+`main.rs` and wrapped in `Redacted` by `ApiClient`, not inside C-ORC-01 (ADD
+LLR-003 places credential resolution there); and `sqt-reporter/src/metrics/` and
+the `inventory`-based `SpecFactory` in `specs/` are unwired legacy code that maps
+to no ADD component (§10.1). The ADD's reference-Runner components are
+non-normative: a third-party Runner only has to implement the contract.
 
 ---
 
@@ -344,6 +403,13 @@ new `Backend` enum variant plus its own config section — see §8.
 
 ```yaml
 backend: docker                       # execution backend (default: docker)
+
+# Bearer-token authentication (SRS-IF-006). Optional: when present, every route
+# except GET /api/v1/health requires `Authorization: Bearer <token>` (401
+# UNAUTHORIZED otherwise); startup aborts if the variable is unset or empty.
+# When absent, auth is disabled and the runner logs a warning.
+auth:
+  token_env: SQT_RUNNER_TOKEN         # env var holding the expected token
 
 # Binary under test (pre-built, or compiled per job when [docker.build] is present)
 binary:
@@ -424,7 +490,9 @@ is not `http`/`https` (case-insensitive), and an empty `test_specs.files`; when
 `runner.token_env` is set, the named environment variable must be present and
 non-empty (SRS-IF-006). Relative `test_specs.files` and `report.output_dir` paths
 are resolved against the config file's directory. Each error names the offending
-field so the operator can fix it without reading logs. Deeper checks (endpoint
+field so the operator can fix it without reading logs. Validation currently stops
+at the first invalid field; the ADD (C-ORC-01, LLR-002) asks for every invalid
+field to be reported in one diagnostic. Deeper checks (endpoint
 reachability, auth, docs) are performed by pre-flight mode (§6.2, SRS-OPS-007),
 not by config validation.
 
@@ -526,49 +594,33 @@ VERIFICATION: Test
 
 ### 4.2 Requirements Parsing Strategy
 
+The Reporter parses StrictDoc with its own small Rust parser
+(`sqt-reporter/src/baseline/mod.rs`); no Python StrictDoc installation is needed
+at run time (§13.2, item 5). It is line-based and reads only what the partition
+of SRS-FUNC-018 needs:
+
 ```rust
-// Rust data structure for requirements
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// sqt-reporter/src/baseline/mod.rs
 pub struct Requirement {
     pub uid: String,
-    pub status: RequirementStatus,
     pub title: String,
-    pub statement: String,
-    pub rationale: Option<String>,
-    pub verification_method: Vec<VerificationMethod>,
-    pub relations: Vec<RequirementRelation>,
-    pub comment: Option<String>,
+    pub status: String,
+    pub verification_methods: Vec<String>,   // from the comma-separated VERIFICATION field
 }
 
-#[derive(Debug, Clone)]
-pub enum RequirementStatus {
-    Active,
-    Draft,
-    Deprecated,
-}
-
-#[derive(Debug, Clone)]
-pub enum VerificationMethod {
-    Test,
-    Inspection,
-    Analysis,
-    Demonstration,
-}
-
-#[derive(Debug, Clone)]
-pub struct RequirementRelation {
-    pub relation_type: RelationType,
-    pub target_uid: String,
-}
-
-#[derive(Debug, Clone)]
-pub enum RelationType {
-    Parent,
-    Child,
-    Refines,
-    DerivedFrom,
+pub struct RequirementSet {
+    pub testable: Vec<Requirement>,                 // VERIFICATION contains "Test"
+    pub compliant_by_declaration: Vec<Requirement>, // other methods only
+    pub unclassified: Vec<Requirement>,             // no VERIFICATION field
 }
 ```
+
+`[REQUIREMENT]` and `[COMPOSITE_REQUIREMENT]` blocks are recognised; any other
+`[...]` block ends the current requirement. Only single-line `UID`, `TITLE`,
+`STATUS` and `VERIFICATION` fields are read: multi-line fields (`STATEMENT: >>>`),
+relations, and grammars that name the verification field differently are not
+interpreted. The raw `.sdoc` text and the attachments are not yet persisted as
+evidence (ADD C-ORC-07 requires them verbatim; F-M11 in `REVIEW_FINDINGS.md`).
 
 ### 4.3 Requirements-to-Tests Mapping
 
@@ -643,7 +695,7 @@ The declarative approach is:
 Requirement + Constraint spec → Auto-executed metric collection → Results
 ```
 
-This is similar to property-based testing and contract testing. Strictdoc's custom grammar feature (see Notes section) can be used to embed these specs directly in `.sdoc` files, or they can live in sidecar YAML files alongside requirements. Regardless of location, each spec file must be explicitly listed in `sqt-reporter.yaml` — no auto-discovery from filesystem state is performed (SRS-MAINT-002).
+This is similar to property-based testing and contract testing. Specs are sidecar YAML files today; embedding them in `.sdoc` files through Strictdoc's custom grammar feature (see Notes section) is an idea, not implemented. Regardless of location, each spec file must be explicitly listed in `sqt-reporter.yaml` — no auto-discovery from filesystem state is performed (SRS-MAINT-002, ADD LLR-005).
 
 #### 4.5.2 Spec YAML Format
 
@@ -681,7 +733,9 @@ The `value` field accepts `<number><unit>` strings. The evaluator reconciles
 compatible units (ms↔s, KB↔MB↔bytes, etc.) before comparison (SRS-FUNC-004).
 Irreconcilable units (e.g. ms vs bytes) cause the constraint to fail with an
 explanatory message. A spec with zero constraints at evaluation time is recorded
-as FAIL — vacuous passes are rejected (SRS-REL-001).
+as FAIL — vacuous passes are rejected (SRS-REL-001). The ADD enforces this at both
+ends (C-ORC-02, LLR-006): a spec with an empty `constraints` list is also to be
+rejected when it is loaded, which the loader does not do yet.
 
 #### 4.5.3 Core Metric Catalogue
 
@@ -734,6 +788,7 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 |------------|------|-------------|
 | `cpu.avg_normalized_pct` | % | CPU utilisation normalised to all available compute |
 | `binary.size_kb` | KB | On-disk binary size |
+| `harness.docker_overhead_ms` | ms | Docker-backend diagnostic: container wall-clock minus the binary's own elapsed time |
 
 **Power / Thermal Metrics**
 
@@ -743,7 +798,7 @@ These names correspond directly to keys in the `JobStatusResponse.metrics` objec
 | `power.peak_watts` | W | Peak power draw across all repetitions |
 | `hardware.temperature_celsius` | °C | Average die/board temperature during the run |
 
-**Phase 1 MVP** targets the most critical metrics: `memory.peak_rss_kb`, `memory.leaks_bytes`, `time.avg_ms`, `time.latency_p95_ms`, `return_code`, `static.critical_issues`, `coverage.line_pct`, `cpu.avg_normalized_pct`.
+The reference Runner's built-in collectors must cover at least the SRS-FUNC-005 set: execution outcome (`return_code`), execution time (`time.avg_ms`), peak memory (`memory.peak_rss_kb`), memory-leak absence (`memory.leaks_bytes`), line coverage (`coverage.line_pct`), and severity-graded static-analysis findings (`static.critical_issues`, `static.major_issues`). The other keys are populated where a backend can measure them and are otherwise `null`.
 
 #### 4.5.4 Execution Flow
 
@@ -879,10 +934,15 @@ The full interface contract is defined in **`job-api.openapi.yaml`** at the root
 the repository. The spec is implemented by the **SQT Runner** (the `sqt-runner`
 crate is the reference implementation); the **SQT Reporter** is the API client.
 
-> **Known contract drift**: the OpenAPI file still names the workload field `model`
-> whereas the implementation (and this document) use `use_case`; `input` is typed
-> as a discriminated union in the contract but sent as a bare path string. The
-> OpenAPI file is the item to regenerate. Tracked as F-H2 in `REVIEW_FINDINGS.md`.
+The contract is the ADD's applicable document AD-4 and its interface EI-1: it is
+normative for the Reporter and for every Runner, and `sqt-types` (ADD C-SHR-01)
+holds its data types once for both sides. `sqt-types/tests/openapi_contract.rs`
+fails the build when the OpenAPI field names and the DTOs drift apart.
+
+> **Known contract drift**: `input` is typed as a discriminated union in the
+> contract but sent as a bare path string by the code; which of the two becomes
+> the contract is a pending decision (rest of F-H2 in `REVIEW_FINDINGS.md`). The
+> workload field is `use_case` on both sides.
 
 #### Base URL
 ```
@@ -895,6 +955,12 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
+Bearer-token authentication on every contract operation (SRS-IF-006; decided,
+§13.2 item 6). The Reporter reads the token from the environment variable named
+by `runner.token_env` and never from the config file itself (ADD EI-5, LLR-003);
+the Runner enforces it when `auth.token_env` is configured (§3.1). Only
+`GET /api/v1/health` is unauthenticated.
+
 #### Design Principles
 
 The Runner is configured at startup (via `sqt-runner.yaml` or CLI flags) with the
@@ -903,7 +969,13 @@ hardware target, inference engine, trained model, and main program. These are
 (§5.2) and measurement parameters; the Runner returns everything it can measure.
 
 A single job type covers all qualification activities: execution runs, instrumented
-runs (valgrind/asan/gprof), coverage collection, and static analysis.
+runs (valgrind/asan/gprof), coverage collection, and static analysis. In the
+reference Runner, coverage and static analysis run inside every job for which
+their tool is configured (§8.5). The ADD lists *verification-activity invocation*
+as a separate EI-1 operation class (SRS-FUNC-014, SRS-FUNC-015, SQT-SW-1): the
+Reporter triggers project-declared activities and persists their outputs
+verbatim. The contract has no such operation yet; how it is expressed is open
+(§13.2 item 8).
 
 **Session start protocol (SRS-IF-008):** Before submitting any job, the Reporter
 calls `GET /api/v1/version` to verify the Runner's API version is within the set
@@ -922,7 +994,15 @@ backoff in §5.9.
 
 **Credential redaction (SRS-OPS-005):** Bearer tokens are redacted from all
 operational output (log lines, terminal summary, persisted evidence, verbose
-request/response traces) at every verbosity level without exception.
+request/response traces) at every verbosity level without exception. The token is
+carried in a `Redacted` newtype whose `Debug`/`Display` print `[REDACTED]`
+(`sqt-reporter/src/api/client.rs`), the ADD's "credential carrier" (LLR-003).
+
+**Single network egress (SRS-RES-002, ADD LLR-007):** `ApiClient` is the only
+Reporter component that opens connections, and only to `runner.url`; it must not
+follow URLs from responses. Current state: the `reqwest` client is built with its
+default redirect policy, so an HTTP redirect from the Runner would be followed —
+to be disabled.
 
 ### 5.2 Workload Types
 
@@ -944,7 +1024,8 @@ ADD and this document call it the *workload type* (AD-025).
 
 **Default session**: when a spec does not declare a workload type, the SQT Reporter
 submits one job per supported workload type (SRS-FUNC-019). Jobs are queued on the Runner
-side and polled concurrently by the Reporter.
+side and polled concurrently by the Reporter. Not implemented yet: the spec loader
+requires `use_case` (F-M7 in `REVIEW_FINDINGS.md`).
 
 ### 5.3 Measurement Modes
 
@@ -1024,6 +1105,10 @@ For large image batches (hundreds or thousands of images), the request body will
 proportionally large. The server's HTTP frontend must be configured to accept it
 (e.g. `client_max_body_size 2g` in nginx). Alternatively, reference a server-side
 pre-loaded dataset via `input.type = "dataset_ref"` with a server-assigned identifier.
+The ADD ("Resources allocation") says job submission carries the workload type and
+measurement parameters, and that Reporter memory must not scale with payload size
+(SRS-RES-003); inline batches sit uneasily with that, which is one input to the
+pending `input` decision (§5.1). The code today sends a server-side path string.
 
 **Response** (202 Accepted):
 ```json
@@ -1351,10 +1436,10 @@ See **Section 4.6** for the full rationale and report output format.
    - Execute timing, memory, and throughput benchmarks
    - Collect and return metrics in the standard job response schema
 
-6. **Target Abstraction Layer**
-   - x86\_64 / Linux native execution **[In Scope]**
-   - GR740 via remote attachment (serial/network) **[Planned - Out of Scope for now]**
-   - GR765 via remote attachment (serial/network) **[Planned - Out of Scope for now]**
+6. **Target Abstraction Layer** (execution backend, ADD C-RNR-03)
+   - x86\_64 / Linux via the Docker backend **[shipped]**
+   - GR740 (LEON4) and GR765/NOEL-V through functional emulation (QEMU, Renode, SIS) behind the Runner **[planned, SQT-SW-2]** — per SQT-TN-AP; no backend for it exists yet
+   - On-target runs on Gaisler-hosted boards (SSH, GRMON) **[opportunistic]** — automation TBC in SQT-TN-AP
    - Architecture designed to add new targets without changing the Reporter or API contract
 
 #### ❌ OUT OF SCOPE for SQT Runner
@@ -1363,7 +1448,7 @@ See **Section 4.6** for the full rationale and report output format.
 2. **Requirements Management** - requirements are parsed and evaluated by the Reporter
 3. **ML model conversion / quantization** - the ML-L Provider supplies the model as-is
 4. **Cross-compilation of ML-L binaries** - the ML-L Provider supplies pre-built binaries
-5. **Direct GR740/GR765 hardware access for v1** - designed for, but deferred
+5. **Procured target hardware** - none: TSIM is not procured and the SB740 board is not provided (SQT-TN-AP); emulated timing and memory figures are observations, not normative for the SQT
 
 ### 6.2 SQT Reporter Scope (Ateleris)
 
@@ -1384,16 +1469,18 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
 3. **Pre-flight Validation Mode (SRS-OPS-007)**
    - `--preflight` flag: validate config, fetch docs, verify reachability and auth
    - Exits without submitting any job; reports outcome in same channels as a full run
+   - The ADD (LLR-017) includes contract-version negotiation; today's pre-flight reads `GET /api/v1/version` but does not check compatibility
 
-4. **Document Baseline Check**
-   - Fetch documents from the SQT Runner via `GET /api/v1/docs`
+4. **Requirement Discovery** (ADD C-ORC-04, LLR-018)
+   - Fetch the Runner-declared requirements and compliance evidence via `GET /api/v1/docs`
    - If empty document set → proceed with project-declared specs + emit diagnostic (SRS-FUNC-018)
-   - Parse ECSS documentation baseline and static test results
-   - Gate the qualification session: halt if compliance criteria are not met
+   - Preserve the returned evidence verbatim (not yet: F-M11)
+   - No separate "ECSS compliance" judgement of the documents: non-Test requirements are accepted on the Runner's declaration; the only gate is the UNCOVERED check of item 5
 
 5. **Requirements Management**
    - Parse Strictdoc requirements from fetched documents
    - Classify by verification method: Test-verifiable vs compliant-by-Runner-declaration (SRS-FUNC-018)
+   - Test requirement without a registered spec → UNCOVERED → non-zero exit before any job (§13.2 item 9)
    - Build requirements database and traceability matrix
 
 6. **REST API Client (to SQT Runner)**
@@ -1427,10 +1514,11 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
 10. **Evidence Collection**
     - Aggregate all job results and static documents
     - Build requirements traceability matrix (machine-readable + human-readable)
-    - Organize qualification artifacts per run under a timestamped, uniquely identified location (SRS-OPS-004)
+    - Organize qualification artifacts per run under a timestamped, uniquely identified location (SRS-OPS-004, ADD LLR-024; not yet: F-M4)
+    - Persist raw Runner responses and outcomes before rendering any report (ADD LLR-025)
 
-11. **Report Generation**
-    - ECSS-compliant PDF reports, HTML developer reports, JSON machine-readable output
+11. **Report Generation** (ADD C-ORC-08)
+    - JSON machine-readable report and a PDF summary, all rendered from one report data model (ADD LLR-026); HTML deferred (§9.1)
     - Every output carries `schema_version` field; within major version: additive changes only (SRS-DATA-001)
     - Every output stamped with: SQT binary version, Runner-supplied identifiers (version, hardware, OS, toolchain), loaded project configuration — tokens redacted (SRS-DATA-003)
     - Traceability matrix in machine-readable and human-readable representations (SRS-FUNC-010)
@@ -1456,10 +1544,13 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
     - Run the workload set — the generic set delivered with the SQT, narrowed or extended by the project — and record per workload whether the ML-L loaded it, executed it and returned a valid result (SRS-FUNC-022)
     - Report each profile element as exercised (with the outcomes of the workloads exercising it) or not exercised; coverage does not change the exit code (SRS-FUNC-023)
 
+15. **Verification-Activity Triggering (SQT-SW-1)**
+    - Trigger the project-declared verification activities (e.g. static analysis, structural coverage, coding-standard conformance) through the contract and persist their outputs verbatim with the test results (SRS-FUNC-014, SRS-FUNC-015); no fixed tool inventory is assumed. Contract operation still to be defined (§13.2 item 8)
+
 #### ❌ OUT OF SCOPE for SQT Reporter
 
 1. **Test execution** — the Runner handles all test execution
-2. **Hardware access** — the Runner abstracts all target hardware
+2. **Hardware access** — the Runner abstracts all target hardware; no target-, OS-, engine- or model-format-specific behaviour in the Reporter (SRS-PORT-002, ADD LLR-032)
 3. **ML-L artifact management** — the Reporter consumes artifacts already served by the Runner
 4. **REST API server** — the Reporter is a client only
 5. **Ateleris/Klepsydra runtime dependency** — the Reporter binary shall be operable
@@ -1480,6 +1571,12 @@ The ML-L Provider (e.g. Klepsydra) is responsible for producing the qualificatio
 5. **Supply Main Program** - host application driving the inference engine
 6. **Pre-place artifacts on the Runner filesystem** - before a qualification session begins
 
+The ADD's context diagram names a second external role, the **Use Case
+Provider**, who defines the use-case requirements; mission use cases extend the
+workload set through configuration (§4.7). Each SQT release is handed to the ML-L
+role, and each new ML-L version is re-run against the current SQT release — a
+configuration change and a run, not a code change (SQT-TN-AP release plan).
+
 ### 6.4 Interface Contract
 
 ```
@@ -1494,13 +1591,25 @@ SQT Reporter                    SQT Runner
                                   Run workload + Performance tests
                                   Return metrics
 
-"What's the status?"            → "Running… 65%"
+"What's the status?"            → "accepted" (queue_position) | "running"
 
 "Done - give me results"        → Metrics + hardware descriptor
 
 "Here is the qualification      (Runner does not generate reports)
  report and QDP"
 ```
+
+The Reporter is always the initiator: the Runner never calls back, so every
+state change is discovered by polling (SRS-IF-003). The ADD fixes exactly five
+external interfaces for the Orchestrator; there are no others (SRS-RES-002):
+
+| ADD interface | Realisation | ADD owner |
+|---|---|---|
+| EI-1 Runner API contract | `job-api.openapi.yaml` over REST: version enquiry (`GET /api/v1/version`), requirement discovery (`GET /api/v1/docs`), job submission (`POST /api/v1/jobs`), status polling (`GET /api/v1/jobs/{id}`); verification-activity invocation not yet in the contract (§13.2 item 8). `GET /api/v1/health` is a Runner operations probe, not used by the Reporter | C-ORC-03 |
+| EI-2 Configuration and specification input | `sqt-reporter.yaml` and the spec files it lists (§3.1, §4.3) | C-ORC-01, C-ORC-02 |
+| EI-3 Evidence and report output | `report.output_dir` (§9) | C-ORC-07, C-ORC-08 |
+| EI-4 Operator interface | CLI `run` / `preflight`, `RUST_LOG` verbosity, terminal summary, exit status (§7.3) | C-ORC-09 |
+| EI-5 Credential source | Environment variable named by `runner.token_env` | C-ORC-01 |
 
 ---
 
@@ -1540,17 +1649,11 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 3. Baseline Compliance Check  [SQT Reporter]                     │
+│ 3. Parse Requirements  [SQT Reporter]                            │
 │                                                                  │
-│    Parse fetched documents; verify required ECSS artefacts       │
-│    are present and structurally valid.                           │
-│                                                                  │
-│    Gate: if not compliant → halt, emit error report              │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-                             ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ 4. Parse Requirements  [SQT Reporter]                            │
+│    No compliance judgement of the documents themselves: the      │
+│    Runner's declaration is authoritative for non-Test            │
+│    requirements (SRS-FUNC-018, ADD LLR-018).                     │
 │                                                                  │
 │    Parse Strictdoc from fetched documents.                       │
 │    For each [REQUIREMENT]:                                       │
@@ -1564,7 +1667,7 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 5. Load Test Specs  [SQT Reporter]                               │
+│ 4. Load Test Specs  [SQT Reporter]                               │
 │                                                                  │
 │    Load specs listed explicitly in sqt-reporter.yaml.            │
 │    Match each spec to a requirement by uid. (SRS-MAINT-002)      │
@@ -1580,7 +1683,7 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 6. Submit ALL Jobs Concurrently  [SQT Reporter → SQT Runner]     │
+│ 5. Submit ALL Jobs Concurrently  [SQT Reporter → SQT Runner]     │
 │                                                                  │
 │    Submit all specs concurrently, bounded by max_concurrent_jobs │
 │    (SRS-PERF-001, SRS-PERF-002). Receive job IDs immediately.   │
@@ -1593,7 +1696,7 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 7. Execute & Poll Concurrently  [Runner + Reporter polling]       │
+│ 6. Execute & Poll Concurrently  [Runner + Reporter polling]      │
 │                                                                  │
 │  Runner (one job at a time in current implementation):           │
 │    • Assemble AI system (inference engine + model + main prog)   │
@@ -1612,7 +1715,7 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 8. Evaluate Metric Constraints  [SQT Reporter]                   │
+│ 7. Evaluate Metric Constraints  [SQT Reporter]                   │
 │                                                                  │
 │    Unit-aware: reconcile compatible units before comparison.     │
 │    null metric → FAILED with missing-measurement message.        │
@@ -1628,7 +1731,7 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 9. Build Traceability Matrix  [SQT Reporter]                     │
+│ 8. Build Traceability Matrix  [SQT Reporter]                     │
 │                                                                  │
 │    REQ-ML-L-001  PASS  return_code=0 ✓  time=87ms ✓             │
 │    REQ-ML-L-002  FAIL  return_code=1 ✗                          │
@@ -1637,15 +1740,15 @@ SQT Reporter                    SQT Runner
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 10. Generate System Test Report + QDP  [SQT Reporter]            │
+│ 9. Generate System Test Report + QDP  [SQT Reporter]             │
 │                                                                  │
 │    • Stamp SQT version + Runner provenance in every output       │
 │    • Include schema_version in machine-readable output           │
-│    • Render ECSS-compliant PDF (Typst) and HTML                  │
-│    • Produce QDP artefact                                        │
+│    • Render JSON report and PDF summary (printpdf)               │
+│    • Persist evidence first; then produce QDP (qdp.zip)          │
 │    (SRS-DATA-001, SRS-DATA-003)                                  │
 │                                                                  │
-│    Output: system-test-report.pdf, report.html, qdp.zip          │
+│    Output: report.json, report.pdf, traceability.*, qdp.zip      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1691,6 +1794,29 @@ Requirement REQ-ML-L-003: VERIFIED
   Result: PASS (time.avg_ms = 87.3ms, threshold ≤ 100ms)
 ```
 
+### 7.3 Run Lifecycle and Exit Status
+
+The ADD ("Static, dynamic and behavioural architecture") models a run as a state
+machine — Configuring, Handshaking, Discovering, Submitting, Polling, Draining,
+Evaluating, Reporting — with one entry and seven terminal states. The exit status
+is derived at a single point, in `main.rs` (C-ORC-09, LLR-029):
+
+| ADD terminal state | Reached when | Exit code today |
+|---|---|---|
+| ConfigRejected | A configuration field is invalid (SRS-FUNC-002) | 1 |
+| VersionRejected | Runner API major version unsupported (SRS-IF-008) | 1 |
+| AuthRejected | `runner.token_env` set but the variable is absent or empty (SRS-IF-006) | 1 |
+| PreflightComplete | Pre-flight finished, no job submitted (SRS-OPS-007) | 0, or 1 if a check failed |
+| RunPassed | Every specification passed (SRS-OPS-001) | 0 |
+| RunFailed | Any constraint failed or any job infrastructure-failed (SRS-OPS-001, SRS-OPS-006) | 1 |
+| RunInterrupted | Run drained on SIGTERM / Ctrl-C (SRS-OPS-008) | 2 |
+
+ConfigRejected, VersionRejected and AuthRejected end before any job is submitted
+and before Reporting, so no report is written. The current code adds one path
+the ADD does not list: an UNCOVERED Test requirement ends the run with exit 1
+before submission (§13.2 item 9). Every path that reaches Reporting persists
+evidence and prints the terminal summary, including the drained one (SRS-OPS-003).
+
 ---
 
 ## 8. SQT Runner Target Architecture
@@ -1699,7 +1825,10 @@ The SQT Runner is built around a pluggable **execution backend**. All
 target-specific logic (how a job is provisioned, run, and measured) sits behind a
 trait, so a new target — different hardware, a different ML-L framework — can be
 added without touching the HTTP layer, the job store, or the SQT Reporter. This is
-the concrete realisation of the Target Abstraction Layer (AD-023).
+the concrete realisation of the Target Abstraction Layer (AD-023; ADD C-RNR-03,
+LLR-DER-002, LLR-DER-003). Like every reference-Runner component in the ADD, it is
+a record of one conformant implementation, not a design a third-party Runner has
+to follow.
 
 ### 8.1 Execution Backend Abstraction
 
@@ -1780,20 +1909,25 @@ configured instead, `prepare()` simply stages it.
 
 | Backend | Status | Execution Method | Notes |
 |--------|--------|-----------------|-------|
-| `docker` (x86_64/Linux) | **In Scope (v1)** | Compile/execute inside Docker containers on the host | Development and CI baseline; the only shipped `Backend` variant |
-| GR740 | **Planned - Out of Scope for v1** | New backend: remote attachment (protocol TBD: serial / GDB stub / network) | Customer provides the hardware; backend connects to it |
-| GR765 | **Planned - Out of Scope for v1** | New backend: remote attachment (protocol TBD) | Same model as the GR740 backend |
+| `docker` (x86_64/Linux) | **Shipped** (SQT-SW-0) | Compile/execute inside Docker containers on the host | Development and CI baseline; the only shipped `Backend` variant |
+| GR740 (LEON4, SPARC V8), emulated | **Planned, SQT-SW-2** | New backend driving functional emulation (QEMU mainline with the LEON3 SMP model, Renode, SIS) | End-to-end ML-L-QDP generation on emulation is in the SQT-SW-2 scope (SQT-TN-AP release plan) |
+| GR765/NOEL-V, emulated | **Planned, SQT-SW-2** | Same emulation route | Assumes RTEMS 6 SMP POSIX support for the GR765/NOEL-V in time; the LEON5 configuration was excluded at negotiation (SQT-TN-AP) |
+| GR740 / GR765 boards | **Opportunistic** | Gaisler-hosted boards over SSH and GRMON | No board is procured; automation still TBC in SQT-TN-AP |
 
-**Design constraint for GR740/GR765**: Ateleris does not have access to these
-processors. Support would be added as a new `Backend` variant implementing
-`LifecycleBackend` in "remote execution" mode: `prepare` transfers the assembled
-AI system to the customer-provided board over an attached link, `run` triggers
-execution, `collect` gathers results back. The exact connection protocol (JTAG,
-GDB remote stub, serial, network) is TBD and will be defined once a concrete
-delivery from the ML-L Provider is available. The backend abstraction (§8.1)
-ensures this can be added without touching the API, handlers, or store.
+**Design constraint for GR740/GR765**: Ateleris has no target hardware; TSIM is
+not procured and the SB740 board is not provided (SQT-TN-AP). Target execution is
+therefore emulated behind the Runner: a new `Backend` variant implementing
+`LifecycleBackend` stages the assembled AI system for the emulator in `prepare`,
+starts it in `run`, and gathers the results in `collect`. How the backend drives
+the emulators is not designed yet (§13.1 item 3). The backend abstraction (§8.1)
+ensures this can be added without touching the API, handlers, or store, and the
+Reporter is unaffected (SRS-PORT-002).
 
-**Note on emulation**: Gaisler provides **TSIM** (Time-accurate SIMulator), a commercial tool that emulates LEON4 (GR740) and exposes a GDB remote stub interface. In principle, the GR740 Runner target could support TSIM as a sub-mode alongside physical hardware - the binary and execution model are identical, only the connection differs. TSIM3 covers LEON4/GR740; LEON5/GR765 support (TSIM5) should be verified with Gaisler. This route is not currently planned but the TAL design does not preclude it.
+**Limits of emulation** (SQT-TN-AP, risk R-01): emulation is representative at the
+functional and interface level, not in timing. Cycle-level figures do not transfer
+from an emulated target to silicon, so timing and memory figures measured under
+emulation are recorded as observations and are non-normative for the SQT;
+opportunistic hardware-in-the-loop is the route to authoritative on-target figures.
 
 ### 8.4 Workload Tests and Performance Tests
 
@@ -1839,7 +1973,9 @@ docker:
 
 **Benefits**: reproducible tool environment, toolchain isolation per tool
 (valgrind, lcov, cppcheck, …), and easy CI/CD integration on x86_64. A tool whose
-image is not configured is simply skipped, and its metrics are reported as `null`.
+image is not configured is simply skipped, and its metrics are reported as `null`
+rather than failing the job (ADD C-RNR-04, LLR-DER-004); the Reporter then fails
+any constraint on that metric (SRS-REL-002).
 
 ---
 
@@ -1847,8 +1983,19 @@ image is not configured is simply skipped, and its metrics are reported as `null
 
 ### 9.1 Report Outputs
 
-Every `sqt run` writes the following into `report.output_dir`. All are produced on
-every run — there is no per-format on/off switch.
+Evidence persistence is ADD component C-ORC-07 and rendering is C-ORC-08; the ADD
+keeps them apart so that adding a rendering never touches the persistence path,
+and evidence is always persisted before any report is rendered (LLR-025). Every
+rendering is derived from one report data model (LLR-026), every machine-readable
+output declares its schema version (LLR-027), and every report and traceability
+matrix is stamped from one provenance record (LLR-028).
+
+Target (SRS-OPS-004, ADD LLR-024): each run writes into its own location under
+`report.output_dir`, whose identifier orders runs chronologically. Current state
+(F-M4 in `REVIEW_FINDINGS.md`): evidence goes to `report.output_dir/evidence/<job_id>/`
+and the PDF, traceability files and `qdp.zip` directly into `report.output_dir`,
+so a later run overwrites them; the JSON report is written only when
+`sqt run --output <path>` is given. There is no per-format on/off switch.
 
 #### JSON Report (Machine-Readable) — the primary artefact
 - **Target audience**: CI/CD, automation, downstream tooling
@@ -1861,8 +2008,9 @@ every run — there is no per-format on/off switch.
 
 #### PDF Report (ECSS-oriented summary)
 - **Target audience**: ESA, customers, certification
-- **Engine**: rendered with `printpdf` today; a richer template engine (e.g.
-  Typst) is a future substitution behind the same report data model (AD-006)
+- **Engine**: rendered with `printpdf` (decided, AD-006); any other engine would be
+  a substitution behind `write_pdf` and the same report data model
+- The ADD does not require a PDF; it is an additional rendering of the same model
 - **Sections**: executive summary, requirements traceability, test-results
   summary, per-requirement detail
 
@@ -1878,6 +2026,11 @@ every run — there is no per-format on/off switch.
 - `qdp.zip` bundling the report, traceability, and per-job evidence — the ECSS
   qualification output artefact
 
+#### API-profile coverage (SQT-SW-1)
+- Per declared profile element: exercised, with the outcomes of the workloads
+  exercising it, or not exercised (SRS-FUNC-023, ADD LLR-035, §4.7). Not
+  implemented yet.
+
 > **HTML report**: not implemented. It is a possible future developer-facing
 > output; it is not an SRS requirement and no code path emits it today. Earlier
 > drafts of this document listed it as a first-class format (AD-010) — treat that
@@ -1890,8 +2043,8 @@ The report is **requirement-centric**: the outer loop is requirements, not runs.
 A single qualification session may test the binary with multiple inputs
 (e.g. `reference.bin`, `edge_case.bin`, `stress.bin`). Each input produces one
 execution run. Each requirement's `TestSpec` references the input relevant to it.
-The orchestrator groups specs by input, submits one run job per unique input, and
-fans results back to each spec. The Runner uses the model and inference engine
+The orchestrator groups specs by (workload type, input), submits one job per
+group, and fans results back to each spec. The Runner uses the model and inference engine
 configured at startup for all jobs in the session.
 
 The report table shows one row per requirement, citing its evidence source:
@@ -1907,6 +2060,9 @@ The run is evidence *for* the requirement - not the unit of reporting. Multiple
 requirements can share the same run without re-executing the binary.
 
 ### 9.3 Report Content Structure
+
+Illustrative target content; the current `printpdf` summary renders a subset of
+it (§9.1, §9.4).
 
 ```
 Validation Report - Klepsydra AI ML-L v1.0.0
@@ -1985,12 +2141,17 @@ rendered to each output:
 - `write_json` — the machine-readable report (`schema_version` first field)
 - `write_pdf` — the PDF summary via `printpdf`
 - `print_terminal` — the end-of-run terminal summary
-- `traceability::write_json` / `write_text` — the dual-audience matrix
+- `traceability::write_json` / `write_text` — the dual-audience matrix; both come
+  from one matrix model, but that model is built from the `RunResult` and the
+  requirement set rather than from `Report` (ADD LLR-026 asks for one model behind
+  every output) and does not yet carry provenance (F-M8)
 - `write_qdp` — zips report + traceability + evidence into `qdp.zip`
 
-There is no template-engine layer today: the PDF is emitted directly by
-`printpdf`. Substituting a template engine (Typst/LaTeX) later is a change behind
-`write_pdf` only; the `Report` data model and every other output are unaffected.
+There is no template-engine layer: the PDF is emitted directly by `printpdf`
+(AD-006). Substituting another engine would be a change behind `write_pdf` only;
+the `Report` data model and every other output are unaffected. The ADD foresees
+splitting C-ORC-08 at CDR into report-model construction and per-format rendering,
+which is the shape this code already has.
 
 ---
 
@@ -2021,15 +2182,23 @@ clone the runner, add a `Backend` variant + config section + a `build_executor`
 match arm, implement `prepare/run/collect/describe`, recompile. The HTTP/store
 layer and the Reporter are untouched.
 
-**(b) A new *metric* from a new tool** on the existing Docker backend → add a step
-under `sqt-runner/src/tools/`, populate the corresponding `JobMetrics` field in
-`collect`, and add a matching constraint name on the Reporter side. There is no
+**(b) A new *metric* from a new tool** on the existing Docker backend → today: add
+a step under `sqt-runner/src/tools/`, populate the corresponding `JobMetrics` field
+in `collect`, and add a matching constraint name on the Reporter side. The ADD
+target ("Portability and lifetime design"; SRS-FUNC-006(b), SRS-MAINT-001) is one
+registration entry at a designated collector extension point in the reference
+Runner, one file, and — via the open namespace of §10.2 — no Reporter change; that
+extension point does not exist yet (SQT-SW-1). There is no
 runtime plugin protocol, no dynamic loading, and no external process bridge — the
 Runner is a single auditable statically-linked binary, which suits a qualification
-tool. (The historic reporter-side `MetricCollector`/`inventory` collector tree in
+tool, and the ADD rules out run-time plug-in discovery in the Orchestrator. (The historic reporter-side `MetricCollector`/`inventory` collector tree in
 `sqt-reporter/src/metrics/` is **legacy reference code from the pre-workspace
 single-crate era**; it is not wired into either the orchestrator or the runner and
-is a deletion candidate — see `REVIEW_FINDINGS.md`.)
+is a deletion candidate — see `REVIEW_FINDINGS.md`. The same holds for the
+`inventory`-based `SpecFactory` / `all_specs()` and the example specs in
+`sqt-reporter/src/specs/`, which `main.rs` never calls. The ADD ("Deactivated
+code") commits the SQT to shipping no deactivated code, so both have to be removed
+or wired before a release that claims it.)
 
 ### 10.2 The Closed-Vocabulary Constraint (decided: open namespace in SQT-SW-1)
 
@@ -2101,6 +2270,19 @@ tool containers, not by a Reporter-side crate.
 Clippy is configured per crate: `pedantic = warn` with `module_name_repetitions`
 and `must_use_candidate` allowed (SRS-QUAL-001).
 
+**Quality gates (CI, `.github/workflows/rust.yml`)**: `cargo clippy --workspace
+-- -D warnings` (static-analysis gate, SRS-QUAL-001), `cargo fmt --check`
+against `rustfmt.toml` (code-style gate, SRS-QUAL-002 — still advisory,
+`continue-on-error: true`, which SRS-CDR-003 does not allow), and the test suite
+under `cargo llvm-cov` with nextest (`ci/run-tests.sh`, SRS-QUAL-003). SQT-TN-AP
+additionally plans `cargo-deny` (licence gate), `cargo-audit` (advisories) and a
+`rust-toolchain.toml` toolchain pin; none of the three is in the repository yet.
+
+The language choice answers SRS-DES-001 (statically typed, memory-safe without a
+managed runtime, single self-contained executable); the ADD ("Portability and
+lifetime design") relies on it so that a run years later needs no interpreter,
+package index or shared-library set.
+
 ### 11.2 External Tools
 
 Tools the **Runner** orchestrates (packaged as Docker images under `docker/`, so
@@ -2118,9 +2300,12 @@ they need not be installed on the host):
 ### 11.3 Project Structure
 
 ```
-ats-sqt/                          # Cargo workspace root
+qsmart-sqt/                       # Cargo workspace root (ADD ids: §2.4)
 ├── Cargo.toml                    # [workspace] + [workspace.dependencies]
 ├── Cargo.lock
+├── LICENSE                       # ESA-PL Permissive v2.4 (SRS-DES-002)
+├── rustfmt.toml                  # code-style ruleset (SRS-QUAL-002)
+├── .github/workflows/rust.yml    # CI gates: clippy, rustfmt, tests + coverage
 ├── ARCHITECTURE.md               # This document
 ├── IMPLEMENTATION.md             # Current implementation state
 ├── REVIEW_FINDINGS.md            # Gaps / decisions from the 2026-07-03 review
@@ -2171,18 +2356,18 @@ ats-sqt/                          # Cargo workspace root
 | ID | Decision | Rationale | Alternatives Considered | Status |
 |----|----------|-----------|------------------------|--------|
 | **AD-001** | Use Rust for implementation | Memory safety, performance, modern tooling | Python (slower), C++ (less safe) | ✅ Accepted |
-| **AD-002** | YAML as primary config format | Human-readable, widely supported | JSON (verbose), TOML (less known) | 🟡 Proposed |
+| **AD-002** | YAML as the config format | Human-readable, widely supported; one structured, version-controllable artefact per project (SRS-FUNC-001, ADD LLR-001) | JSON (verbose), TOML (less known) | ✅ Accepted |
 | **AD-003** | REST API for ML-L interface | Language-agnostic, clear decoupling | gRPC (complex), direct linking (coupling) | ✅ Accepted |
-| **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based | ReqIF (complex), Excel (not traceable) | 🟡 Proposed |
+| **AD-004** | Strictdoc for requirements | Klepsydra's proposal, text-based; `GET /api/v1/docs` serves StrictDoc in the contract; parsed by the Reporter's own Rust parser (§4.2) | ReqIF (complex), Excel (not traceable) | ✅ Accepted |
 | **AD-005** | Ateleris builds generic SQT Runner (not delegated to ML-L Provider) | ML-L Provider focuses on delivering artifacts; Ateleris controls the test execution layer, enabling a generic and open implementation | Delegate to ML-L Provider (Klepsydra) - rejected: closes the runner to third parties and ties test execution to a single vendor | ✅ Accepted |
-| **AD-006** | Typst for PDF generation | Modern, fast, programmable | LaTeX (complex), Pandoc (limited) | 🟡 Proposed — **current implementation uses `printpdf`**; Typst is a future substitution behind `write_pdf` (§9.4) |
+| **AD-006** | `printpdf` for the PDF summary | Pure-Rust crate inside the Reporter binary: no external typesetting toolchain at run time, consistent with the single self-contained executable (SRS-DES-001); the PDF is one rendering of the report model (§9.4) | Typst, LaTeX/Tectonic (template engines; would be a substitution behind `write_pdf`), Pandoc (limited) | ✅ Accepted |
 | **AD-007** | ~~Convention-based req-to-test mapping~~ | Superseded by AD-024; SRS-MAINT-002 requires explicit listing | See AD-024 | ❌ Rejected |
 | **AD-008** | Docker containerization | Reproducibility, isolation | VM (heavy), native (env issues) | ✅ Accepted |
 | **AD-009** | Exponential backoff for polling | Efficient, respectful of API | Fixed interval (wasteful) | ✅ Accepted |
 | **AD-010** | PDF + JSON + terminal + traceability + QDP outputs | ECSS compliance + machine-readability + CI UX | — | ✅ Accepted — **HTML report deferred** (not implemented, not SRS-required; §9.1) |
-| **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability | Manual test code per requirement (verbose, hard to maintain) | 🟡 Proposed |
-| **AD-012** | Compile-time metric extensibility via `inventory` crate | Zero runtime overhead; full Rust type safety; no central registration file; single auditable binary per deployment | External process/JSON stdio (IPC overhead, OOP failure modes), dynamic `.so` (no stable ABI), WASM (complex toolchain) | ✅ Accepted |
-| **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in Phase 4, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted |
+| **AD-011** | Declarative test specs (metric constraints) | No boilerplate test code; requirements directly encode what must hold; uniform traceability; the ADD's specification model (C-ORC-02) | Manual test code per requirement (verbose, hard to maintain) | ✅ Accepted |
+| **AD-012** | ~~Compile-time metric extensibility via `inventory` crate~~ | Superseded: the ADD routes Runner-declared metrics by name through an open namespace (AD-029, LLR-019) and puts the collector extension point in the reference Runner (§10.1); the Reporter-side `inventory` collectors were never wired | External process/JSON stdio, dynamic `.so`, WASM (still rejected: the ADD allows no run-time plug-in discovery) | ❌ Superseded by AD-029 |
+| **AD-013** | Single job endpoint (`/api/v1/jobs`) | Eliminates implicit metric-routing convention; one job covers execution + instrumentation + coverage + static analysis; simpler orchestrator logic | Two endpoints `/runs` + `/analysis` (implemented in an earlier iteration, reverted - routing via name-prefix convention was fragile and implicitly coupled) | ✅ Accepted — the ADD's verification-activity invocation (SRS-FUNC-015) is still to be fitted into the contract (§13.2 item 8) |
 | **AD-014** | Workload types as a closed enum | The workload types (object_detection, image_classification, etc.) are taken from the ML Space Profile (RD-5); both Reporter and Runner reason over the same closed set; no open-ended task dispatch needed | Open task-name dispatch (Runner accepts arbitrary strings — fragile, hard to validate, not traceable to APCO) | ✅ Accepted |
 | **AD-015** | CPU utilisation normalised Runner-side | Runner knows hardware topology (core count, type); `cpu.avg_normalized_pct` is unambiguous across CPU/GPU/FPGA; hardware descriptor provides raw context | Normalise client-side (Runner would need to expose raw per-core counters, each hardware type differently structured) | ✅ Accepted |
 | **AD-016** | ML accuracy metrics computed Reporter-side | Runner returns raw outputs; SQT Reporter computes accuracy/F1/IoU/L2 etc. against reference labels; keeps Runner hardware-agnostic and reference-data-free | Runner computes accuracy (requires Runner-side reference dataset per workload - complex, leaks qualification logic into the Runner) | ✅ Accepted |
@@ -2191,20 +2376,21 @@ ats-sqt/                          # Cargo workspace root
 | **AD-019** | ML-L Provider artifacts pre-placed on Runner filesystem | No network transfer from Provider at qualification time; configurable paths in `sqt-runner.yaml`; simplest possible delivery model | Pull artifacts from Provider API at session start (adds Provider-side API requirement, network dependency, latency) | ✅ Accepted |
 | **AD-020** | SQT Reporter fetches docs from Runner (not directly from ML-L Provider) | Runner is the single point of contact; Reporter need not know the Provider's delivery mechanism; consistent with Runner-as-data-source model | Reporter contacts Provider directly for docs (couples Reporter to Provider, breaks single-interface design) | ✅ Accepted |
 | **AD-021** | 1:1 Reporter:Runner deployment model | Simplest correct model for the current use case; no concurrent client complexity; job queue is sufficient | Multi-client with session isolation (deferred; revisit if needed) | ✅ Accepted |
-| **AD-022** | Runner executes one job at a time (initial); Reporter submits+polls concurrently | SRS-PERF-001 requires concurrent submission with wall-clock ≤ longest job + 10%; the SRS permits any Runner-side concurrency bound ≥ 1. Reporter submits all jobs and polls all IDs concurrently (SRS compliant); Runner queues and runs sequentially for v1 (valid: wall-clock bounded by queue depth per SRS-PERF-001). | Fully parallel Runner execution (deferred; adds resource management complexity on space hardware) | ✅ Accepted |
-| **AD-023** | SQT Runner execution-backend abstraction (TAL) | Isolates target-specific code behind the object-safe `ExecutionBackend` trait, with an ergonomic `LifecycleBackend` (prepare/run/collect/teardown) that new backends implement; backend chosen by the `backend:` config key + `build_executor` factory; new targets (GR740/GR765) added without touching handlers, store, or the Reporter (§8.1) | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
-| **AD-024** | Explicit spec registration (no auto-discovery) | SRS-MAINT-002 forbids auto-discovery from filesystem state; explicit listing in config makes the active spec set deterministic, auditable, and source-controllable | Directory scanning (rejected: environment-dependent, invisible in source history, incompatible with reproducible qualification) | ✅ Accepted |
+| **AD-022** | Runner executes one job at a time (initial); Reporter submits+polls concurrently | SRS-PERF-001 requires concurrent submission with wall-clock ≤ longest job + 10%; the SRS permits any Runner-side concurrency bound ≥ 1. Reporter submits all jobs and polls all IDs concurrently (SRS compliant); Runner queues and runs sequentially for v1 (valid: wall-clock bounded by queue depth per SRS-PERF-001). | Fully parallel Runner execution (deferred; adds resource management complexity on space hardware) | ✅ Accepted (reference Runner; ADD C-RNR-02) |
+| **AD-023** | SQT Runner execution-backend abstraction (TAL) | Isolates target-specific code behind the object-safe `ExecutionBackend` trait, with an ergonomic `LifecycleBackend` (prepare/run/collect/teardown) that new backends implement; backend chosen by the `backend:` config key + `build_executor` factory; new targets (GR740/GR765) added without touching handlers, store, or the Reporter (§8.1; ADD C-RNR-03, LLR-DER-002, LLR-DER-003) | Inline target-specific logic in the job handler (simpler now, unextensible later) | ✅ Accepted |
+| **AD-024** | Explicit spec registration (no auto-discovery) | SRS-MAINT-002 forbids auto-discovery from filesystem state; explicit listing in config makes the active spec set deterministic, auditable, and source-controllable (ADD LLR-005) | Directory scanning (rejected: environment-dependent, invisible in source history, incompatible with reproducible qualification) | ✅ Accepted |
 | **AD-025** | Term *workload type*; the wire field keeps the name `use_case` | The SRS (SRS-FUNC-019), the ADD and the OpenAPI schema (`WorkloadType`) say workload type; renaming the field would change the published contract for no functional gain | APCO "workload types" as the term (superseded: the SRS and ADD use workload type); renaming the field to `workload_type` (rejected: contract change) | ✅ Accepted |
-| **AD-026** | Pre-flight mode (`--preflight`) | SRS-OPS-007 requires a mode that validates config + endpoint + auth without submitting jobs; shortens CI feedback loop on configuration changes | No pre-flight (operator must run a full qualification to detect config errors) | ✅ Accepted |
-| **AD-027** | Exit code 2 for interrupted runs | SRS-OPS-008 requires SIGTERM exit distinguishable from completed-pass (0) and completed-fail (1); exit 2 = interrupted | Single non-zero code for all non-pass outcomes (rejected: loses diagnostic information) | ✅ Accepted |
+| **AD-026** | Pre-flight mode (`--preflight`) | SRS-OPS-007 requires a mode that validates config + endpoint + auth without submitting jobs; shortens CI feedback loop on configuration changes (ADD LLR-017) | No pre-flight (operator must run a full qualification to detect config errors) | ✅ Accepted |
+| **AD-027** | Exit code 2 for interrupted runs | SRS-OPS-008 requires SIGTERM exit distinguishable from completed-pass (0) and completed-fail (1); exit 2 = interrupted (ADD LLR-016, LLR-029; §7.3) | Single non-zero code for all non-pass outcomes (rejected: loses diagnostic information) | ✅ Accepted |
 | **AD-028** | API-profile coverage from the elements each workload spec declares; coverage never changes the exit code | Keeps coverage independent of any API, model format or Runner — the Reporter compares names it was given (SRS-FUNC-021 to SRS-FUNC-023; ADD LLR-035). Separates "did the workloads pass" from "how much of the profile do they reach" | Runner reports exercised elements (ties the Runner to the API); coverage gaps fail the run (masks a passing run) | 🟡 Proposed — SQT-SW-1 |
 | **AD-029** | Open metric namespace for Runner-declared metrics | SRS-FUNC-006(a): a new metric needs no Orchestrator source change; known metrics stay typed for SRS-IF-007 (§10.2; ADD LLR-019) | Keep the closed vocabulary and reword SRS-FUNC-006 (rejected at the ADD review) | 🟡 Proposed — SQT-SW-1 (#17) |
+| **AD-030** | Contract data types in a shared crate (`sqt-types`) that depends on no other workspace crate | Both sides agree on the contract by construction; a third-party Runner can be built against the contract alone (ADD C-SHR-01, LLR-DER-001); `sqt-types/tests/openapi_contract.rs` guards against drift from `job-api.openapi.yaml` | — | ✅ Accepted |
 
 ### Trade-offs
 
 #### Configuration: Code vs Files
 
-**Decision**: Configuration files (YAML) with optional programmatic override
+**Decision**: Configuration files (YAML) only
 
 | Aspect | Files (YAML) | Code (Rust) |
 |--------|--------------|-------------|
@@ -2213,7 +2399,7 @@ ats-sqt/                          # Cargo workspace root
 | **Version Control** | ⭐⭐⭐⭐⭐ Easy to track changes | ⭐⭐⭐⭐ Mixed with code |
 | **User-Friendliness** | ⭐⭐⭐⭐⭐ Non-developers can edit | ⭐⭐ Requires Rust knowledge |
 
-**Conclusion**: YAML primary, with Rust API for advanced users
+**Conclusion**: YAML only. The ADD (LLR-001) allows no configuration channel other than the single artefact and the credential reference, so there is no programmatic override; the unwired `SpecFactory` in `specs/` is not a supported channel (§10.1)
 
 ---
 
@@ -2237,33 +2423,35 @@ ats-sqt/                          # Cargo workspace root
    - The API and the API profile are selected outside the SQT, in ML-TN-T1/T2 (APCO, WP100); the SQT takes the profile as a declared input (SRS-FUNC-021)
    - Mission use cases (WP420, APCO) extend the workload set as they become available
 
-3. **GR740/GR765 Connection Protocol**
-   - **Question**: What protocol connects the Runner to the GR740/GR765? (JTAG, GDB remote stub, UART serial, Ethernet?)
-   - **Concern**: The TAL design (Section 8.1) accommodates this, but the concrete implementation is blocked on the answer
-   - **Action**: Define with Klepsydra/customer when GR target support is scoped
+3. **GR740/GR765 Emulation Backend** — *route decided, design open*
+   - Decided in SQT-TN-AP: target execution is emulated behind the Runner (QEMU, Renode, SIS) for SQT-SW-2; no hardware is procured; Gaisler-hosted boards over SSH/GRMON are opportunistic (§8.3)
+   - **Question**: How does the backend drive the emulators — staging the assembled AI system, starting it, and getting outputs and measurements back — and which measurements are meaningful under emulation (SQT-TN-AP proposes deterministic instruction counts)?
+   - **Action**: Design the backend within SQT-SW-2 (§14.1)
 
 4. **Input/Output Data Format**
    - **Question**: What is the format of the reference input/output datasets? How are they structured on the Runner filesystem?
-   - **Action**: Align with Klepsydra on dataset conventions; document in Runner config schema
+   - **Action**: Align with Klepsydra on dataset conventions; document in Runner config schema. Tied to the open `input` contract decision (§5.1, F-H2) and to the data shipped with the generic workload set (SRS-FUNC-022)
 
 ### 13.2 SQT Reporter - Technical Questions
 
-5. **Strictdoc Parser Implementation**
-   - **Question**: Should we implement a full Strictdoc parser in Rust or invoke the Python CLI tool?
-   - **Options**:
-     - A) Write custom Rust parser (full control, no dependency)
-     - B) Use Strictdoc CLI tool (mature, but Python dependency)
-   - **Recommendation**: Start with Option B, migrate to A if needed
+5. **Strictdoc Parser Implementation** — *decided: own Rust parser*
+   - The Reporter parses StrictDoc itself (`sqt-reporter/src/baseline/mod.rs`, §4.2); no Python StrictDoc CLI at run time, which keeps the Reporter a single self-contained executable (SRS-DES-001)
+   - Scope is deliberately small: UID, TITLE, STATUS and VERIFICATION of `[REQUIREMENT]` / `[COMPOSITE_REQUIREMENT]` blocks. Extend it only if requirement discovery needs more fields
 
-6. **REST API Authentication**
-   - **Question**: What authentication method should the Reporter ↔ Runner API use?
-   - **Options**: Bearer token (simple), API key (simpler), mTLS (most secure)
-   - **Recommendation**: Bearer token for development, mTLS for production
+6. **REST API Authentication** — *decided: bearer token*
+   - Bearer token on every contract operation (SRS-IF-006; `bearerAuth` in `job-api.openapi.yaml`). Reporter: token from the variable named by `runner.token_env`, redacted in all output (`api/client.rs`). Runner: optional `auth.token_env`, middleware in `sqt-runner/src/auth.rs` on every route except `/health`, `401 UNAUTHORIZED` otherwise (§3.1, §5.1)
+   - Transport security is `https://` to the configured endpoint; mTLS is not part of the contract
 
-7. **Report Template Engine**
-   - **Question**: Typst vs LaTeX for PDF generation?
-   - **Decision needed**: Verify Typst maturity for ECSS report compliance
-   - **Fallback**: LaTeX with Tectonic
+7. **Report Template Engine** — *decided: `printpdf`*
+   - The PDF summary is rendered with `printpdf` (AD-006, §9.4). Typst and LaTeX/Tectonic were not adopted; either would be a substitution behind `write_pdf` if a richer layout is needed
+
+8. **Verification-Activity Invocation** (SRS-FUNC-014, SRS-FUNC-015; SQT-SW-1)
+   - **Question**: How does the contract let the Reporter trigger project-declared verification activities and retrieve their outputs verbatim — a dedicated operation, or a field of the job request?
+   - **Concern**: The ADD lists it as an EI-1 operation class; today coverage and static analysis run implicitly inside every job of the reference Runner and return only metrics (§5.1, AD-013)
+
+9. **UNCOVERED Test Requirements**
+   - **Question**: What is the lifecycle outcome of a Test requirement without a registered spec?
+   - **Concern**: The contract text of `GET /api/v1/docs` treats it as a failed qualification with status `uncovered` and a non-zero exit; the code exits 1 before submitting any job and writes no report; the ADD's run lifecycle has no matching terminal state (§7.3). Still to be reconciled
 
 ### 13.3 Clarifications Needed from ML-L Provider (Klepsydra)
 
@@ -2271,79 +2459,42 @@ ats-sqt/                          # Cargo workspace root
 - [ ] Definition of "Prepare AI System" - what does linking/assembling require from the Runner?
 - [ ] Sample Strictdoc requirements file for the ECSS documentation baseline
 - [ ] Example unit test results and validation test results (format, content)
-- [ ] Connection protocol to GR740/GR765 (for future Runner target implementation)
+- [ ] Declared API profile in a machine-readable form (ML-TN-T1/T2, APCO; needed for SQT-SW-1, §4.7)
+- [ ] Agreement on the Runner API contract at PDR (an SQT-TN-AP assumption: Orchestrator and Runner are developed contract-first from then on)
+- [x] ~~Connection protocol to GR740/GR765~~ — answered by SQT-TN-AP: emulation behind the Runner, opportunistic access to Gaisler-hosted boards (§8.3, §13.1 item 3)
 
 ---
 
 ## 14. Next Steps
 
-### 14.1 Immediate Actions
+### 14.1 Release Plan
 
-1. **Align on ML-L Provider delivery format**
-   - Obtain a sample artifact bundle from Klepsydra (inference engine + model + main program)
-   - Understand the "Prepare AI System" step concretely
-   - Document in Runner config schema and TAL design
+The releases are those of SQT-TN-AP ("Release plan and alignment with ML-L"),
+which holds the authoritative scope, the per-release activities and data package,
+and the release log; the Product Owner adjusts the grouping at each release
+planning with ESA and the ML-L role. Each release is a tag on this repository
+(SRS-CDR-001); no tag exists yet.
 
-2. **API-profile qualification (SQT-SW-1)**
-   - Obtain the declared API profile from ML-TN-T1/T2 (APCO) in a machine-readable form
-   - Build the generic workload set and the API-profile coverage report (§4.7)
-   - Agree on pass/fail criteria and metric mapping for the Runner's job response schema
+| Release | Tag | Window | SRS requirement groups | Delivery focus | State in this repository |
+|---|---|---|---|---|---|
+| SQT-SW-0 | `v0.1.0` | Sprint 0 to PDR (planned 2026-11-04) | FUNC-001..004, 007..009, 018..020; IF-001..003, 006..008; QUAL-001..003; CDR-001..003; DES-001..005; GEN-001, 002; PORT-001, 002; INST-001 | MVP: Orchestrator core, reference Runner, CI gates, minimal evidence package | Implemented, with the open deltas in `REVIEW_FINDINGS.md` (e.g. default fan-out F-M7, verbatim discovery evidence F-M11, advisory rustfmt gate); not tagged |
+| SQT-SW-1 | `v0.2.0` | PDR to project-level CDR | FUNC-005, 006, 010..015, 021..023; PERF-001..004; REL-001..004; OPS-001..008; HF-001, 002; DATA-001..003; RES-001..003; MAINT-001, 002 | Metric collectors, traceability matrix, verification-activity triggering, operator guidance, performance and reliability; fulfilment matrix becomes authoritative | Partly ahead of plan (concurrency and polling, exit codes, pre-flight, partial-failure handling, schema version, dual-audience traceability exist). Open: API-profile qualification (§4.7), open metric namespace (§10.2, #17), verification-activity invocation (§13.2 item 8), per-run evidence location (F-M4) |
+| SQT-SW-2 | `v1.0.0` | Project-level CDR to QR | FUNC-016, 017; CDR-004; VAL-001, 002; full non-regression; end-to-end ML-L-QDP generation on GR740 and GR765/NOEL-V emulation | Final release: complete SUM, SRF, SRelD; ISVV-ready artefacts | Accuracy and precision computation exist (`accuracy/`); emulation backend not started (§8.3) |
+| SQT-SW-3 (optional) | `v1.x` | QR to FR | Defect fixes and Task 3 (use case) feedback | Consolidation for the FR data package | — |
 
-3. **Validate REST API contract**
-   - Share `job-api.openapi.yaml` with Klepsydra for review
-   - Confirm document format for `GET /api/v1/docs`
+### 14.2 Immediate Actions (to PDR)
 
-### 14.2 Phase 1: SQT Runner - x86_64 Baseline (Rust)
-
-4. **Runner: REST API server scaffold**
-   - Implement `POST /api/v1/jobs` and `GET /api/v1/jobs/{id}` (async, job queue)
-   - Implement `GET /api/v1/docs` serving configured document paths
-
-5. **Runner: x86\_64 target**
-   - Implement `Target` trait for native Linux execution
-   - AI system assembly for x86\_64 (based on agreed delivery format)
-   - Basic Performance test execution (timing, memory via `/usr/bin/time` / valgrind)
-
-6. **Runner: workload tests (first set)**
-   - Implement the first representative workloads for x86\_64
-   - Map results to job metric schema
-
-### 14.3 Phase 2: SQT Reporter - Core Functionality
-
-7. **Reporter: baseline check**
-   - Implement `GET /api/v1/docs` client
-   - Parse ECSS docs and static test results
-   - Implement compliance gate
-
-8. **Reporter: requirements management**
-   - Strictdoc parser (CLI wrapper or native Rust)
-   - Traceability matrix builder
-
-9. **Reporter: orchestrator**
-   - Job submission and polling
-   - Metric constraint evaluation
-   - Evidence collector
-
-### 14.4 Phase 3: Integration and Report Generation
-
-10. **End-to-end qualification session**
-    - Connect Reporter → Runner on x86\_64
-    - Full qualification workflow with real ML-L artifacts
-
-11. **Report generation**
-    - System Test Report (PDF + HTML)
-    - QDP
-    - Traceability matrix
-
-12. **CI/CD integration**
-    - GitHub Actions workflow
-    - Docker images for Runner and Reporter
-
-### 14.5 Phase 4: GR740/GR765 Target (Future)
-
-13. **Define connection protocol** (blocked on hardware availability and Klepsydra alignment)
-14. **Implement GR740 target** in the Runner TAL
-15. **Validate end-to-end** on customer hardware
+1. **Close SQT-SW-0**: work off the SQT-SW-0 items in `REVIEW_FINDINGS.md`, make
+   the rustfmt gate blocking (SRS-CDR-003), and tag `v0.1.0`.
+2. **Agree the Runner API contract with the ML-L role** (SQT-TN-AP assumption),
+   including the pending `input` decision (§5.1) and the shape of
+   verification-activity invocation (§13.2 item 8).
+3. **Align on the ML-L Provider delivery format**: obtain a sample artifact bundle
+   (inference engine + model + main program) and pin down the "Prepare AI System"
+   step (§8.2, §13.1 item 1).
+4. **Prepare SQT-SW-1**: obtain the declared API profile from ML-TN-T1/T2 (APCO) in
+   machine-readable form, and plan the generic workload set and coverage report
+   (§4.7).
 
 ---
 
@@ -2357,7 +2508,9 @@ ats-sqt/                          # Cargo workspace root
 | **ML-L** | Machine Learning Library (inference engine) |
 | **SQT** | Software Qualification Toolkit (collectively: SQT Runner + SQT Reporter) |
 | **SQT Runner** | Ateleris-developed REST API server that executes tests on the target hardware |
-| **SQT Reporter** | Ateleris-developed CLI that orchestrates qualification sessions and generates reports |
+| **SQT Reporter** | Ateleris-developed CLI that orchestrates qualification sessions and generates reports; the **Orchestrator** of the SRS and ADD |
+| **Reference Runner** | The ADD's name for `sqt-runner`: the conformant Runner delivered with the SQT (SRS-INST-001); its internals are non-normative for third-party Runners |
+| **Runner API contract** | `job-api.openapi.yaml`; the single, versioned integration boundary, normative for both sides (ADD AD-4, EI-1) |
 | **TAL** | Target Abstraction Layer - pluggable backend in the SQT Runner for different execution targets |
 | **QDP** | Quality Data Package - the ECSS-compliant qualification output artifact |
 | **API profile** | The API elements inside the qualification boundary, declared per ML Space Profile (ML-TN-T1/T2); an SQT input (SRS-FUNC-021) |
@@ -2368,16 +2521,33 @@ ats-sqt/                          # Cargo workspace root
 | **Strictdoc** | Requirements management tool (text-based format) |
 | **ONNX** | Open Neural Network Exchange (model format) |
 | **GR740** | Quad-core LEON4 space-grade processor (Cobham Gaisler) |
-| **GR765** | Octa-core LEON5 space-grade processor (Cobham Gaisler) |
+| **GR765** | Octa-core space-grade processor (Cobham Gaisler); targeted in its NOEL-V configuration, the LEON5 configuration being excluded (SQT-TN-AP) |
+| **NOEL-V** | Cobham Gaisler RISC-V processor core of the GR765 |
+| **QEMU, Renode, SIS** | Emulators used behind the Runner for the GR740 and GR765/NOEL-V targets (SQT-TN-AP) |
 | **RTEMS** | Real-Time Executive for Multiprocessor Systems (RTOS) |
 
 ### Appendix B: References
 
-1. ECSS-E-ST-40C: Software Engineering Standards
-2. ECSS-Q-ST-80C: Software Product Assurance
-3. Q-SMART Project Proposal (KPSR-2024-13-Vol1)
-4. Strictdoc Documentation: https://strictdoc.readthedocs.io/
-5. RTEMS Quality Delivery Process: https://docs.rtems.org/
+Project documents (`qsmart-sqt-documentation` repository):
+
+1. SQT Software Requirements Specification (SRS), SQT-SP-0001-ATS, Issue 1 Rev 2
+2. SQT Architectural Design Document (ADD), SQT-DD-0001-ATS — the authoritative design
+3. SQT-TN-AP — Agile Process, Development, Verification and Validation Plan, SQT-PL-0002-ATS (release plan, emulation environment, quality gates)
+4. SQT Tools Identification Technical Note, SQT-TN-0002-ATS
+5. Project Glossary, SQT-TN-0001-ATS
+6. Runner API contract: `job-api.openapi.yaml` (this repository)
+
+External and customer documents:
+
+7. ML-TN-T1 — APCO Space Profile Technical Note (APCO, WP100): ML Space Profile, workload types
+8. ML-TN-T2 — API and ML-L Analysis Report (APCO, WP100): API selection and the API profile
+9. ESA Statement of Work (Q-SMART), ESA-GSTP-TECEDS-SOW-2025-001877
+10. Q-SMART Proposal, Volume 1, KPSR-2024-13-QSMART-Vol1
+11. ECSS-E-ST-40C Rev.1: Software engineering
+12. ECSS-Q-ST-80C: Software product assurance
+13. ESA Software Community Licence Permissive v2.4 (Type 3)
+14. Strictdoc Documentation: https://strictdoc.readthedocs.io/
+15. RTEMS Quality Delivery Process: https://docs.rtems.org/
 
 
 # Notes
