@@ -3,8 +3,9 @@ name = "sqt-reporter"
 version = "0.1.0"
 edition = "2024"
 authors.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [lib]
 name = "sqt_reporter"
@@ -29,9 +30,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 inventory = { workspace = true }
 futures = { workspace = true }
-zip = "2"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 walkdir = "2"
-printpdf = "0.7"
+printpdf = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }

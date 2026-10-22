@@ -64,6 +64,10 @@ fn parse_line_coverage(text: &str) -> Result<f64> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "values are parsed or converted exactly; tests assert exact results"
+)]
 mod tests {
     use super::*;
 

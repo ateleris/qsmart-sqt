@@ -1,0 +1,7 @@
+# Pinned toolchain for reproducible builds (SRS-CDR-002). Keep in sync with the
+# base image tag in ci/Dockerfile so CI does not download a second toolchain.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+targets = ["x86_64-unknown-linux-musl"]
+profile = "minimal"

@@ -6,13 +6,13 @@
 #
 # Built on demand by the workflow (`docker build - < ci/Dockerfile`) and
 # cached in dind's persistent storage; never pushed to a registry.
-FROM rust:1-slim-trixie
+# Tag must match the channel in rust-toolchain.toml.
+FROM rust:1.96.0-slim-trixie
 
 # Build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
     build-essential \
+    musl-tools \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -22,7 +22,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Coverage & test tooling
+# Coverage & test tooling. Versions are pinned for reproducible CI and are
+# listed in the release's SRelD; bump them deliberately.
+ARG CARGO_LLVM_COV_VERSION=0.9.1
+ARG CARGO_NEXTEST_VERSION=0.9.149
 RUN rustup component add llvm-tools-preview clippy rustfmt \
-    && cargo install cargo-llvm-cov --locked \
-    && cargo install cargo-nextest --locked
+    && rustup target add x86_64-unknown-linux-musl \
+    && cargo install cargo-llvm-cov --locked --version "$CARGO_LLVM_COV_VERSION" \
+    && cargo install cargo-nextest --locked --version "$CARGO_NEXTEST_VERSION"
+
+# Dependency gates and SBOM (ci/supply-chain.sh)
+ARG CARGO_DENY_VERSION=0.20.2
+ARG CARGO_AUDIT_VERSION=0.22.2
+ARG CARGO_CYCLONEDX_VERSION=0.5.9
+RUN cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION" \
+    && cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION" \
+    && cargo install cargo-cyclonedx --locked --version "$CARGO_CYCLONEDX_VERSION"

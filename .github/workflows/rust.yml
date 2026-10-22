@@ -14,14 +14,13 @@ permissions:
 jobs:
   rustfmt:
     runs-on: self-hosted
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/ci-docker
         with:
           run: >-
             cargo fmt --all -- --check ||
-            { echo "::warning title=rustfmt::Formatting issues found — run 'cargo fmt --all' to fix (advisory, does not block the pipeline)."; exit 1; }
+            { echo "::error title=rustfmt::Formatting issues found — run 'cargo fmt --all' to fix."; exit 1; }
 
   clippy:
     runs-on: self-hosted
@@ -29,7 +28,23 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/ci-docker
         with:
-          run: cargo clippy --workspace -- -D warnings
+          run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Licences, bans and sources (cargo-deny), security advisories (cargo-audit)
+  # and the CycloneDX SBOM of each delivered binary.
+  supply-chain:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-docker
+        with:
+          run: bash ci/supply-chain.sh
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/*.cdx.json
 
   test:
     runs-on: self-hosted
