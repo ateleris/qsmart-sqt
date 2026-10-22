@@ -158,7 +158,7 @@ impl ApiClient {
 
     /// Fetch the `StrictDoc` documents from the runner.
     ///
-    /// Emits a warning when `documents` is empty (SRS-IF-004 empty-discovery
+    /// Emits a warning when `documents` is empty (SRS-FUNC-018 empty-discovery
     /// diagnostic).
     ///
     /// # Errors
