@@ -18,6 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Docker CLI for the end-to-end job, which drives the reference Runner against
+# the dind daemon through its mounted socket. Same pinned image as the Runner's
+# release image.
+COPY --from=docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb \
+    /usr/local/bin/docker /usr/local/bin/docker
+
 # Node 24 via NodeSource (used by the coverage-summary parse in ci/run-tests.sh)
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \

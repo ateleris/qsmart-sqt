@@ -90,6 +90,14 @@ def scan_file(root: Path, crate_dir: Path, path: Path, errors: list) -> list:
         test_path = "::".join(p for p in [prefix, *scope, name] if p)
         where = f"{path.relative_to(root)}:{i + 1}"
 
+        # Ignored tests (e.g. the Docker end-to-end test) run in their own CI
+        # job, not in the JUnit report of the test job.
+        k = i + 1
+        ignored = False
+        while k < j:
+            ignored = ignored or lines[k].strip().startswith("#[ignore")
+            k += 1
+
         # The tag is in the comment/attribute block directly above the attribute.
         tag = None
         k = i - 1
@@ -100,7 +108,8 @@ def scan_file(root: Path, crate_dir: Path, path: Path, errors: list) -> list:
                 break
             k -= 1
 
-        entry = {"suite": suite, "test": test_path, "file": where, "verifies": [], "none": None}
+        entry = {"suite": suite, "test": test_path, "file": where, "verifies": [], "none": None,
+                 "ignored": ignored}
         if tag is None:
             errors.append(f"{where}: test `{name}` has no `/// Verifies:` line")
         elif n := NONE.match(tag):
@@ -168,7 +177,9 @@ def main() -> int:
         results = read_junit(args.junit)
         for t in tests:
             t["result"] = results.get((t["suite"], t["test"]), "not run")
-            if t["result"] == "not run":
+            if t["result"] == "not run" and t["ignored"]:
+                t["result"] = "separate job"
+            elif t["result"] == "not run":
                 errors.append(f"{t['file']}: `{t['test']}` not found in {args.junit}")
 
     srs = read_srs(args.srs) if args.srs else {}
@@ -229,7 +240,7 @@ def status_of(method: str, verifying: list, have_srs: bool, ci_gate: bool) -> st
     results = {t.get("result") for t in verifying}
     if "failed" in results:
         return "failing"
-    if results <= {"passed"}:
+    if results <= {"passed", "separate job"} and "passed" in results:
         return "verified"
     return "tested"
 

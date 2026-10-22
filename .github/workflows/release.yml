@@ -46,6 +46,14 @@ jobs:
         with:
           run: COVERAGE_FAIL_UNDER=80 bash ci/run-tests.sh
 
+      - name: End-to-end against the reference Runner (SRS-QUAL-003)
+        uses: ./.github/actions/ci-docker
+        with:
+          docker-socket: "true"
+          run: >-
+            SQT_E2E_WORKDIR="$PWD/e2e-work"
+            cargo test --locked -p sqt-runner --test e2e_test -- --ignored
+
       - name: Dependency gates and SBOM
         uses: ./.github/actions/ci-docker
         with:
