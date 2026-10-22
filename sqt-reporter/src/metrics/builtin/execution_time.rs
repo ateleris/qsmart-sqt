@@ -45,11 +45,13 @@ mod tests {
         }
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn name_is_time_avg_ms() {
         assert_eq!(ExecutionTimeCollector.name(), "time.avg_ms");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn true_returns_positive_ms() {
         let dir = tempdir().unwrap();
@@ -59,6 +61,7 @@ mod tests {
         assert_eq!(mv.unit, "ms");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn evidence_contains_duration() {
         let dir = tempdir().unwrap();

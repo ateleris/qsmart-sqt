@@ -134,6 +134,7 @@ mod tests {
         }
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn run_true_returns_zero() {
         let dir = tempdir().unwrap();
@@ -142,6 +143,7 @@ mod tests {
         assert_eq!(output.exit_code, 0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn run_false_returns_nonzero() {
         let dir = tempdir().unwrap();
@@ -151,6 +153,7 @@ mod tests {
         assert_ne!(output.exit_code, 0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn stdout_captured() {
         let dir = tempdir().unwrap();
@@ -160,6 +163,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn evidence_files_created() {
         let dir = tempdir().unwrap();
@@ -169,6 +173,7 @@ mod tests {
         assert!(dir.path().join("myprefix_stderr.txt").exists());
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn timeout_kills_long_process() {
         let dir = tempdir().unwrap();
@@ -180,6 +185,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("timed out"));
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn stdin_from_input_file() {
         let dir = tempdir().unwrap();
@@ -192,6 +198,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello from stdin"));
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn remote_target_returns_error() {
         let dir = tempdir().unwrap();

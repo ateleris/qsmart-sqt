@@ -83,6 +83,7 @@ mod tests {
         Box::new(DummyCollector { name })
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn registry_get_returns_registered() {
         let mut registry = MetricRegistry::new();
@@ -90,12 +91,14 @@ mod tests {
         assert!(registry.get("foo").is_some());
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn registry_get_returns_none_for_unknown() {
         let registry = MetricRegistry::new();
         assert!(registry.get("unknown").is_none());
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     #[should_panic(expected = "duplicate collector registration: 'foo'")]
     fn duplicate_name_panics() {
@@ -104,6 +107,7 @@ mod tests {
         registry.register_boxed("foo", make("foo"));
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn registry_len_and_is_empty() {
         let mut registry = MetricRegistry::new();
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn build_registry_returns_populated() {
         let registry = build_registry();

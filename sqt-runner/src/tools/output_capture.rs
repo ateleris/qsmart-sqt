@@ -71,6 +71,7 @@ fn checksum(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn json_array_stdout_becomes_outputs_vector() {
         let out = build_job_output("classification", br#"[{"label":"cat"},{"label":"dog"}]"#)
@@ -82,6 +83,7 @@ mod tests {
         assert_eq!(out.output_type, "classification");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn single_json_object_becomes_one_element_vector() {
         let out = build_job_output("regression", br#"{"prediction":0.87}"#).unwrap();
@@ -90,6 +92,7 @@ mod tests {
         assert_eq!(outputs[0]["prediction"], 0.87);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn non_json_stdout_is_wrapped_as_string() {
         let out = build_job_output("raw", b"hello world\n").unwrap();
@@ -97,18 +100,21 @@ mod tests {
         assert_eq!(outputs, vec![serde_json::Value::String("hello world".to_string())]);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn empty_or_whitespace_stdout_yields_no_output() {
         assert!(build_job_output("raw", b"").is_none());
         assert!(build_job_output("raw", b"   \n\t ").is_none());
     }
 
+    /// Verifies: SRS-INST-001, SRS-REL-004
     #[test]
     fn checksum_is_stable_hex_sha1() {
         // Known SHA-1 of "abc".
         assert_eq!(checksum(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
     }
 
+    /// Verifies: SRS-INST-001, SRS-REL-004
     #[test]
     fn identical_bytes_share_a_checksum() {
         let a = build_job_output("x", b"same output").unwrap();

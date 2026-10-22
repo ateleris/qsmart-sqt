@@ -220,6 +220,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_time_field_extracts_rss() {
         let text = "\tCommand being timed: \"./app\"\n\
@@ -229,6 +230,7 @@ mod tests {
         assert_eq!(parse_time_field(text, "Percent of CPU this job got:"), Some(98.0));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_time_field_missing_returns_none() {
         assert_eq!(parse_time_field("no such line", "Maximum resident set size (kbytes):"), None);
@@ -237,18 +239,21 @@ mod tests {
     // Every element is single-quoted (safe by construction); quoted trusted
     // args are still passed verbatim to the program by the shell.
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_no_args_no_input() {
         let config = make_config("./app", &[], InputMode::Stdin);
         assert_eq!(build_binary_invocation(&config, None), "'./app'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_with_args_no_input() {
         let config = make_config("./app", &["--model", "resnet50"], InputMode::Stdin);
         assert_eq!(build_binary_invocation(&config, None), "'./app' '--model' 'resnet50'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_stdin_with_input() {
         let config = make_config("./app", &["--flag"], InputMode::Stdin);
@@ -258,6 +263,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_arg_with_input() {
         let config = make_config("./app", &["--flag"], InputMode::Arg);
@@ -267,6 +273,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_env_with_input() {
         let config = make_config("./app", &[], InputMode::Env("INPUT_FILE".into()));
@@ -274,6 +281,7 @@ mod tests {
         assert_eq!(build_binary_invocation(&config, Some("/data/input.bin")), "'./app'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_stdin_no_input() {
         let config = make_config("./app", &["--flag"], InputMode::Stdin);
@@ -283,6 +291,7 @@ mod tests {
     // --- Security: client-supplied `input` must never break out of the shell ---
     // (F-C1) `input` originates from the untrusted `JobRequest.input`.
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_stdin_input_with_metachars_is_neutralised() {
         let config = make_config("./app", &[], InputMode::Stdin);
@@ -292,6 +301,7 @@ mod tests {
         assert_eq!(inv, "'./app' < '/tmp/x; touch /tmp/pwned'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_arg_input_with_metachars_is_neutralised() {
         let config = make_config("./app", &[], InputMode::Arg);
@@ -299,6 +309,7 @@ mod tests {
         assert_eq!(inv, "'./app' '$(reboot)'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn invocation_input_with_single_quote_is_escaped() {
         let config = make_config("./app", &[], InputMode::Stdin);
@@ -306,6 +317,7 @@ mod tests {
         assert_eq!(inv, "'./app' < 'a'\\''b'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn shell_join_quotes_spaces() {
         let parts = vec!["/usr/bin/app".to_string(), "arg with space".to_string()];
@@ -313,6 +325,7 @@ mod tests {
         assert_eq!(result, "'/usr/bin/app' 'arg with space'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn shell_join_escapes_single_quotes() {
         let parts = vec!["./app".to_string(), "it's".to_string()];
@@ -320,18 +333,21 @@ mod tests {
         assert_eq!(result, "'./app' 'it'\\''s'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn shell_join_quotes_every_part() {
         let parts = vec!["./app".to_string(), "--model".to_string(), "resnet50".to_string()];
         assert_eq!(shell_join(&parts), "'./app' '--model' 'resnet50'");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_time_field_strips_percent() {
         let text = "\tPercent of CPU this job got: 75%\n";
         assert_eq!(parse_time_field(text, "Percent of CPU this job got:"), Some(75.0));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_time_field_returns_none_for_non_numeric() {
         let text = "\tSome field: not-a-number\n";
@@ -340,24 +356,28 @@ mod tests {
 
     // --- Inner elapsed time (F-C3, SRS-FUNC-005) -----------------------------
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_elapsed_ms_m_ss_format() {
         let text = "\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:01.23\n";
         assert_eq!(parse_elapsed_ms(text), Some(1230.0));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_elapsed_ms_h_mm_ss_format() {
         let text = "\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:02:03\n";
         assert_eq!(parse_elapsed_ms(text), Some(3_723_000.0));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_elapsed_ms_seconds_only() {
         let text = "\tElapsed (wall clock) time (h:mm:ss or m:ss): 12.50\n";
         assert_eq!(parse_elapsed_ms(text), Some(12_500.0));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_elapsed_ms_absent_returns_none() {
         assert_eq!(parse_elapsed_ms("no time output here"), None);

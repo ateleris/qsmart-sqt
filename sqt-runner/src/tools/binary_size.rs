@@ -17,6 +17,7 @@ pub fn collect(binary: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn collect_on_self() {
         // Use the test binary itself as a target

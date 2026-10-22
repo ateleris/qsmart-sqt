@@ -473,6 +473,7 @@ pub struct ApiError {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-IF-003
     #[test]
     fn job_status_is_terminal() {
         assert!(JobStatus::Complete.is_terminal());
@@ -481,6 +482,7 @@ mod tests {
         assert!(!JobStatus::Running.is_terminal());
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn job_accepted_deserializes() {
         let json = r#"{"job_id":"job-abc123","status":"accepted","queue_position":0,"created_at":"2026-03-06T10:00:00Z"}"#;
@@ -490,6 +492,7 @@ mod tests {
         assert_eq!(accepted.queue_position, 0);
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn job_status_response_deserializes() {
         let json = r#"{
@@ -518,6 +521,7 @@ mod tests {
         assert!(resp.metrics.memory_leaks_bytes.is_none());
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn job_metrics_all_null_deserializes() {
         let json = r#"{
@@ -535,6 +539,7 @@ mod tests {
         assert!(resp.metrics.memory_peak_rss_kb.is_none());
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn job_metrics_get_returns_correct_field() {
         let m = JobMetrics {
@@ -564,6 +569,7 @@ mod tests {
         assert_eq!(m.get("binary.size_kb"), Some(412.0));
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn job_metrics_get_unknown_returns_none() {
         let m = JobMetrics::default();
@@ -571,6 +577,7 @@ mod tests {
         assert!(m.get("return_code").is_none());
     }
 
+    /// Verifies: SRS-REL-003
     #[test]
     fn error_response_deserializes() {
         let json = r#"{"error":{"code":"NOT_FOUND","message":"Job not found","timestamp":"2026-03-06T10:00:00Z"}}"#;
@@ -583,6 +590,7 @@ mod tests {
     // These pin the exact JSON strings that the SQT Runner API expects.
     // A changed `rename_all` attribute would silently break the contract.
 
+    /// Verifies: SRS-IF-001, SRS-FUNC-019
     #[test]
     fn workload_type_wire_names() {
         // ARCH §5.2 defines these exact snake_case names.
@@ -602,6 +610,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-001
     #[test]
     fn job_status_wire_names_all_variants() {
         // All four status values must serialize to lowercase (API contract).
@@ -618,6 +627,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-001
     #[test]
     fn instrumentation_wire_names() {
         // ARCH §5.4: instrumentation values sent to server must be lowercase.
@@ -632,6 +642,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-001
     #[test]
     fn measurement_mode_wire_names() {
         // ARCH §5.3: latency / throughput.
@@ -641,6 +652,7 @@ mod tests {
 
     // ----- JobRequest serialization (ARCH §5.5.1) ----------------------------
 
+    /// Verifies: SRS-IF-002
     #[test]
     fn job_request_defaults_are_spec_compliant() {
         // ARCH §5.5.1: when only use_case is given, repetitions=1,
@@ -659,6 +671,7 @@ mod tests {
 
     // ----- JobStatusResponse edge cases (ARCH §5.5.2) -----------------------
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn job_status_response_with_hardware_deserializes() {
         // ARCH §5.5.2 example: hardware descriptor with GR740 fields.
@@ -691,6 +704,7 @@ mod tests {
         assert_eq!(hw.os.as_deref(), Some("RTEMS 6"));
     }
 
+    /// Verifies: SRS-REL-004
     #[test]
     fn job_output_result_consistent_field() {
         // ARCH §5.6 (AD-017): result_consistent records whether every repetition
@@ -716,6 +730,7 @@ mod tests {
         assert_eq!(out.output_type, "classification_labels");
     }
 
+    /// Verifies: SRS-REL-003
     #[test]
     fn failed_job_carries_error_field() {
         // ARCH §5.5.2: a failed job has an `error` field with a description.
@@ -734,6 +749,7 @@ mod tests {
         assert_eq!(resp.error.as_deref(), Some("binary not found: /opt/model.onnx"));
     }
 
+    /// Verifies: SRS-FUNC-005, SRS-REL-002
     #[test]
     fn complete_job_null_metric_field_is_none() {
         // ARCH §5.5.2: "A complete job may have null metric fields — those indicate
@@ -763,6 +779,7 @@ mod tests {
         assert!(resp.metrics.coverage_line_pct.is_none());
     }
 
+    /// Verifies: SRS-REL-003
     #[test]
     fn error_response_with_details_deserializes() {
         // ARCH §5.8: details field is optional.
@@ -780,6 +797,7 @@ mod tests {
         assert!(err.error.details.unwrap().contains("object_detection"));
     }
 
+    /// Verifies: SRS-IF-003
     #[test]
     fn failed_job_is_terminal_but_not_complete() {
         // wait_for_job branches on Failed vs Complete separately.
@@ -791,6 +809,7 @@ mod tests {
         assert!(!JobStatus::Running.is_terminal());
     }
 
+    /// Verifies: SRS-FUNC-019
     #[test]
     fn workload_type_default_is_image_classification() {
         // TestSpec derives Default which falls through to WorkloadType::default().

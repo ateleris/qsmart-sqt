@@ -76,23 +76,27 @@ mod tests {
   <status><state>FINISHED</state></status>
 </valgrindoutput>"#;
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn name_is_memory_leaks_bytes() {
         assert_eq!(MemoryLeaksCollector.name(), "memory.leaks_bytes");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_valgrind_leaks_with_leaks() {
         let total = parse_valgrind_leaks(VALGRIND_XML_WITH_LEAKS).unwrap();
         assert_eq!(total, 64.0); // 40 + 24
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_valgrind_leaks_no_leaks() {
         let total = parse_valgrind_leaks(VALGRIND_XML_NO_LEAKS).unwrap();
         assert_eq!(total, 0.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_valgrind_leaks_empty() {
         let total = parse_valgrind_leaks("").unwrap();

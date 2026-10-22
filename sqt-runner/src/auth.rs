@@ -88,18 +88,21 @@ mod tests {
         b.body(Body::empty()).unwrap()
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn protected_route_without_header_returns_401() {
         let resp = app("secret").oneshot(get_req("/protected", None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn protected_route_with_wrong_token_returns_401() {
         let resp = app("secret").oneshot(get_req("/protected", Some("Bearer nope"))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn protected_route_with_correct_token_passes() {
         let resp =
@@ -107,6 +110,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn protected_route_with_non_bearer_scheme_returns_401() {
         let resp =
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn health_route_is_unauthenticated() {
         let resp = app("secret").oneshot(get_req("/health", None)).await.unwrap();

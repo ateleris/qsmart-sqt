@@ -61,6 +61,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn job_state_new_sets_accepted_status() {
         let req = make_request(WorkloadType::ImageClassification, 1);
@@ -68,6 +69,7 @@ mod tests {
         assert_eq!(job.status, JobStatus::Accepted);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn job_state_new_copies_fields_from_request() {
         let mut tags = HashMap::new();
@@ -83,6 +85,7 @@ mod tests {
         assert_eq!(job.tags, Some(tags));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn job_state_new_optional_fields_are_none() {
         let req = make_request(WorkloadType::Regression, 1);
@@ -93,6 +96,7 @@ mod tests {
         assert!(job.metrics.is_none());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn new_store_is_empty() {
         let store = new_store();

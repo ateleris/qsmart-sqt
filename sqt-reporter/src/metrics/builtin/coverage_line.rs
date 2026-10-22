@@ -60,29 +60,34 @@ inventory::submit! {
 mod tests {
     use super::*;
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn name_is_coverage_line_pct() {
         assert_eq!(CoverageLineCollector.name(), "coverage.line_pct");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_line_coverage_valid() {
         let output = "Summary coverage rate:\n  lines......: 85.5% (171 of 200 lines)\n";
         assert_eq!(parse_line_coverage(output).unwrap(), 85.5);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_line_coverage_100_percent() {
         let output = "  lines......: 100.0% (200 of 200 lines)\n";
         assert_eq!(parse_line_coverage(output).unwrap(), 100.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_line_coverage_no_match() {
         let output = "Reading tracefile ...\nNo summary available.\n";
         assert!(parse_line_coverage(output).is_err());
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn missing_info_file_config_returns_error() {
         use crate::metrics::Platform;

@@ -67,29 +67,34 @@ inventory::submit! {
 mod tests {
     use super::*;
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn name_is_static_critical_issues() {
         assert_eq!(SonarCriticalIssuesCollector.name(), "static.critical_issues");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_issue_count_zero() {
         let json = r#"{"total": 0, "issues": []}"#;
         assert_eq!(parse_issue_count(json).unwrap(), 0.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_issue_count_nonzero() {
         let json = r#"{"total": 7, "issues": []}"#;
         assert_eq!(parse_issue_count(json).unwrap(), 7.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_issue_count_missing_total() {
         let json = r#"{"issues": []}"#;
         assert!(parse_issue_count(json).is_err());
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn missing_server_url_returns_error() {
         use crate::metrics::Platform;

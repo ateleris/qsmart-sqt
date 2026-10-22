@@ -56,11 +56,13 @@ mod tests {
         }
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn name_is_return_code() {
         assert_eq!(ReturnCodeCollector.name(), "return_code");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn true_returns_zero() {
         let dir = tempdir().unwrap();
@@ -69,6 +71,7 @@ mod tests {
         assert_eq!(mv.value, 0.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn false_returns_nonzero() {
         let dir = tempdir().unwrap();
@@ -77,6 +80,7 @@ mod tests {
         assert_ne!(mv.value, 0.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn evidence_contains_command() {
         let dir = tempdir().unwrap();

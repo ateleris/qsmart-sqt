@@ -177,6 +177,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn classification_all_correct_returns_accuracy_one() {
         let outputs = vec![json!(0), json!(1), json!(2)];
@@ -186,6 +187,7 @@ mod tests {
         assert!((result["ml.f1_score"] - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn classification_all_wrong_returns_accuracy_zero() {
         let outputs = vec![json!(1), json!(2), json!(0)];
@@ -194,6 +196,7 @@ mod tests {
         assert!((result["ml.accuracy"] - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn classification_partial_correct() {
         // 2 out of 4 correct
@@ -204,6 +207,7 @@ mod tests {
         assert!((acc - 0.5).abs() < f64::EPSILON, "expected 0.5, got {acc}");
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn classification_with_argmax_probabilities() {
         // Probability arrays: [0.1, 0.9, 0.0] → class 1, [0.8, 0.1, 0.1] → class 0
@@ -213,6 +217,7 @@ mod tests {
         assert!((result["ml.accuracy"] - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn classification_argmax_picks_highest_prob() {
         // [0.3, 0.5, 0.2] → argmax = 1
@@ -222,6 +227,7 @@ mod tests {
         assert!((result["ml.accuracy"] - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn regression_mse_computation() {
         // predictions: [2.0, 4.0], truth: [3.0, 3.0]
@@ -234,6 +240,7 @@ mod tests {
         assert!((result["ml.mae"] - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn regression_perfect_predictions_zero_mse() {
         let outputs = vec![json!(1.5), json!(2.5), json!(3.5)];
@@ -243,6 +250,7 @@ mod tests {
         assert!(result["ml.mae"].abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-016
     #[test]
     fn precision_compare_within_tolerance() {
         let outputs = vec![json!(1.0), json!(2.0)];
@@ -251,6 +259,7 @@ mod tests {
         assert!((result["ml.output_within_tolerance"] - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-016
     #[test]
     fn precision_compare_outside_tolerance() {
         let outputs = vec![json!(1.0), json!(2.0)];
@@ -259,6 +268,7 @@ mod tests {
         assert!((result["ml.output_within_tolerance"] - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-016
     #[test]
     fn precision_compare_array_elements_within_tolerance() {
         let outputs = vec![json!([1.0, 2.0]), json!([3.0, 4.0])];
@@ -267,6 +277,7 @@ mod tests {
         assert!((result["ml.output_within_tolerance"] - 1.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-016
     #[test]
     fn precision_compare_array_elements_outside_tolerance() {
         let outputs = vec![json!([1.0, 2.0])];
@@ -275,12 +286,14 @@ mod tests {
         assert!((result["ml.output_within_tolerance"] - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn empty_outputs_returns_empty_map() {
         let result = compute(&[], &[], &WorkloadType::Classification);
         assert!(result.is_empty());
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn mismatched_lengths_returns_empty_map() {
         let outputs = vec![json!(0), json!(1)];
@@ -289,6 +302,7 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// Verifies: SRS-FUNC-016
     #[test]
     fn precision_compare_mismatched_lengths_returns_zero() {
         let outputs = vec![json!(1.0), json!(2.0)];
@@ -297,6 +311,7 @@ mod tests {
         assert!((result["ml.output_within_tolerance"] - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn object_detection_returns_empty_map() {
         let outputs = vec![json!(0)];
@@ -305,6 +320,7 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn pixel_segmentation_returns_empty_map() {
         let outputs = vec![json!(0)];

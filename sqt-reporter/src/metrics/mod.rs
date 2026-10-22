@@ -82,18 +82,21 @@ inventory::collect!(CollectorFactory);
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-PERF-004
     #[test]
     fn target_default_has_30s_timeout() {
         let target = Target::default();
         assert_eq!(target.timeout, Duration::from_secs(30));
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn target_default_uses_local_platform() {
         let target = Target::default();
         assert_eq!(target.platform, Platform::Local);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn metric_value_new_creates_empty_evidence() {
         let mv = MetricValue::new(42.0, "ms");

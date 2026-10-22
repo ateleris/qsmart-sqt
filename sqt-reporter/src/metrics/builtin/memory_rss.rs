@@ -48,11 +48,13 @@ inventory::submit! {
 mod tests {
     use super::*;
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn name_is_memory_peak_rss_kb() {
         assert_eq!(MemoryPeakRssCollector.name(), "memory.peak_rss_kb");
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_max_rss_valid_output() {
         let stderr = "\
@@ -63,12 +65,14 @@ mod tests {
         assert_eq!(parse_max_rss(stderr).unwrap(), 1536.0);
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_max_rss_missing_line() {
         let stderr = "some other output without the expected line\n";
         assert!(parse_max_rss(stderr).is_err());
     }
 
+    /// Verifies: none (legacy local metric collector, not used by the Orchestrator)
     #[test]
     fn parse_max_rss_invalid_number() {
         let stderr = "\tMaximum resident set size (kbytes): not_a_number\n";

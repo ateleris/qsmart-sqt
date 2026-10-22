@@ -341,6 +341,7 @@ mod tests {
             .expect("client should build")
     }
 
+    /// Verifies: SRS-OPS-005
     #[test]
     fn token_not_in_debug_output() {
         let client = make_client(3);
@@ -352,6 +353,7 @@ mod tests {
         assert!(debug.contains("[REDACTED]"), "Debug output should contain [REDACTED]: {debug}");
     }
 
+    /// Verifies: SRS-OPS-005
     #[test]
     fn token_not_in_display_of_redacted() {
         let r = Redacted("my-secret".to_owned());
@@ -359,6 +361,7 @@ mod tests {
         assert_eq!(format!("{r:?}"), "[REDACTED]");
     }
 
+    /// Verifies: SRS-IF-006
     #[test]
     fn client_builds_without_token() {
         let client = ApiClient::new("http://localhost:9999", None, 3, 1, 1, 30)
@@ -366,6 +369,7 @@ mod tests {
         assert!(client.token.is_none());
     }
 
+    /// Verifies: SRS-PERF-003, SRS-FUNC-020
     #[test]
     fn client_builds_with_retry_and_poll_params() {
         let client = ApiClient::new("http://localhost:9999", Some("tok"), 5, 2, 3, 45)
@@ -400,6 +404,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_job_status_rejects_empty_job_id() {
         let resp = make_job_status_resp("");
@@ -407,6 +412,7 @@ mod tests {
         assert!(err.to_string().contains("job_id"), "error should mention job_id: {err}");
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_job_status_accepts_valid_response() {
         let resp = make_job_status_resp("job-abc");
@@ -423,6 +429,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_version_response_rejects_empty_api_version() {
         let resp = make_version_resp("", "1.0.0");
@@ -430,6 +437,7 @@ mod tests {
         assert!(err.to_string().contains("api_version"), "error should mention api_version: {err}");
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_version_response_rejects_empty_runner_version() {
         let resp = make_version_resp("v1", "");
@@ -440,6 +448,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_version_response_accepts_valid_response() {
         let resp = make_version_resp("v1", "1.2.3");
