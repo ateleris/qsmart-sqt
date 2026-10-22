@@ -1,0 +1,14 @@
+# SQT reference Runner image. The runner starts tool containers through the
+# `docker` CLI, so it sits on the official CLI image; mount the host socket
+# (-v /var/run/docker.sock:/var/run/docker.sock) or set DOCKER_HOST.
+# The tool containers are started by the host daemon, so bind-mount the
+# runner's working paths at the same location inside and outside, and pass
+# `--host 0.0.0.0` to listen beyond the container's loopback.
+#
+# Build context: a directory containing the release binary `sqt-runner`
+# and `LICENSE` (see ci/release-images.sh).
+FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb
+COPY LICENSE /usr/share/doc/sqt/LICENSE
+COPY sqt-runner /usr/local/bin/sqt-runner
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/sqt-runner"]
