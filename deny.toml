@@ -1,0 +1,39 @@
+# cargo-deny configuration: the dependency licence, ban and source gate
+# (SRS-CDR-003). Security advisories are gated separately by cargo-audit.
+# Run: cargo deny check licenses bans sources
+
+[graph]
+# Only the targets we build and ship; Windows/wasm/UEFI-only crates drop out.
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+all-features = false
+
+[licenses]
+# Every licence must allow redistribution of the SQT under the ESA Software
+# Community Licence, Permissive v2.4. Copyleft licences are not on the list.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace crates (publish = false) carry the ESA-PL LICENSE file.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

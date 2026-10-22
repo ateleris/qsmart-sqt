@@ -30,3 +30,11 @@ RUN rustup component add llvm-tools-preview clippy rustfmt \
     && rustup target add x86_64-unknown-linux-musl \
     && cargo install cargo-llvm-cov --locked --version "$CARGO_LLVM_COV_VERSION" \
     && cargo install cargo-nextest --locked --version "$CARGO_NEXTEST_VERSION"
+
+# Dependency gates and SBOM (ci/supply-chain.sh)
+ARG CARGO_DENY_VERSION=0.20.2
+ARG CARGO_AUDIT_VERSION=0.22.2
+ARG CARGO_CYCLONEDX_VERSION=0.5.9
+RUN cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION" \
+    && cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION" \
+    && cargo install cargo-cyclonedx --locked --version "$CARGO_CYCLONEDX_VERSION"
