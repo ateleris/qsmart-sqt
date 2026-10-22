@@ -4,8 +4,9 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Ateleris"]
-license-file = "LICENSE"
+license = "ESA-PL-permissive-2.4"
 repository = "https://github.com/ateleris/qsmart-sqt"
+publish = false
 
 [workspace.dependencies]
 sqt-types = { path = "./sqt-types" }
@@ -14,7 +15,7 @@ serde_json = "1"
 serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "http2", "charset"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

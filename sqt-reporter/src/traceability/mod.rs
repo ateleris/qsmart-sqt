@@ -218,7 +218,10 @@ mod tests {
             uid: uid.to_string(),
             title: format!("Title for {uid}"),
             status: "Active".to_string(),
-            verification_methods: verification.iter().map(|s| s.to_string()).collect(),
+            verification_methods: verification
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         }
     }
 

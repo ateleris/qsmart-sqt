@@ -5,7 +5,9 @@
 #   target/nextest/ci/junit.xml  -> published by dorny/test-reporter
 #   coverage.json                -> raw llvm-cov report
 #   coverage-summary.md          -> appended to the GitHub job summary
-# Exits non-zero if any test fails (so the workflow fails too).
+# Exits non-zero if any test fails (so the workflow fails too), or if
+# COVERAGE_FAIL_UNDER is set and the Orchestrator's line coverage is below it
+# (the release gate: measured on every merge, enforced at the tag).
 set -uo pipefail
 
 cargo llvm-cov --no-report --workspace nextest --profile ci
@@ -40,17 +42,29 @@ if [ -f "$JUNIT" ]; then
   ' "$JUNIT" || true
 fi
 
-# Coverage report + summary (written into the workspace).
+# Coverage report + summary (written into the workspace). The Orchestrator
+# figure is sqt-reporter alone: the Runner and the shared types are excluded.
+ORCHESTRATOR_ONLY='/sqt-(runner|types)/'
 cargo llvm-cov report --json --output-path coverage.json || true
-if [ -f coverage.json ]; then
+cargo llvm-cov report --json --output-path coverage-orchestrator.json \
+  --ignore-filename-regex "$ORCHESTRATOR_ONLY" || true
+if [ -f coverage.json ] && [ -f coverage-orchestrator.json ]; then
   node -e '
-    const d = require("./coverage.json");
-    const t = d.data[0].totals.lines;
+    const row = (label, f) => {
+      const t = require(f).data[0].totals.lines;
+      return "| " + label + " | " + t.percent.toFixed(1) + "% (" + t.covered + " / " + t.count + " lines) |\n";
+    };
     require("fs").writeFileSync("coverage-summary.md",
-      "## 📊 Coverage\n\n| Metric | Value |\n|---|---|\n| Lines | " +
-      t.percent.toFixed(1) + "% (" + t.covered + " / " + t.count + " lines) |\n" +
-      "\n_Per-test results are in the **Tests** check above._\n");
+      "## 📊 Coverage\n\n| Scope | Lines |\n|---|---|\n" +
+      row("Workspace", "./coverage.json") +
+      row("Orchestrator (sqt-reporter)", "./coverage-orchestrator.json") +
+      "\n_Release gate: Orchestrator ≥ 80 % at the tag. Per-test results are in the **Tests** check above._\n");
   ' || true
+fi
+
+if [ -n "${COVERAGE_FAIL_UNDER:-}" ]; then
+  cargo llvm-cov report --summary-only --ignore-filename-regex "$ORCHESTRATOR_ONLY" \
+    --fail-under-lines "$COVERAGE_FAIL_UNDER" || status=1
 fi
 
 exit "$status"

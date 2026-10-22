@@ -43,6 +43,17 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first
+use. TLS is pure Rust (rustls), so no OpenSSL or other system library is needed.
+
+Static release binaries (self-contained, no runtime dependencies) are built for
+musl. The only package needed besides rustup is a musl C compiler, used by
+`ring` (on Debian/Ubuntu: `apt install musl-tools`):
+
+```
+cargo build --locked --release --target x86_64-unknown-linux-musl
+```
+
 Run a qualification (the runner needs Docker):
 
 ```

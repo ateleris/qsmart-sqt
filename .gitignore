@@ -15,3 +15,12 @@ ci/runner/dind-cache/
 
 # Documentation stored in separate repository
 /documentation
+
+# Generated SBOMs (cargo cyclonedx) and release output
+*.cdx.json
+/dist
+/sbom
+
+# Coverage output of ci/run-tests.sh
+coverage*.json
+coverage-summary.md

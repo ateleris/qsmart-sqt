@@ -214,7 +214,7 @@ mod tests {
     fn make_config(path: &str, args: &[&str], input_mode: InputMode) -> BinaryConfig {
         BinaryConfig {
             path: path.to_string(),
-            args: args.iter().map(|s| s.to_string()).collect(),
+            args: args.iter().map(std::string::ToString::to_string).collect(),
             env: HashMap::new(),
             input_mode,
         }

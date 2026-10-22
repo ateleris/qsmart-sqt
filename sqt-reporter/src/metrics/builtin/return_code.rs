@@ -34,6 +34,10 @@ inventory::submit! {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "values are parsed or converted exactly; tests assert exact results"
+)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

@@ -1,0 +1,10 @@
+# SQT Orchestrator image. The binary is static (musl, rustls with bundled
+# webpki roots), so the image holds nothing else.
+#
+# Build context: a directory containing the release binary `sqt-reporter`
+# and `LICENSE` (see ci/release-images.sh).
+FROM scratch
+COPY LICENSE /usr/share/doc/sqt/LICENSE
+COPY sqt-reporter /usr/local/bin/sqt-reporter
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/sqt-reporter"]

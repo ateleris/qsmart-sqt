@@ -1,0 +1,100 @@
+name: Release
+
+# Runs on a pushed version tag. Re-runs every gate, then builds the static
+# binaries, the two container images, the SBOMs and the source archive,
+# records their SHA-256 values and opens a *draft* GitHub release with them.
+# The draft is published by hand after review.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: self-hosted
+    permissions:
+      contents: write        # create the draft release and upload its assets
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0     # full history, so the annotated tag object is present
+
+      - name: Check the tag
+        id: tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [ "$(git cat-file -t "refs/tags/$tag")" != tag ]; then
+            echo "::error::$tag is a lightweight tag; releases need an annotated, signed tag (SRS-CDR-001)"
+            exit 1
+          fi
+          if ! git cat-file tag "refs/tags/$tag" | grep -q -- '-----BEGIN \(PGP\|SSH\) SIGNATURE-----'; then
+            echo "::error::$tag is not signed (SRS-CDR-001)"
+            exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git log -1 --format=%ct "$tag")" >> "$GITHUB_OUTPUT"
+
+      - name: Lint
+        uses: ./.github/actions/ci-docker
+        with:
+          run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests and coverage gate (Orchestrator ≥ 80 % lines)
+        uses: ./.github/actions/ci-docker
+        with:
+          run: COVERAGE_FAIL_UNDER=80 bash ci/run-tests.sh
+
+      - name: Dependency gates and SBOM
+        uses: ./.github/actions/ci-docker
+        with:
+          run: bash ci/supply-chain.sh
+
+      - name: Build static binaries
+        uses: ./.github/actions/ci-docker
+        with:
+          run: >-
+            SOURCE_DATE_EPOCH=${{ steps.tag.outputs.epoch }}
+            bash ci/release-build.sh ${{ steps.tag.outputs.version }}
+
+      - name: Build container images
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.tag.outputs.epoch }}
+        run: bash ci/release-images.sh ${{ steps.tag.outputs.version }}
+
+      - name: Source archive and checksums
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          git archive --format=tar --prefix="qsmart-sqt-$VERSION/" "$GITHUB_REF_NAME" \
+            | gzip -n -9 > "dist/qsmart-sqt-$VERSION-src.tar.gz"
+          cd dist
+          sha256sum -- *.tar.gz *.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+          {
+            echo "## Release ${GITHUB_REF_NAME}"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo
+            cat IMAGES.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Draft GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: SQT ${{ github.ref_name }}
+          body: |
+            Software Qualification Toolkit ${{ github.ref_name }}.
+
+            Verify each asset with `sha256sum -c SHA256SUMS`. Image IDs are listed in
+            `IMAGES.txt`. Release content, tools and known limitations are in the
+            Software Release Document (SQT-RP-0002-ATS).
+          files: |
+            dist/*.tar.gz
+            dist/*.cdx.json
+            dist/SHA256SUMS
+            dist/IMAGES.txt

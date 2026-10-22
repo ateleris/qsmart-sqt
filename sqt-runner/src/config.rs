@@ -362,14 +362,14 @@ mod tests {
 
     #[test]
     fn parse_minimal_config() {
-        let yaml = r#"
+        let yaml = r"
 binary:
   path: target/debug/my-app
 docker:
   tools:
     run:
       image: sqt-run:latest
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.binary.path, "target/debug/my-app");
         assert!(config.binary.args.is_empty());
@@ -451,11 +451,11 @@ docker:
 
     #[test]
     fn parse_input_mode_stdin() {
-        let yaml = r#"
+        let yaml = r"
 binary:
   path: app
   input_mode: stdin
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(config.binary.input_mode, InputMode::Stdin));
     }
@@ -487,7 +487,7 @@ binary:
 
     #[test]
     fn tool_config_from_tools() {
-        let yaml = r#"
+        let yaml = r"
 binary:
   path: app
 docker:
@@ -496,7 +496,7 @@ docker:
       image: run:1
     valgrind:
       image: valgrind:1
-"#;
+";
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
         let tc = ToolConfig::from_tools(&config.docker.tools);
         assert_eq!(tc.run_image.as_deref(), Some("run:1"));
@@ -508,7 +508,7 @@ docker:
 
     #[test]
     fn tool_config_reads_sonar_token_from_env() {
-        let yaml = r#"
+        let yaml = r"
 binary:
   path: app
 docker:
@@ -518,7 +518,7 @@ docker:
     sonarqube:
       url: http://sonar:9000
       token_env: MY_SONAR_TOKEN
-"#;
+";
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::set_var("MY_SONAR_TOKEN", "secret-token") };
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
@@ -530,7 +530,7 @@ docker:
 
     #[test]
     fn tool_config_sonar_token_absent_when_env_unset() {
-        let yaml = r#"
+        let yaml = r"
 binary:
   path: app
 docker:
@@ -539,7 +539,7 @@ docker:
       image: run:1
     sonarqube:
       url: http://sonar:9000
-"#;
+";
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::remove_var("SONAR_TOKEN") };
         let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
@@ -567,7 +567,7 @@ binary:
         let mut f = std::fs::File::create(&config_path).unwrap();
         writeln!(
             f,
-            r#"
+            r"
 binary:
   path: artifacts/ml_l_inference
 workspace: workspace
@@ -575,7 +575,7 @@ docker:
   tools:
     run:
       image: sqt-run:latest
-"#
+"
         )
         .unwrap();
 
@@ -594,7 +594,7 @@ docker:
         let mut f = std::fs::File::create(&config_path).unwrap();
         writeln!(
             f,
-            r#"
+            r"
 binary:
   path: /bin/app
 docker:
@@ -607,7 +607,7 @@ docker:
     engine_lib: lib/libengine.so
     include_dirs:
       - include/
-"#
+"
         )
         .unwrap();
 
@@ -634,7 +634,7 @@ docker:
         let mut f = std::fs::File::create(&config_path).unwrap();
         writeln!(
             f,
-            r#"
+            r"
 binary:
   path: /bin/app
 docker:
@@ -643,7 +643,7 @@ docker:
       image: sqt-run:latest
 docs:
   directory: docs/
-"#
+"
         )
         .unwrap();
 
@@ -662,7 +662,7 @@ docs:
         let mut f = std::fs::File::create(&config_path).unwrap();
         writeln!(
             f,
-            r#"
+            r"
 binary:
   path: /absolute/path/app
 workspace: /absolute/workspace
@@ -670,7 +670,7 @@ docker:
   tools:
     run:
       image: sqt-run:latest
-"#
+"
         )
         .unwrap();
 

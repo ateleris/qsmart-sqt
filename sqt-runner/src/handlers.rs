@@ -454,6 +454,7 @@ mod tests {
         Router,
         routing::{get, post},
     };
+    use base64::Engine as _;
     use http_body_util::BodyExt as _;
     use sqt_types::{HardwareInfo, JobMetrics};
     use tokio::sync::Semaphore;
@@ -588,7 +589,7 @@ mod tests {
         assert_eq!(json["attachments"].as_array().unwrap().len(), 1);
         assert_eq!(json["attachments"][0]["filename"], "evidence.pdf");
         assert_eq!(json["attachments"][0]["content_type"], "application/pdf");
-        assert!(json["attachments"][0]["data"].as_str().unwrap().len() > 0);
+        assert!(!json["attachments"][0]["data"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -620,7 +621,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["status"], "accepted");
-        assert!(json["job_id"].as_str().unwrap().len() > 0);
+        assert!(!json["job_id"].as_str().unwrap().is_empty());
         assert_eq!(json["queue_position"], 1);
     }
 
@@ -770,7 +771,6 @@ mod tests {
         assert_eq!(result.attachments[0].filename, "evidence.pdf");
         assert_eq!(result.attachments[0].content_type, "application/pdf");
         // data is valid base64
-        use base64::Engine as _;
         assert!(
             base64::engine::general_purpose::STANDARD.decode(&result.attachments[0].data).is_ok()
         );

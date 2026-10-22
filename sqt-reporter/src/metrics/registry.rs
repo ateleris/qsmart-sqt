@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "duplicate collector registration: 'foo'")]
     fn duplicate_name_panics() {
         let mut registry = MetricRegistry::new();
         registry.register_boxed("foo", make("foo"));
