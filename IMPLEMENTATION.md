@@ -56,7 +56,9 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
 - **API client** (`api/client.rs`): `submit_job`, `get_job_status`,
   `wait_for_job`, `get_version`, `get_docs`; polling cadence from the
   `poll_interval_*` config (SRS-PERF-003); bounded transient-error retry
-  distinct from polling backoff (SRS-FUNC-020); bearer token wrapped in a `Redacted`
+  distinct from polling backoff, never resending a submission that may have
+  reached the Runner, with a per-request timeout (SRS-FUNC-020); bearer token
+  wrapped in a `Redacted`
   newtype (SRS-OPS-005).
 - **Orchestrator** (`orchestrator/mod.rs`): version-compatibility gate at session
   start (SRS-IF-008); groups specs by `(use_case, input)`; submits and polls the

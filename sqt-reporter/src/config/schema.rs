@@ -38,6 +38,9 @@ pub struct RunnerConfig {
     pub poll_interval_initial_secs: u64,
     #[serde(default = "default_poll_interval_max_secs")]
     pub poll_interval_max_secs: u64,
+    /// Upper bound on one HTTP request to the Runner, body included.
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
 }
 
 fn default_max_concurrent_jobs() -> u32 {
@@ -58,11 +61,16 @@ fn default_poll_interval_initial_secs() -> u64 {
 fn default_poll_interval_max_secs() -> u64 {
     30
 }
+fn default_request_timeout_secs() -> u64 {
+    30
+}
 
 /// Upper bound on `runner.retry_max`: bounded retry (SRS-FUNC-020).
 const RETRY_MAX_LIMIT: u32 = 10;
 /// Upper bound on `runner.retry_backoff_initial_secs`.
 const RETRY_BACKOFF_INITIAL_LIMIT_SECS: u64 = 60;
+/// Upper bound on `runner.request_timeout_secs`.
+const REQUEST_TIMEOUT_LIMIT_SECS: u64 = 600;
 
 impl RunnerConfig {
     fn validate_ranges(&self) -> Result<()> {
@@ -80,6 +88,12 @@ impl RunnerConfig {
                 "runner.poll_interval_max_secs ({}) must not be less than runner.poll_interval_initial_secs ({})",
                 self.poll_interval_max_secs,
                 self.poll_interval_initial_secs
+            );
+        }
+        if !(1..=REQUEST_TIMEOUT_LIMIT_SECS).contains(&self.request_timeout_secs) {
+            bail!(
+                "runner.request_timeout_secs must be between 1 and {REQUEST_TIMEOUT_LIMIT_SECS}, got {}",
+                self.request_timeout_secs
             );
         }
         if self.retry_max > RETRY_MAX_LIMIT {
@@ -545,6 +559,8 @@ report:
                 "runner.poll_interval_max_secs",
             ),
             ("  retry_max: 11", "runner.retry_max"),
+            ("  request_timeout_secs: 0", "runner.request_timeout_secs"),
+            ("  request_timeout_secs: 601", "runner.request_timeout_secs"),
             ("  retry_backoff_initial_secs: 61", "runner.retry_backoff_initial_secs"),
             ("  token_env: \"\"", "runner.token_env"),
         ];

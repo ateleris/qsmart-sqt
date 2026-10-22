@@ -172,15 +172,7 @@ constraints:
         specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
     assert_eq!(loaded_specs.len(), 1);
 
-    let client = api::ApiClient::new(
-        &cfg.runner.url,
-        None,
-        cfg.runner.retry_max,
-        cfg.runner.retry_backoff_initial_secs,
-        cfg.runner.poll_interval_initial_secs,
-        cfg.runner.poll_interval_max_secs,
-    )
-    .unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
     let mut ev_store =
         evidence::EvidenceStore::new(evidence::RunDir::create(dir.path()).unwrap()).unwrap();
     let shutdown = CancellationToken::new();
@@ -222,15 +214,7 @@ constraints:
     let cfg = make_test_config(&url, &spec_path, dir.path());
     let loaded_specs =
         specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
-    let client = api::ApiClient::new(
-        &cfg.runner.url,
-        None,
-        cfg.runner.retry_max,
-        cfg.runner.retry_backoff_initial_secs,
-        cfg.runner.poll_interval_initial_secs,
-        cfg.runner.poll_interval_max_secs,
-    )
-    .unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
     let mut ev_store =
         evidence::EvidenceStore::new(evidence::RunDir::create(dir.path()).unwrap()).unwrap();
     let shutdown = CancellationToken::new();
@@ -265,15 +249,7 @@ constraints:
     let cfg = make_test_config(&url, &spec_path, dir.path());
     let loaded_specs =
         specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
-    let client = api::ApiClient::new(
-        &cfg.runner.url,
-        None,
-        cfg.runner.retry_max,
-        cfg.runner.retry_backoff_initial_secs,
-        cfg.runner.poll_interval_initial_secs,
-        cfg.runner.poll_interval_max_secs,
-    )
-    .unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
     let mut ev_store =
         evidence::EvidenceStore::new(evidence::RunDir::create(dir.path()).unwrap()).unwrap();
 
@@ -317,15 +293,7 @@ async fn unreconcilable_unit_fails_only_its_constraint() {
     let cfg = make_test_config_files(&url, &[good.as_path(), bad.as_path()], dir.path());
     let loaded_specs =
         specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
-    let client = api::ApiClient::new(
-        &cfg.runner.url,
-        None,
-        cfg.runner.retry_max,
-        cfg.runner.retry_backoff_initial_secs,
-        cfg.runner.poll_interval_initial_secs,
-        cfg.runner.poll_interval_max_secs,
-    )
-    .unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
     let mut ev_store =
         evidence::EvidenceStore::new(evidence::RunDir::create(dir.path()).unwrap()).unwrap();
 
@@ -358,7 +326,7 @@ async fn run_and_write(
     let cfg = make_test_config(url, spec_path, out);
     let loaded_specs =
         specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
-    let client = api::ApiClient::new(&cfg.runner.url, None, 0, 0, 1, 1).unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
     let run_dir = evidence::RunDir::create(&cfg.report.output_dir).unwrap();
     let mut ev_store = evidence::EvidenceStore::new(run_dir).unwrap();
     let (mut result, provenance) =

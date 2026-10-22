@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
-pub use schema::SqtConfig;
+pub use schema::{RunnerConfig, SqtConfig};
 
 mod schema;
 

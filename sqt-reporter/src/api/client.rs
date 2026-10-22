@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -54,6 +53,94 @@ pub struct RecordedResponse {
 // ApiClient
 // ---------------------------------------------------------------------------
 
+/// Timing and retry settings of an [`ApiClient`] (the `runner:` block of the
+/// configuration).
+#[derive(Debug, Clone, Copy)]
+pub struct ClientOptions {
+    /// Additional attempts after a transient failure (SRS-FUNC-020).
+    pub retry_max: u32,
+    /// Back-off before the first retry; doubles for each further retry.
+    pub retry_backoff_initial_secs: u64,
+    /// Initial delay between job-status polls; doubles each poll up to
+    /// `poll_interval_max_secs` (SRS-PERF-003).
+    pub poll_interval_initial_secs: u64,
+    pub poll_interval_max_secs: u64,
+    /// Upper bound on one HTTP request, body included.
+    pub request_timeout_secs: u64,
+}
+
+impl Default for ClientOptions {
+    fn default() -> Self {
+        Self {
+            retry_max: 3,
+            retry_backoff_initial_secs: 1,
+            poll_interval_initial_secs: 1,
+            poll_interval_max_secs: 30,
+            request_timeout_secs: 30,
+        }
+    }
+}
+
+impl From<&crate::config::RunnerConfig> for ClientOptions {
+    fn from(r: &crate::config::RunnerConfig) -> Self {
+        Self {
+            retry_max: r.retry_max,
+            retry_backoff_initial_secs: r.retry_backoff_initial_secs,
+            poll_interval_initial_secs: r.poll_interval_initial_secs,
+            poll_interval_max_secs: r.poll_interval_max_secs,
+            request_timeout_secs: r.request_timeout_secs,
+        }
+    }
+}
+
+/// Connection set-up is bounded separately, so an unreachable Runner fails
+/// fast even when requests may take long.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether a request may be sent again after a failure (SRS-FUNC-020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Resend {
+    /// Reads (`GET`): any transient failure may be retried.
+    Always,
+    /// Job submission (`POST`). The contract has no idempotency key, so the
+    /// request is sent again only when the Runner cannot have created a job:
+    /// the connection was never established, or the Runner answered that it
+    /// did not accept the request (503, 429). A timeout or reset after the
+    /// request went out is not retried; it could duplicate the job.
+    OnlyIfNotAccepted,
+}
+
+impl Resend {
+    fn retries_status(self, status: reqwest::StatusCode) -> bool {
+        use reqwest::StatusCode as S;
+        match self {
+            Self::Always => matches!(
+                status,
+                S::BAD_GATEWAY | S::SERVICE_UNAVAILABLE | S::GATEWAY_TIMEOUT | S::TOO_MANY_REQUESTS
+            ),
+            Self::OnlyIfNotAccepted => {
+                matches!(status, S::SERVICE_UNAVAILABLE | S::TOO_MANY_REQUESTS)
+            }
+        }
+    }
+
+    /// An error before a response arrived: connect failure, timeout, or the
+    /// connection dropped while the request was sent (network reset).
+    fn retries_send_error(self, e: &reqwest::Error) -> bool {
+        match self {
+            Self::Always => e.is_connect() || e.is_timeout() || e.is_request(),
+            Self::OnlyIfNotAccepted => e.is_connect(),
+        }
+    }
+
+    /// The response body could not be read to the end (reset or timeout
+    /// mid-response). reqwest decodes nothing here, so this is always a
+    /// transport failure; the request reached the Runner.
+    fn retries_body_error(self) -> bool {
+        self == Self::Always
+    }
+}
+
 #[derive(Debug)]
 pub struct ApiClient {
     client: reqwest::Client,
@@ -61,12 +148,7 @@ pub struct ApiClient {
     /// Bearer token sent per-request via `Authorization: Bearer …`.
     /// Stored as a `Redacted` newtype so `format!("{:?}", client)` never leaks it.
     token: Option<Redacted>,
-    retry_max: u32,
-    retry_backoff_initial_secs: u64,
-    /// Initial delay between job-status polls; doubles each poll up to
-    /// `poll_interval_max_secs` (SRS-PERF-003).
-    poll_interval_initial_secs: u64,
-    poll_interval_max_secs: u64,
+    options: ClientOptions,
     /// Every response body received, in arrival order (see [`Self::take_recorded`]).
     recorded: Mutex<Vec<RecordedResponse>>,
 }
@@ -75,34 +157,26 @@ impl ApiClient {
     /// Create a new `ApiClient`.
     ///
     /// If `token` is `Some`, it is sent as a `Bearer` token in every request.
-    /// `retry_max` and `retry_backoff_initial_secs` configure the transient-error
-    /// retry loop (exponential back-off).
     ///
     /// # Errors
     ///
     /// Returns an error if the token contains invalid HTTP header characters.
-    pub fn new(
-        base_url: &str,
-        token: Option<&str>,
-        retry_max: u32,
-        retry_backoff_initial_secs: u64,
-        poll_interval_initial_secs: u64,
-        poll_interval_max_secs: u64,
-    ) -> Result<Self> {
+    pub fn new(base_url: &str, token: Option<&str>, options: ClientOptions) -> Result<Self> {
         // Validate the token up-front so `new` fails fast on bad characters.
         if let Some(tok) = token {
             HeaderValue::from_str(&format!("Bearer {tok}"))
                 .context("API token contains invalid header characters")?;
         }
-        let client = reqwest::Client::builder().build().context("Failed to build HTTP client")?;
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(Duration::from_secs(options.request_timeout_secs.max(1)))
+            .build()
+            .context("Failed to build HTTP client")?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_owned(),
             token: token.map(|t| Redacted(t.to_owned())),
-            retry_max,
-            retry_backoff_initial_secs,
-            poll_interval_initial_secs,
-            poll_interval_max_secs,
+            options,
             recorded: Mutex::new(Vec::new()),
         })
     }
@@ -139,42 +213,71 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------------
-    // Retry helper
+    // Sending with bounded retry (SRS-FUNC-020)
     // -----------------------------------------------------------------------
 
-    /// Retry `op` up to `retry_max` additional times on transient errors.
+    /// Send the request built by `build` and read its whole body, retrying up
+    /// to `retry_max` more times on a transient failure, with back-off
+    /// doubling from `retry_backoff_initial_secs`. What counts as transient
+    /// depends on `resend`.
     ///
-    /// Transient errors: connection failure, timeout, or HTTP 5xx.
-    /// Non-transient errors (e.g. 401, 403, 422) are returned immediately.
-    async fn retry<F, Fut, T>(&self, op: F) -> Result<T>
-    where
-        F: Fn() -> Fut,
-        Fut: Future<Output = std::result::Result<T, reqwest::Error>>,
-    {
+    /// Returns the status and body of the last response; the caller handles a
+    /// non-success status. A response that triggers a retry is recorded as
+    /// evidence here, the returned one by the caller.
+    async fn send(
+        &self,
+        operation: &'static str,
+        url: &str,
+        job_id: Option<&str>,
+        resend: Resend,
+        build: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
         let mut attempt = 0u32;
         loop {
-            match op().await {
-                Ok(v) => return Ok(v),
-                Err(e) if attempt == self.retry_max => return Err(e.into()),
-                Err(e)
-                    if e.is_connect()
-                        || e.is_timeout()
-                        || e.status().is_some_and(|s| s.is_server_error()) =>
-                {
-                    let backoff = Duration::from_secs(
-                        self.retry_backoff_initial_secs
-                            .saturating_mul(2u64.saturating_pow(attempt)),
-                    );
-                    tracing::warn!(
-                        attempt,
-                        backoff_secs = backoff.as_secs(),
-                        "transient error; retrying"
-                    );
-                    tokio::time::sleep(backoff).await;
-                    attempt += 1;
+            let can_retry = attempt < self.options.retry_max;
+            let outcome = match self.auth(build()).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    match resp.bytes().await {
+                        Ok(body) => Ok((status, body.to_vec())),
+                        Err(e) => Err((e, resend.retries_body_error())),
+                    }
                 }
-                Err(e) => return Err(e.into()),
-            }
+                Err(e) => {
+                    let transient = resend.retries_send_error(&e);
+                    Err((e, transient))
+                }
+            };
+            let reason = match outcome {
+                Ok((status, body)) if can_retry && resend.retries_status(status) => {
+                    self.record(operation, url, status, job_id, &body);
+                    format!("HTTP {status}")
+                }
+                Ok(response) => return Ok(response),
+                Err((e, true)) if can_retry => format!("{e:#}"),
+                Err((e, _)) => {
+                    let e = anyhow::Error::from(e);
+                    return Err(if attempt > 0 {
+                        e.context(format!("gave up after {} attempts", attempt + 1))
+                    } else {
+                        e
+                    });
+                }
+            };
+            let backoff = Duration::from_secs(
+                self.options
+                    .retry_backoff_initial_secs
+                    .saturating_mul(2u64.saturating_pow(attempt)),
+            );
+            attempt += 1;
+            tracing::warn!(
+                operation,
+                attempt,
+                retry_max = self.options.retry_max,
+                backoff_secs = backoff.as_secs(),
+                "transient Runner error ({reason}); retrying"
+            );
+            tokio::time::sleep(backoff).await;
         }
     }
 
@@ -192,14 +295,14 @@ impl ApiClient {
     /// cannot be deserialised.
     pub async fn get_version(&self) -> Result<VersionResponse> {
         let url = format!("{}/api/v1/version", self.base_url);
-        let client = &self.client;
-        let resp = self
-            .retry(|| async { self.auth(client.get(&url)).send().await?.error_for_status() })
+        let (status, body) = self
+            .send("get_version", &url, None, Resend::Always, || self.client.get(&url))
             .await
             .with_context(|| format!("GET {url} failed"))?;
-        let status = resp.status();
-        let body = resp.bytes().await.context("Failed to read VersionResponse")?;
         self.record("get_version", &url, status, None, &body);
+        if !status.is_success() {
+            bail_with_error_body(status, &body).with_context(|| format!("GET {url} failed"))?;
+        }
         let resp: VersionResponse =
             serde_json::from_slice(&body).context("Failed to parse VersionResponse")?;
         validate_version_response(&resp)?;
@@ -221,14 +324,14 @@ impl ApiClient {
     /// cannot be deserialised.
     pub async fn get_docs(&self) -> Result<DocsResponse> {
         let url = format!("{}/api/v1/docs", self.base_url);
-        let client = &self.client;
-        let resp = self
-            .retry(|| async { self.auth(client.get(&url)).send().await?.error_for_status() })
+        let (status, body) = self
+            .send("get_docs", &url, None, Resend::Always, || self.client.get(&url))
             .await
             .with_context(|| format!("GET {url} failed"))?;
-        let status = resp.status();
-        let body = resp.bytes().await.context("Failed to read DocsResponse")?;
         self.record("get_docs", &url, status, None, &body);
+        if !status.is_success() {
+            bail_with_error_body(status, &body).with_context(|| format!("GET {url} failed"))?;
+        }
         let docs: DocsResponse =
             serde_json::from_slice(&body).context("Failed to parse DocsResponse")?;
         if docs.documents.is_empty() {
@@ -243,7 +346,8 @@ impl ApiClient {
 
     /// Submit a qualification job.
     ///
-    /// Returns the `job_id` on success (202 Accepted).
+    /// Returns the `job_id` on success (202 Accepted). The submission is sent
+    /// again only when the Runner cannot have accepted it (see [`Resend`]).
     ///
     /// # Errors
     ///
@@ -251,25 +355,12 @@ impl ApiClient {
     /// responds with a non-success status.
     pub async fn submit_job(&self, request: &JobRequest) -> Result<String> {
         let url = format!("{}/api/v1/jobs", self.base_url);
-        let client = &self.client;
-
-        // Retry on transient errors; preserve the response body on terminal failures
-        // so we can surface the structured ErrorResponse.
-        let response = self
-            .retry(|| {
-                let req = self.auth(client.post(&url).json(request));
-                async move {
-                    let r = req.send().await?;
-                    // Convert 5xx into an error so the retry helper can detect server errors,
-                    // but only do so — non-5xx are returned as-is for body inspection below.
-                    if r.status().is_server_error() { r.error_for_status() } else { Ok(r) }
-                }
+        let (status, body) = self
+            .send("submit_job", &url, None, Resend::OnlyIfNotAccepted, || {
+                self.client.post(&url).json(request)
             })
             .await
             .with_context(|| format!("POST {url} failed"))?;
-
-        let status = response.status();
-        let body = response.bytes().await.context("Failed to read the job submission response")?;
         if !status.is_success() {
             self.record("submit_job", &url, status, None, &body);
             bail_with_error_body(status, &body)?;
@@ -294,17 +385,10 @@ impl ApiClient {
     /// cannot be deserialised.
     pub async fn get_job_status(&self, job_id: &str) -> Result<JobStatusResponse> {
         let url = format!("{}/api/v1/jobs/{job_id}", self.base_url);
-        let client = &self.client;
-        let response = self
-            .retry(|| async {
-                let r = self.auth(client.get(&url)).send().await?;
-                if r.status().is_server_error() { r.error_for_status() } else { Ok(r) }
-            })
+        let (status, body) = self
+            .send("get_job_status", &url, Some(job_id), Resend::Always, || self.client.get(&url))
             .await
             .with_context(|| format!("GET {url} failed"))?;
-
-        let status = response.status();
-        let body = response.bytes().await.context("Failed to read JobStatusResponse")?;
         self.record("get_job_status", &url, status, Some(job_id), &body);
         if !status.is_success() {
             bail_with_error_body(status, &body)?;
@@ -330,9 +414,10 @@ impl ApiClient {
     /// or `timeout` is exceeded before the job completes.
     pub async fn wait_for_job(&self, job_id: &str, timeout: Duration) -> Result<JobStatusResponse> {
         // Clamp to a sane floor so a misconfigured 0 can't busy-loop.
-        let max_delay = Duration::from_secs(self.poll_interval_max_secs.max(1));
+        let max_delay = Duration::from_secs(self.options.poll_interval_max_secs.max(1));
         let deadline = Instant::now() + timeout;
-        let mut delay = Duration::from_secs(self.poll_interval_initial_secs.max(1)).min(max_delay);
+        let mut delay =
+            Duration::from_secs(self.options.poll_interval_initial_secs.max(1)).min(max_delay);
 
         loop {
             let resp = self.get_job_status(job_id).await?;
@@ -406,7 +491,9 @@ mod tests {
     use super::*;
 
     fn make_client(retry_max: u32) -> ApiClient {
-        ApiClient::new("http://localhost:9999", Some("secret-token"), retry_max, 0, 1, 30)
+        let options =
+            ClientOptions { retry_max, retry_backoff_initial_secs: 0, ..Default::default() };
+        ApiClient::new("http://localhost:9999", Some("secret-token"), options)
             .expect("client should build")
     }
 
@@ -433,7 +520,7 @@ mod tests {
     /// Verifies: SRS-IF-006
     #[test]
     fn client_builds_without_token() {
-        let client = ApiClient::new("http://localhost:9999", None, 3, 1, 1, 30)
+        let client = ApiClient::new("http://localhost:9999", None, ClientOptions::default())
             .expect("client without token should build");
         assert!(client.token.is_none());
     }
@@ -441,13 +528,21 @@ mod tests {
     /// Verifies: SRS-PERF-003, SRS-FUNC-020
     #[test]
     fn client_builds_with_retry_and_poll_params() {
-        let client = ApiClient::new("http://localhost:9999", Some("tok"), 5, 2, 3, 45)
+        let options = ClientOptions {
+            retry_max: 5,
+            retry_backoff_initial_secs: 2,
+            poll_interval_initial_secs: 3,
+            poll_interval_max_secs: 45,
+            request_timeout_secs: 7,
+        };
+        let client = ApiClient::new("http://localhost:9999", Some("tok"), options)
             .expect("client should build");
-        assert_eq!(client.retry_max, 5);
-        assert_eq!(client.retry_backoff_initial_secs, 2);
+        assert_eq!(client.options.retry_max, 5);
+        assert_eq!(client.options.retry_backoff_initial_secs, 2);
         // SRS-PERF-003: poll cadence must come from config, not be hardcoded.
-        assert_eq!(client.poll_interval_initial_secs, 3);
-        assert_eq!(client.poll_interval_max_secs, 45);
+        assert_eq!(client.options.poll_interval_initial_secs, 3);
+        assert_eq!(client.options.poll_interval_max_secs, 45);
+        assert_eq!(client.options.request_timeout_secs, 7);
     }
 
     // -----------------------------------------------------------------------
