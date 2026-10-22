@@ -28,7 +28,6 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-inventory = { workspace = true }
 futures = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 walkdir = "2"
