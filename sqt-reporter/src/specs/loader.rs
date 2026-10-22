@@ -256,7 +256,11 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
             }
             Err(ValueError::Unreconcilable(reason)) => {
                 tracing::warn!("spec '{uid}' constraint[{i}]: {reason}");
-                unreconcilable.push(UnreconcilableConstraint { metric: metric.clone(), reason });
+                unreconcilable.push(UnreconcilableConstraint {
+                    metric: metric.clone(),
+                    operator: op.to_string(),
+                    reason,
+                });
                 continue;
             }
         };

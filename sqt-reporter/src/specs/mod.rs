@@ -30,6 +30,8 @@ pub struct TestSpec {
 #[derive(Debug, Clone)]
 pub struct UnreconcilableConstraint {
     pub metric: String,
+    /// Display form of the operator, e.g. `<=`.
+    pub operator: String,
     pub reason: String,
 }
 

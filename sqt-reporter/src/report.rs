@@ -197,15 +197,19 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
             })
             .collect()
     } else {
+        // One outcome per constraint, followed by one per unreconcilable
+        // constraint (SRS-FUNC-004).
         debug_assert_eq!(
-            sr.spec.constraints.len(),
+            sr.spec.constraints.len() + sr.spec.unreconcilable.len(),
             sr.outcomes.len(),
             "constraint and outcome counts must match — orchestrator bug"
         );
+        let (evaluated, unreconcilable) =
+            sr.outcomes.split_at(sr.spec.constraints.len().min(sr.outcomes.len()));
         sr.spec
             .constraints
             .iter()
-            .zip(sr.outcomes.iter())
+            .zip(evaluated)
             .map(|(constraint, outcome)| {
                 let kind = if outcome.passed { OutcomeKind::Pass } else { OutcomeKind::Fail };
                 OutcomeReport {
@@ -220,6 +224,19 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
                     evidence: outcome.evidence.clone(),
                 }
             })
+            .chain(sr.spec.unreconcilable.iter().zip(unreconcilable).map(|(u, outcome)| {
+                OutcomeReport {
+                    metric: u.metric.clone(),
+                    operator: u.operator.clone(),
+                    outcome_kind: OutcomeKind::Fail,
+                    passed: false,
+                    actual: outcome.actual,
+                    expected: outcome.expected,
+                    unit: String::new(),
+                    message: outcome.message.clone(),
+                    evidence: outcome.evidence.clone(),
+                }
+            }))
             .collect()
     };
 
@@ -618,6 +635,45 @@ mod tests {
             interrupted: false,
             requirement_set: None,
         }
+    }
+
+    /// Verifies: SRS-FUNC-004, SRS-FUNC-009
+    #[test]
+    fn unreconcilable_constraint_appears_as_failing_outcome() {
+        let mut spec = make_spec("REQ-UNIT", "build/app");
+        spec.unreconcilable.push(crate::specs::UnreconcilableConstraint {
+            metric: "memory.peak_rss_kb".to_string(),
+            operator: "<=".to_string(),
+            reason: "unit 'ms' in '5ms' does not reduce to KB".to_string(),
+        });
+        let outcomes = vec![
+            ConstraintOutcome {
+                passed: true,
+                actual: 0.0,
+                expected: 0.0,
+                message: "0 == 0: PASS".to_string(),
+                evidence: HashMap::new(),
+            },
+            ConstraintOutcome {
+                passed: false,
+                actual: f64::NAN,
+                expected: f64::NAN,
+                message: "memory.peak_rss_kb: unit 'ms' in '5ms' does not reduce to KB: FAIL"
+                    .to_string(),
+                evidence: HashMap::new(),
+            },
+        ];
+        let result = make_run_result(vec![SpecResult::new(spec, outcomes)]);
+        let report = Report::from_run_result(&result, make_provenance());
+
+        let spec = &report.results[0];
+        assert_eq!(spec.outcome_kind, OutcomeKind::Fail);
+        assert_eq!(spec.outcomes.len(), 2);
+        assert_eq!(spec.outcomes[0].metric, "return_code");
+        assert_eq!(spec.outcomes[1].metric, "memory.peak_rss_kb");
+        assert_eq!(spec.outcomes[1].operator, "<=");
+        assert_eq!(spec.outcomes[1].outcome_kind, OutcomeKind::Fail);
+        assert!(spec.outcomes[1].message.contains("does not reduce"));
     }
 
     /// Verifies: SRS-OPS-001
