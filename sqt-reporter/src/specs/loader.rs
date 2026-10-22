@@ -266,7 +266,7 @@ mod tests {
     use super::*;
     use crate::constraint::Op;
 
-    /// Deserialise a YAML string directly (without file I/O) and convert to TestSpec.
+    /// Deserialise a YAML string directly (without file I/O) and convert to `TestSpec`.
     fn parse_yaml(yaml: &str) -> anyhow::Result<TestSpec> {
         let raw: RawTestSpec = serde_yaml::from_str(yaml).with_context(|| "parsing test YAML")?;
         convert_spec(raw, 300)
@@ -274,19 +274,19 @@ mod tests {
 
     #[test]
     fn parse_minimal_spec() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-ML-001
 use_case: image_classification
 constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#;
+";
         let spec = parse_yaml(yaml).expect("minimal spec should parse");
         assert_eq!(spec.requirement_uid, "REQ-ML-001");
         assert_eq!(spec.workload_type, WorkloadType::ImageClassification);
         assert!(spec.target.input.is_none());
-        assert_eq!(spec.target.timeout, Duration::from_secs(300));
+        assert_eq!(spec.target.timeout, Duration::from_mins(5));
         assert_eq!(spec.constraints.len(), 1);
     }
 
@@ -313,7 +313,7 @@ constraints:
         assert_eq!(spec.requirement_uid, "REQ-ML-002");
         assert_eq!(spec.workload_type, WorkloadType::Regression);
         assert_eq!(spec.target.input, Some(PathBuf::from("datasets/reference.bin")));
-        assert_eq!(spec.target.timeout, Duration::from_secs(120));
+        assert_eq!(spec.target.timeout, Duration::from_mins(2));
         assert_eq!(spec.constraints.len(), 3);
     }
 
@@ -385,27 +385,27 @@ constraints:
     #[test]
     fn missing_required_field_returns_error() {
         // Missing `use_case` — serde should reject this.
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-MISSING
 constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#;
+";
         let result = parse_yaml(yaml);
         assert!(result.is_err(), "missing use_case must be an error");
     }
 
     #[test]
     fn unknown_use_case_returns_error() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-BAD-UC
 use_case: depth_estimation
 constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#;
+";
         let result = parse_yaml(yaml);
         assert!(result.is_err(), "unknown use_case must be an error");
         // Use {:#} to get the full error chain (anyhow chained errors).
@@ -415,28 +415,28 @@ constraints:
 
     #[test]
     fn unknown_operator_returns_error() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-BAD-OP
 use_case: classification
 constraints:
   - metric: return_code
     operator: between
     value: 0
-"#;
+";
         let result = parse_yaml(yaml);
         assert!(result.is_err(), "unknown operator must be an error");
     }
 
     #[test]
     fn unknown_metric_returns_error() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-BAD-METRIC
 use_case: classification
 constraints:
   - metric: no.such.metric
     operator: eq
     value: 0
-"#;
+";
         let result = parse_yaml(yaml);
         assert!(result.is_err(), "unknown metric must be an error");
         let msg = format!("{:#}", result.unwrap_err());
@@ -445,36 +445,36 @@ constraints:
 
     #[test]
     fn bare_number_value_is_accepted() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-BARE
 use_case: classification
 constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#;
+";
         let spec = parse_yaml(yaml).expect("bare number should parse");
         assert!((spec.constraints[0].expected() - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn timeout_falls_back_to_default() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-TIMEOUT-DEFAULT
 use_case: classification
 constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#;
+";
         let raw: RawTestSpec = serde_yaml::from_str(yaml).unwrap();
         let spec = convert_spec(raw, 600).unwrap();
-        assert_eq!(spec.target.timeout, Duration::from_secs(600));
+        assert_eq!(spec.target.timeout, Duration::from_mins(10));
     }
 
     #[test]
     fn per_spec_timeout_overrides_default() {
-        let yaml = r#"
+        let yaml = r"
 requirement_uid: REQ-TIMEOUT-OVERRIDE
 use_case: classification
 timeout_secs: 30
@@ -482,7 +482,7 @@ constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#;
+";
         let spec = parse_yaml(yaml).unwrap();
         assert_eq!(spec.target.timeout, Duration::from_secs(30));
     }
@@ -551,14 +551,14 @@ constraints:
         let mut f = tempfile::NamedTempFile::new().unwrap();
         write!(
             f,
-            r#"
+            r"
 requirement_uid: REQ-FILE-001
 use_case: image_classification
 constraints:
   - metric: return_code
     operator: eq
     value: 0
-"#
+"
         )
         .unwrap();
 

@@ -384,8 +384,8 @@ mod tests {
     fn make_job_status_resp(job_id: &str) -> sqt_types::JobStatusResponse {
         sqt_types::JobStatusResponse {
             job_id: job_id.to_owned(),
-            use_case: Default::default(),
-            mode: Default::default(),
+            use_case: sqt_types::WorkloadType::default(),
+            mode: sqt_types::MeasurementMode::default(),
             repetitions: 1,
             status: sqt_types::JobStatus::Accepted,
             queue_position: None,
@@ -395,7 +395,7 @@ mod tests {
             error: None,
             tags: None,
             hardware: None,
-            metrics: Default::default(),
+            metrics: sqt_types::JobMetrics::default(),
             output: None,
         }
     }
