@@ -193,6 +193,7 @@ TITLE: Unclassified requirement
 STATUS: Draft
 ";
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn parse_requirements_multi_doc() {
         let docs = make_docs(MULTI_REQ_DOC);
@@ -213,6 +214,7 @@ STATUS: Draft
         assert_eq!(set.unclassified[0].uid, "REQ-004");
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn is_testable_true_for_test_verification() {
         let req = Requirement {
@@ -224,6 +226,7 @@ STATUS: Draft
         assert!(req.is_testable());
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn is_testable_case_insensitive() {
         let req = Requirement {
@@ -235,6 +238,7 @@ STATUS: Draft
         assert!(req.is_testable());
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn is_testable_false_for_analysis_verification() {
         let req = Requirement {
@@ -246,6 +250,7 @@ STATUS: Draft
         assert!(!req.is_testable());
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn check_coverage_passes_when_all_covered() {
         let docs = make_docs(MULTI_REQ_DOC);
@@ -254,6 +259,7 @@ STATUS: Draft
         assert!(check_coverage(&set, &spec_uids).is_ok());
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn check_coverage_fails_with_correct_uids_when_uncovered() {
         let docs = make_docs(MULTI_REQ_DOC);
@@ -267,6 +273,7 @@ STATUS: Draft
         assert!(!msg.contains("REQ-001"), "covered UID must not appear in error: {msg}");
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn empty_documents_gives_empty_requirement_set() {
         let docs = DocsResponse { documents: vec![], attachments: vec![] };
@@ -276,6 +283,7 @@ STATUS: Draft
         assert!(set.unclassified.is_empty());
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn requirement_without_uid_is_skipped() {
         let content = "\
@@ -290,6 +298,7 @@ VERIFICATION: Test
         assert!(set.unclassified.is_empty());
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn composite_requirement_is_parsed() {
         let content = "\
@@ -304,6 +313,7 @@ VERIFICATION: Test
         assert_eq!(set.testable[0].uid, "CREQ-001");
     }
 
+    /// Verifies: SRS-FUNC-018
     #[test]
     fn requirement_at_end_of_file_is_captured() {
         // Ensure the final requirement (no trailing block marker) is included.

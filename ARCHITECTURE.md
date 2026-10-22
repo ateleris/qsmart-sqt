@@ -1985,10 +1985,9 @@ under `sqt-runner/src/tools/`, populate the corresponding `JobMetrics` field in
 `collect`, and add a matching constraint name on the Reporter side. There is no
 runtime plugin protocol, no dynamic loading, and no external process bridge — the
 Runner is a single auditable statically-linked binary, which suits a qualification
-tool. (The historic reporter-side `MetricCollector`/`inventory` collector tree in
-`sqt-reporter/src/metrics/` is **legacy reference code from the pre-workspace
-single-crate era**; it is not wired into either the orchestrator or the runner and
-is a deletion candidate — see `REVIEW_FINDINGS.md`.)
+tool. (The reporter-side `MetricCollector` collector tree of the pre-workspace
+single-crate era was removed on 2026-10-22; `sqt-reporter/src/metrics/` now holds
+only the specification `Target` descriptor.)
 
 ### 10.2 The Closed-Vocabulary Constraint (open design point)
 
@@ -2041,7 +2040,7 @@ anyhow
 tokio-util, futures   # concurrency + graceful shutdown
 zip, walkdir          # QDP bundling
 printpdf              # PDF report rendering
-inventory             # (legacy metric registry — see §10.1)
+inventory             # compile-time registration of the example specs
 
 # sqt-runner (server)
 axum = "0.8"          # HTTP server
@@ -2107,7 +2106,7 @@ ats-sqt/                          # Cargo workspace root
 │       ├── traceability/         # dual-audience matrix
 │       ├── report.rs             # Report model, JSON/PDF/terminal/QDP output
 │       ├── preflight.rs          # SRS-OPS-007 pre-flight mode
-│       └── metrics/              # legacy collectors (unwired; see §10.1)
+│       └── metrics/              # specification Target descriptor
 │
 └── sqt-runner/                   # Server (axum) — the reference SQT Runner
     └── src/

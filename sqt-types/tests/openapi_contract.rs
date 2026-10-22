@@ -26,6 +26,7 @@ fn schema_properties(doc: &Value, schema: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Verifies: SRS-IF-001
 #[test]
 fn job_request_uses_use_case_not_model() {
     let props = schema_properties(&openapi(), "JobRequest");
@@ -37,6 +38,7 @@ fn job_request_uses_use_case_not_model() {
     );
 }
 
+/// Verifies: SRS-IF-001
 #[test]
 fn job_status_response_uses_use_case_not_model() {
     let props = schema_properties(&openapi(), "JobStatusResponse");
@@ -44,6 +46,7 @@ fn job_status_response_uses_use_case_not_model() {
     assert!(!props.contains("model"), "JobStatusResponse must not carry the stale `model` field");
 }
 
+/// Verifies: SRS-IF-001
 #[test]
 fn job_metrics_properties_match_dto_exactly() {
     // JobMetrics has no `skip_serializing_if`, so serializing a default value

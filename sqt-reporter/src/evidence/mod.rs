@@ -82,6 +82,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Verifies: SRS-FUNC-008
     #[test]
     fn store_creates_file_and_returns_correct_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -97,6 +98,7 @@ mod tests {
         assert_eq!(content, b"hello world");
     }
 
+    /// Verifies: SRS-FUNC-008
     #[test]
     fn manifest_returns_all_stored_entries() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -117,6 +119,7 @@ mod tests {
         assert_eq!(manifest[2].label, "c.txt");
     }
 
+    /// Verifies: SRS-FUNC-008
     #[test]
     fn store_text_writes_utf8_content() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -128,6 +131,7 @@ mod tests {
         assert_eq!(content, "hello utf-8 \u{1F600}");
     }
 
+    /// Verifies: SRS-FUNC-008
     #[test]
     fn store_json_writes_valid_json() {
         let tmp = tempfile::tempdir().expect("tempdir");

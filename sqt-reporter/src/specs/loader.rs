@@ -272,6 +272,7 @@ mod tests {
         convert_spec(raw, 300)
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn parse_minimal_spec() {
         let yaml = r"
@@ -290,6 +291,7 @@ constraints:
         assert_eq!(spec.constraints.len(), 1);
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn parse_full_spec_with_all_fields() {
         let yaml = r#"
@@ -317,6 +319,7 @@ constraints:
         assert_eq!(spec.constraints.len(), 3);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_ms_value() {
         let yaml = r#"
@@ -334,6 +337,7 @@ constraints:
         assert!((c.expected() - 100.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_s_value() {
         let yaml = r#"
@@ -350,6 +354,7 @@ constraints:
         assert!((c.expected() - 1_500.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_kb_value() {
         let yaml = r#"
@@ -366,6 +371,7 @@ constraints:
         assert!((c.expected() - 512.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_mb_value() {
         let yaml = r#"
@@ -382,6 +388,7 @@ constraints:
         assert!((c.expected() - 2_048.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn missing_required_field_returns_error() {
         // Missing `use_case` — serde should reject this.
@@ -396,6 +403,7 @@ constraints:
         assert!(result.is_err(), "missing use_case must be an error");
     }
 
+    /// Verifies: SRS-FUNC-003, SRS-FUNC-019
     #[test]
     fn unknown_use_case_returns_error() {
         let yaml = r"
@@ -413,6 +421,7 @@ constraints:
         assert!(msg.contains("depth_estimation"), "error must mention the bad value: {msg}");
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn unknown_operator_returns_error() {
         let yaml = r"
@@ -427,6 +436,7 @@ constraints:
         assert!(result.is_err(), "unknown operator must be an error");
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn unknown_metric_returns_error() {
         let yaml = r"
@@ -443,6 +453,7 @@ constraints:
         assert!(msg.contains("no.such.metric"), "error must mention the bad metric: {msg}");
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn bare_number_value_is_accepted() {
         let yaml = r"
@@ -457,6 +468,7 @@ constraints:
         assert!((spec.constraints[0].expected() - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-PERF-004
     #[test]
     fn timeout_falls_back_to_default() {
         let yaml = r"
@@ -472,6 +484,7 @@ constraints:
         assert_eq!(spec.target.timeout, Duration::from_mins(10));
     }
 
+    /// Verifies: SRS-PERF-004
     #[test]
     fn per_spec_timeout_overrides_default() {
         let yaml = r"
@@ -487,6 +500,7 @@ constraints:
         assert_eq!(spec.target.timeout, Duration::from_secs(30));
     }
 
+    /// Verifies: SRS-FUNC-019
     #[test]
     fn all_use_case_variants_parse() {
         let cases = [
@@ -503,6 +517,7 @@ constraints:
         }
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn all_operators_parse() {
         let cases = [
@@ -519,6 +534,7 @@ constraints:
         }
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn time_unit_conversions() {
         assert!((parse_unit_value("100ms", "time.avg_ms").unwrap() - 100.0).abs() < f64::EPSILON);
@@ -526,6 +542,7 @@ constraints:
         assert!((parse_unit_value("2s", "time.avg_ms").unwrap() - 2_000.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn memory_unit_conversions() {
         assert!(
@@ -544,6 +561,7 @@ constraints:
         );
     }
 
+    /// Verifies: SRS-FUNC-003, SRS-MAINT-002
     #[test]
     fn load_specs_from_temp_files() {
         use std::io::Write;
@@ -567,6 +585,7 @@ constraints:
         assert_eq!(specs[0].requirement_uid, "REQ-FILE-001");
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn load_specs_bad_file_returns_error() {
         let result = load_specs(&[PathBuf::from("/nonexistent/path/spec.yaml")], 300);

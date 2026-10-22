@@ -620,12 +620,14 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-OPS-001
     #[test]
     fn gate_failure_when_a_spec_failed() {
         let s = Summary { total: 2, passed: 1, failed: 1, infra_errors: 0 };
         assert!(s.is_gate_failure());
     }
 
+    /// Verifies: SRS-OPS-001, SRS-OPS-006
     #[test]
     fn gate_failure_when_all_infra_errors_even_with_zero_failed() {
         // The regression this guards (F-C4): a run where every spec is an
@@ -634,18 +636,21 @@ mod tests {
         assert!(s.is_gate_failure());
     }
 
+    /// Verifies: SRS-OPS-001
     #[test]
     fn no_gate_failure_when_all_pass() {
         let s = Summary { total: 2, passed: 2, failed: 0, infra_errors: 0 };
         assert!(!s.is_gate_failure());
     }
 
+    /// Verifies: SRS-OPS-001
     #[test]
     fn no_gate_failure_for_empty_run() {
         let s = Summary { total: 0, passed: 0, failed: 0, infra_errors: 0 };
         assert!(!s.is_gate_failure());
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn report_from_run_result_computes_summary() {
         let run_result = make_run_result(vec![
@@ -659,6 +664,7 @@ mod tests {
         assert_eq!(report.summary.infra_errors, 0);
     }
 
+    /// Verifies: SRS-FUNC-009, SRS-FUNC-008
     #[test]
     fn report_outcome_carries_evidence() {
         let spec = make_spec("REQ-001", "/bin/app");
@@ -678,6 +684,7 @@ mod tests {
         assert_eq!(ev.get("run_id").map(String::as_str), Some("abc-123"));
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn report_serializes_to_json() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -690,6 +697,7 @@ mod tests {
         assert_eq!(parsed["results"][0]["requirement_uid"], "REQ-001");
     }
 
+    /// Verifies: SRS-FUNC-009, SRS-RES-001
     #[test]
     fn write_json_creates_parent_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -700,6 +708,7 @@ mod tests {
         assert!(path.exists(), "report file must be created");
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn report_empty_results() {
         let run_result = make_run_result(vec![]);
@@ -715,6 +724,7 @@ mod tests {
     // New hardening tests (T-075)
     // -------------------------------------------------------------------------
 
+    /// Verifies: SRS-DATA-001
     #[test]
     fn report_schema_version_is_present_in_json() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -724,6 +734,7 @@ mod tests {
         assert_eq!(parsed["schema_version"], "1.0", "schema_version must be present and correct");
     }
 
+    /// Verifies: SRS-DATA-001
     #[test]
     fn report_schema_version_is_first_json_field() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -743,6 +754,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-OPS-006
     #[test]
     fn infra_error_serializes_with_infra_error_outcome_kind() {
         use crate::specs::SpecResult;
@@ -767,6 +779,7 @@ mod tests {
         assert_eq!(parsed["summary"]["failed"], 0);
     }
 
+    /// Verifies: SRS-REL-004
     #[test]
     fn result_consistent_propagates_from_evidence() {
         let spec = make_spec("REQ-001", "/bin/app");
@@ -796,6 +809,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-FUNC-008
     #[test]
     fn write_qdp_bundles_artefacts() {
         let dir = tempfile::tempdir().unwrap();
@@ -834,6 +848,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn write_pdf_produces_a_valid_pdf_file() {
         let result = make_run_result(vec![
@@ -852,6 +867,7 @@ mod tests {
         assert!(bytes.starts_with(b"%PDF-"), "file must start with the PDF magic header");
     }
 
+    /// Verifies: SRS-REL-004
     #[test]
     fn result_consistent_null_when_absent_from_evidence() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -870,6 +886,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-OPS-008
     #[test]
     fn interrupted_flag_propagates_to_report() {
         let mut run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -881,6 +898,7 @@ mod tests {
         assert_eq!(parsed["interrupted"], true);
     }
 
+    /// Verifies: SRS-DATA-003
     #[test]
     fn provenance_fields_appear_in_json() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -896,6 +914,7 @@ mod tests {
         assert_eq!(parsed["provenance"]["runner_target_id"], "test-target");
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn outcome_kind_pass_fail_serialize_correctly() {
         let run_result = make_run_result(vec![

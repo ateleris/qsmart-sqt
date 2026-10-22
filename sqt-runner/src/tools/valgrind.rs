@@ -80,6 +80,7 @@ fn parse_leaked_bytes(xml: &str) -> f64 {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_leaked_bytes_sums_entries() {
         let xml = r#"<?xml version="1.0"?>
@@ -90,6 +91,7 @@ mod tests {
         assert_eq!(parse_leaked_bytes(xml), 300.0);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_leaked_bytes_no_leaks() {
         let xml = r#"<?xml version="1.0"?>
@@ -97,18 +99,21 @@ mod tests {
         assert_eq!(parse_leaked_bytes(xml), 0.0);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_leaked_bytes_single_entry() {
         let xml = "<error><leakedbytes>512</leakedbytes></error>";
         assert_eq!(parse_leaked_bytes(xml), 512.0);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_leaked_bytes_ignores_malformed_values() {
         let xml = "<leakedbytes>not-a-number</leakedbytes><leakedbytes>100</leakedbytes>";
         assert_eq!(parse_leaked_bytes(xml), 100.0);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_leaked_bytes_empty_string() {
         assert_eq!(parse_leaked_bytes(""), 0.0);

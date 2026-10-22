@@ -417,6 +417,7 @@ impl Constraint {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn return_code_properties() {
         let c = Constraint::return_code(Op::Eq, 0);
@@ -426,6 +427,7 @@ mod tests {
         assert_eq!(c.expected(), 0.0);
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn execution_time_wire_name() {
         let c = Constraint::execution_time(Op::Lte, 500.0);
@@ -434,6 +436,7 @@ mod tests {
         assert_eq!(c.expected(), 500.0);
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn memory_peak_rss_wire_name() {
         let c = Constraint::memory_peak_rss(Op::Lte, 4096.0);
@@ -442,6 +445,7 @@ mod tests {
         assert_eq!(c.expected(), 4096.0);
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn memory_leaks_wire_name() {
         let c = Constraint::memory_leaks(Op::Eq, 0.0);
@@ -449,6 +453,7 @@ mod tests {
         assert_eq!(c.unit(), "bytes");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn cpu_avg_normalized_pct_properties() {
         let c = Constraint::cpu_avg_normalized_pct(Op::Lte, 80.0);
@@ -457,6 +462,7 @@ mod tests {
         assert_eq!(c.expected(), 80.0);
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn coverage_line_pct_properties() {
         let c = Constraint::coverage_line_pct(Op::Gte, 80.0);
@@ -464,18 +470,21 @@ mod tests {
         assert_eq!(c.unit(), "%");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn static_critical_issues_wire_name() {
         let c = Constraint::static_critical_issues(Op::Eq, 0);
         assert_eq!(c.metric_name(), "static.critical_issues");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn static_major_issues_wire_name() {
         let c = Constraint::static_major_issues(Op::Eq, 0);
         assert_eq!(c.metric_name(), "static.major_issues");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn binary_size_properties() {
         let c = Constraint::binary_size_kb(Op::Lte, 1024.0);
@@ -483,12 +492,14 @@ mod tests {
         assert_eq!(c.unit(), "KB");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn static_warnings_properties() {
         let c = Constraint::static_warnings(Op::Lte, 5);
         assert_eq!(c.metric_name(), "static.warnings");
     }
 
+    /// Verifies: SRS-FUNC-004, SRS-FUNC-017
     #[test]
     fn ml_metrics_are_unitless() {
         assert_eq!(Constraint::ml_accuracy(Op::Gte, 0.9).unit(), "");
@@ -497,6 +508,7 @@ mod tests {
         assert_eq!(Constraint::ml_precision(Op::Gte, 0.9).unit(), "");
     }
 
+    /// Verifies: SRS-FUNC-017
     #[test]
     fn ml_constraints_are_not_server_side() {
         // T-054: ml.* metrics are computed client-side — the orchestrator must not
@@ -507,6 +519,7 @@ mod tests {
         assert!(!Constraint::ml_precision(Op::Gte, 0.9).is_server_side());
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn all_non_ml_constraints_are_server_side() {
         let server_side = vec![
@@ -524,6 +537,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn op_display() {
         assert_eq!(Op::Lte.to_string(), "<=");
@@ -534,6 +548,7 @@ mod tests {
         assert_eq!(Op::Ne.to_string(), "!=");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn from_name_roundtrips_all_metrics() {
         let cases: &[(&str, f64)] = &[
@@ -570,6 +585,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn from_name_unknown_returns_none() {
         assert!(Constraint::from_name("no.such.metric", Op::Eq, 0.0).is_none());
@@ -577,6 +593,7 @@ mod tests {
 
     // --- Cross-module contract (AD-013) --------------------------------------
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn server_metric_names_recognized_by_job_metrics_get() {
         // Every metric name returned by metric_name() for a server-side constraint

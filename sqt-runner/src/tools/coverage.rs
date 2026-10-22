@@ -71,6 +71,7 @@ fn parse_line_coverage(text: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_line_coverage_extracts_percentage() {
         let text = "Reading tracefile coverage.info\n\
@@ -80,6 +81,7 @@ mod tests {
         assert_eq!(parse_line_coverage(text).unwrap(), 85.5);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_line_coverage_missing_fails() {
         assert!(parse_line_coverage("no coverage here").is_err());

@@ -157,6 +157,7 @@ report:
   output_dir: "./reports"
 "#;
 
+    /// Verifies: SRS-FUNC-001
     #[test]
     fn valid_config_parses() {
         // Set the token env var so validation passes.
@@ -185,6 +186,7 @@ report:
         assert_eq!(cfg.runner.token_env.as_deref(), Some("SQT_TEST_MY_TOKEN_ZZZZZ"));
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn missing_required_field_rejected() {
         // Missing 'runner' section
@@ -203,6 +205,7 @@ report:
         assert!(result.is_err());
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn empty_project_name_rejected() {
         let result = load(
@@ -223,6 +226,7 @@ report:
         assert!(result.unwrap_err().to_string().contains("project.name"));
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn invalid_url_scheme_rejected() {
         let result = load(
@@ -243,6 +247,7 @@ report:
         assert!(result.unwrap_err().to_string().contains("runner.url"));
     }
 
+    /// Verifies: SRS-IF-006
     #[test]
     fn optional_token_env_can_be_omitted() {
         let cfg = load(
@@ -263,6 +268,7 @@ report:
         assert!(cfg.runner.token_env.is_none());
     }
 
+    /// Verifies: SRS-FUNC-001
     #[test]
     fn extra_fields_ignored() {
         let cfg = load(
@@ -286,6 +292,7 @@ unknown_top_level: 42
         assert_eq!(cfg.project.name, "Test");
     }
 
+    /// Verifies: SRS-RES-001
     #[test]
     fn relative_paths_resolved_against_config_dir() {
         let f = write_config(
@@ -313,6 +320,7 @@ report:
         }
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn url_scheme_check_is_case_insensitive() {
         // RFC 3986: URI schemes are case-insensitive. HTTPS:// must not be
@@ -334,6 +342,7 @@ report:
         assert!(cfg.is_ok(), "uppercase scheme must be accepted");
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn empty_test_specs_files_rejected() {
         let result = load(
@@ -356,6 +365,7 @@ report:
         );
     }
 
+    /// Verifies: SRS-FUNC-001, SRS-PERF-002, SRS-PERF-003
     #[test]
     fn runner_operational_defaults_applied() {
         let cfg = load(MINIMAL_YAML).unwrap();
@@ -367,6 +377,7 @@ report:
         assert_eq!(cfg.runner.poll_interval_max_secs, 30);
     }
 
+    /// Verifies: SRS-FUNC-001, SRS-PERF-002, SRS-PERF-003
     #[test]
     fn runner_operational_fields_can_be_overridden() {
         let cfg = load(
@@ -398,6 +409,7 @@ report:
         assert_eq!(cfg.runner.poll_interval_max_secs, 60);
     }
 
+    /// Verifies: SRS-IF-006, SRS-FUNC-002
     #[test]
     fn token_env_validation_fires_when_var_missing() {
         // Use an env var name that is guaranteed not to be set.
@@ -427,6 +439,7 @@ report:
         assert!(msg.contains(var_name), "error should mention the var name: {msg}");
     }
 
+    /// Verifies: SRS-IF-006, SRS-FUNC-002
     #[test]
     fn token_env_validation_fires_when_var_empty() {
         let var_name = "SQT_TEST_EMPTY_TOKEN_VAR_ZZZZZ";

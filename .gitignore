@@ -24,3 +24,5 @@ ci/runner/dind-cache/
 # Coverage output of ci/run-tests.sh
 coverage*.json
 coverage-summary.md
+fulfilment-matrix.json
+fulfilment-matrix.md

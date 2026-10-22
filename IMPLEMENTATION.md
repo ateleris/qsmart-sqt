@@ -132,7 +132,6 @@ SRS:
 **Housekeeping:**
 - No `LICENSE` / license metadata (SRS-DES-002).
 - rustfmt CI gate is advisory (`continue-on-error: true`) — SRS-QUAL-002/CDR-003.
-- `sqt-reporter/src/metrics/` is unwired legacy code (deletion candidate).
 
 ---
 

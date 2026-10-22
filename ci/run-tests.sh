@@ -5,6 +5,7 @@
 #   target/nextest/ci/junit.xml  -> published by dorny/test-reporter
 #   coverage.json                -> raw llvm-cov report
 #   coverage-summary.md          -> appended to the GitHub job summary
+#   fulfilment-matrix.{json,md}  -> requirements fulfilment matrix (ci/fulfilment-matrix.py)
 # Exits non-zero if any test fails (so the workflow fails too), or if
 # COVERAGE_FAIL_UNDER is set and the Orchestrator's line coverage is below it
 # (the release gate: measured on every merge, enforced at the tag).
@@ -41,6 +42,11 @@ if [ -f "$JUNIT" ]; then
     fs.writeFileSync(f, xml);
   ' "$JUNIT" || true
 fi
+
+# Fulfilment matrix from the tests' `/// Verifies:` lines and their results.
+# Fails the job if a test names no requirement.
+python3 ci/fulfilment-matrix.py --junit "$JUNIT" \
+  --json fulfilment-matrix.json --markdown fulfilment-matrix.md || status=1
 
 # Coverage report + summary (written into the workspace). The Orchestrator
 # figure is sqt-reporter alone: the Runner and the shared types are excluded.

@@ -360,6 +360,7 @@ impl ToolConfig {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_minimal_config() {
         let yaml = r"
@@ -381,6 +382,7 @@ docker:
         assert!(config.docker.tools.valgrind.is_none());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_full_config() {
         let yaml = r#"
@@ -421,6 +423,7 @@ docker:
         assert_eq!(config.docker.tools.sonarqube.as_ref().unwrap().token_env, "MY_SONAR_TOKEN");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn auth_absent_by_default() {
         let yaml = "binary:\n  path: app\n";
@@ -428,6 +431,7 @@ docker:
         assert!(config.auth.is_none());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn auth_parses_token_env() {
         let yaml = "binary:\n  path: app\nauth:\n  token_env: SQT_RUNNER_TOKEN\n";
@@ -435,6 +439,7 @@ docker:
         assert_eq!(config.auth.as_ref().unwrap().token_env, "SQT_RUNNER_TOKEN");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn backend_defaults_to_docker_when_absent() {
         let yaml = "binary:\n  path: app\n";
@@ -442,6 +447,7 @@ docker:
         assert!(matches!(config.backend, Backend::Docker));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn backend_unknown_value_is_error() {
         let yaml = "backend: labgrid\nbinary:\n  path: app\n";
@@ -449,6 +455,7 @@ docker:
         assert!(result.is_err(), "unknown backend should fail to parse until a variant exists");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_input_mode_stdin() {
         let yaml = r"
@@ -460,6 +467,7 @@ binary:
         assert!(matches!(config.binary.input_mode, InputMode::Stdin));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_input_mode_env() {
         let yaml = r#"
@@ -474,6 +482,7 @@ binary:
         }
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_input_mode_invalid() {
         let yaml = r#"
@@ -485,6 +494,7 @@ binary:
         assert!(result.is_err());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn tool_config_from_tools() {
         let yaml = r"
@@ -506,6 +516,7 @@ docker:
         assert!(tc.static_image.is_none());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn tool_config_reads_sonar_token_from_env() {
         let yaml = r"
@@ -528,6 +539,7 @@ docker:
         unsafe { std::env::remove_var("MY_SONAR_TOKEN") };
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn tool_config_sonar_token_absent_when_env_unset() {
         let yaml = r"
@@ -547,6 +559,7 @@ docker:
         assert!(tc.sonar_token.is_none());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn parse_env_input_mode_empty_var_name_is_error() {
         let yaml = r#"
@@ -558,6 +571,7 @@ binary:
         assert!(result.is_err());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn server_config_load_resolves_relative_paths() {
         use std::io::Write as _;
@@ -585,6 +599,7 @@ docker:
         assert!(config.workspace.is_absolute(), "workspace must be absolute");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn server_config_load_resolves_build_paths() {
         use std::io::Write as _;
@@ -625,6 +640,7 @@ docker:
         );
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn server_config_load_resolves_docs_directory() {
         use std::io::Write as _;
@@ -653,6 +669,7 @@ docs:
         assert!(docs.directory.is_absolute(), "docs.directory must be absolute");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn server_config_load_keeps_absolute_paths_unchanged() {
         use std::io::Write as _;

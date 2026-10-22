@@ -13,6 +13,7 @@ FROM rust:1.96.0-slim-trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     musl-tools \
+    python3 \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

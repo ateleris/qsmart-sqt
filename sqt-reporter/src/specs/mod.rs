@@ -136,17 +136,20 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-REL-001
     #[test]
     fn spec_result_fails_if_no_outcomes() {
         let result = SpecResult::new(make_spec(), vec![]);
         assert!(!result.passed);
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn all_specs_returns_nonempty_vec() {
         assert!(!all_specs().is_empty());
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn all_specs_discovers_both_examples() {
         let specs = all_specs();
@@ -155,6 +158,7 @@ mod tests {
         assert!(uids.contains(&"REQ-EXAMPLE-002"), "missing REQ-EXAMPLE-002");
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn spec_result_derives_passed_from_outcomes() {
         let result = SpecResult::new(make_spec(), vec![passing_outcome(), passing_outcome()]);
@@ -162,6 +166,7 @@ mod tests {
         assert_eq!(result.outcome, OutcomeKind::Pass);
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn spec_result_fails_if_any_outcome_fails() {
         let result = SpecResult::new(make_spec(), vec![passing_outcome(), failing_outcome()]);
@@ -169,6 +174,7 @@ mod tests {
         assert_eq!(result.outcome, OutcomeKind::Fail);
     }
 
+    /// Verifies: SRS-OPS-006
     #[test]
     fn spec_result_infra_error_is_not_passed() {
         let result = SpecResult::infra_error(
@@ -182,6 +188,7 @@ mod tests {
         assert!(result.outcomes[0].message.contains("runner crashed"));
     }
 
+    /// Verifies: SRS-OPS-006, SRS-FUNC-008
     #[test]
     fn spec_result_infra_error_carries_evidence() {
         let mut evidence = std::collections::HashMap::new();
@@ -195,6 +202,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn test_spec_with_default_target() {
         use std::time::Duration;
@@ -203,6 +211,7 @@ mod tests {
         assert_eq!(spec.target.timeout, Duration::from_secs(30));
     }
 
+    /// Verifies: SRS-FUNC-019
     #[test]
     fn discovered_specs_carry_image_classification_workload_type() {
         // Both example specs must explicitly declare ImageClassification.
