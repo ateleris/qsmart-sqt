@@ -30,7 +30,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-inventory = "0.3"
 futures = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"

@@ -327,9 +327,7 @@ workspace.
 
 Where the code departs from the ADD's allocation: the bearer token is read in
 `main.rs` and wrapped in `Redacted` by `ApiClient`, not inside C-ORC-01 (ADD
-LLR-003 places credential resolution there); and `sqt-reporter/src/metrics/` and
-the `inventory`-based `SpecFactory` in `specs/` are unwired legacy code that maps
-to no ADD component (§10.1). The ADD's reference-Runner components are
+LLR-003 places credential resolution there). The ADD's reference-Runner components are
 non-normative: a third-party Runner only has to implement the contract.
 
 ---
@@ -2238,12 +2236,12 @@ runtime plugin protocol, no dynamic loading, and no external process bridge — 
 Runner is a single auditable statically-linked binary, which suits a qualification
 tool, and the ADD rules out run-time plug-in discovery in the Orchestrator. (The
 reporter-side `MetricCollector` collector tree of the pre-workspace single-crate
-era was removed on 2026-10-22; `sqt-reporter/src/metrics/` now holds only the
-specification `Target` descriptor. The `inventory`-based `SpecFactory` /
-`all_specs()` and the example specs in `sqt-reporter/src/specs/` are still never
-called by `main.rs`. The ADD ("Deactivated code") commits the SQT to shipping no
-deactivated code, so they have to be removed or wired before a release that
-claims it.)
+era was removed on 2026-10-22, and so were the `inventory`-based `SpecFactory` /
+`all_specs()` and the Rust-coded example specs in `sqt-reporter/src/specs/`, which
+`main.rs` never called: the ADD ("Deactivated code") commits the SQT to shipping no
+deactivated code. `sqt-reporter/src/metrics/` now holds only the specification
+`Target` descriptor, and specifications are registered only by listing YAML files
+in the configuration.)
 
 ### 10.2 The Closed-Vocabulary Constraint (decided: open namespace in SQT-SW-1)
 
@@ -2296,7 +2294,6 @@ anyhow
 tokio-util, futures   # concurrency + graceful shutdown
 zip, walkdir          # QDP bundling
 printpdf              # PDF report rendering
-inventory             # compile-time registration of the example specs
 
 # sqt-runner (server)
 axum = "0.8"          # HTTP server
@@ -2368,7 +2365,7 @@ qsmart-sqt/                       # Cargo workspace root (ADD ids: §2.4)
 │   └── src/
 │       ├── main.rs               # clap CLI: `run` / `preflight`
 │       ├── config/               # SqtConfig schema + loader/validator
-│       ├── specs/                # loader.rs (explicit-file spec loading) + example specs
+│       ├── specs/                # spec model + loader.rs (explicit-file YAML spec loading)
 │       ├── constraint/           # Constraint, Op, Value, evaluator
 │       ├── orchestrator/         # session protocol → submit → poll → evaluate
 │       ├── api/                  # ApiClient (REST client for the Runner)
@@ -2444,7 +2441,7 @@ qsmart-sqt/                       # Cargo workspace root (ADD ids: §2.4)
 | **Version Control** | ⭐⭐⭐⭐⭐ Easy to track changes | ⭐⭐⭐⭐ Mixed with code |
 | **User-Friendliness** | ⭐⭐⭐⭐⭐ Non-developers can edit | ⭐⭐ Requires Rust knowledge |
 
-**Conclusion**: YAML only. The ADD (LLR-001) allows no configuration channel other than the single artefact and the credential reference, so there is no programmatic override; the unwired `SpecFactory` in `specs/` is not a supported channel (§10.1)
+**Conclusion**: YAML only. The ADD (LLR-001) allows no configuration channel other than the single artefact and the credential reference, so there is no programmatic override (the unwired Rust `SpecFactory` was removed, §10.1)
 
 ---
 
