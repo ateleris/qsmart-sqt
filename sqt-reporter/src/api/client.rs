@@ -112,8 +112,10 @@ impl ApiClient {
                         || e.is_timeout()
                         || e.status().is_some_and(|s| s.is_server_error()) =>
                 {
-                    let backoff =
-                        Duration::from_secs(self.retry_backoff_initial_secs * 2u64.pow(attempt));
+                    let backoff = Duration::from_secs(
+                        self.retry_backoff_initial_secs
+                            .saturating_mul(2u64.saturating_pow(attempt)),
+                    );
                     tracing::warn!(
                         attempt,
                         backoff_secs = backoff.as_secs(),
