@@ -6,6 +6,7 @@ pub mod constraint;
 pub mod evidence;
 pub mod metrics;
 pub mod orchestrator;
+pub mod outputs;
 pub mod preflight;
 pub mod report;
 pub mod specs;

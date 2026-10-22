@@ -323,9 +323,9 @@ report:
   output_dir: "./reports"            # relative paths resolve against this config file
 ```
 
-The Reporter emits, into `report.output_dir`: the machine-readable JSON report,
-a PDF summary, the traceability matrix (`.json` + `.txt`), per-job evidence under
-`evidence/`, and the QDP bundle (`qdp.zip`). Report *format selection* (choosing
+Every run gets its own directory, `report.output_dir/runs/<run_id>/`, holding the
+machine-readable JSON report, a PDF summary, the traceability matrix (`.json` +
+`.txt`), the run's evidence under `evidence/`, and the QDP bundle (`qdp.zip`). Report *format selection* (choosing
 which of these to emit, alternate PDF engines, HTML) is not a config surface today
 — all outputs are always produced. See §9.
 
@@ -1808,8 +1808,29 @@ image is not configured is simply skipped, and its metrics are reported as `null
 
 ### 9.1 Report Outputs
 
-Every `sqt run` writes the following into `report.output_dir`. All are produced on
-every run — there is no per-format on/off switch.
+Every `sqt run` writes into a directory reserved for that run (SRS-FUNC-008,
+SRS-OPS-004). All outputs are produced on every run — there is no per-format
+on/off switch. `-o <path>` additionally copies `report.json` elsewhere.
+
+```text
+<report.output_dir>/runs/<run_id>/       run_id = UTC timestamp, e.g. 20261022T101530123Z
+    report.json                          run report, schema 1.1 (SRS-FUNC-009)
+    report.pdf
+    traceability.json, traceability.txt  when the Runner serves a baseline
+    qdp.zip                              the whole run directory
+    evidence/
+        manifest.json                    every artefact: id, kind, SHA-256, size, job/spec
+        runner/NNNN-<operation>[-<job_id>].json   raw Runner responses, in arrival order
+        outcomes/NNN-<requirement_uid>.json       constraint outcomes per spec
+```
+
+An evidence artefact's stable identifier is its path relative to the run
+directory. The report names the manifest (`evidence_manifest`) and, per spec,
+the ids of its evidence (`evidence_ids`): the Runner's final response for the
+job and the persisted outcomes. Raw responses are stored byte for byte as
+received; request headers, and so the bearer token, are never recorded. When a
+run stops early, the responses received so far and the manifest are still
+written.
 
 #### JSON Report (Machine-Readable) — the primary artefact
 - **Target audience**: CI/CD, automation, downstream tooling
@@ -1836,8 +1857,8 @@ every run — there is no per-format on/off switch.
   and evidence location (SRS-OPS-003)
 
 #### QDP (Quality Data Package)
-- `qdp.zip` bundling the report, traceability, and per-job evidence — the ECSS
-  qualification output artefact
+- `qdp.zip` bundling the whole run directory (report, PDF, traceability and
+  evidence) — the ECSS qualification output artefact
 
 > **HTML report**: not implemented. It is a possible future developer-facing
 > output; it is not an SRS requirement and no code path emits it today. Earlier
@@ -1947,7 +1968,8 @@ rendered to each output:
 - `write_pdf` — the PDF summary via `printpdf`
 - `print_terminal` — the end-of-run terminal summary
 - `traceability::write_json` / `write_text` — the dual-audience matrix
-- `write_qdp` — zips report + traceability + evidence into `qdp.zip`
+- `write_qdp` — zips the run directory into `qdp.zip`
+- `outputs::write_run_outputs` — persists outcomes, writes the manifest, then all of the above
 
 There is no template-engine layer today: the PDF is emitted directly by
 `printpdf`. Substituting a template engine (Typst/LaTeX) later is a change behind

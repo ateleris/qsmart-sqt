@@ -8,8 +8,10 @@ use crate::specs::{RunResult, SpecResult};
 /// Schema version for the JSON report format.
 ///
 /// Increment the minor component when new fields are added in a backward-compatible
-/// way. Increment the major component for breaking changes.
-pub const SCHEMA_VERSION: &str = "1.0";
+/// way. Increment the major component for breaking changes (SRS-DATA-001).
+///
+/// 1.1 adds `run_id`, `evidence_manifest` and per-spec `evidence_ids`.
+pub const SCHEMA_VERSION: &str = "1.1";
 
 // ---------------------------------------------------------------------------
 // Provenance
@@ -74,6 +76,12 @@ pub enum OutcomeKind {
 pub struct Report {
     /// JSON schema version. Always the first field in the serialized output.
     pub schema_version: &'static str,
+    /// Identifier of the run; also the name of its directory under `runs/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Id of the evidence manifest, relative to the run directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_manifest: Option<String>,
     pub timestamp: String,
     pub config_version: String,
     /// `true` when the run was cut short by SIGTERM or Ctrl-C.
@@ -109,6 +117,9 @@ pub struct SpecReport {
     pub outcome_kind: OutcomeKind,
     pub target: TargetReport,
     pub outcomes: Vec<OutcomeReport>,
+    /// Ids of the evidence artefacts behind this result, listed in the manifest.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -158,6 +169,8 @@ impl Report {
         let failed = total - passed - infra_errors;
         Self {
             schema_version: SCHEMA_VERSION,
+            run_id: None,
+            evidence_manifest: None,
             timestamp: result.timestamp.clone(),
             config_version: result.config_version.clone(),
             interrupted: result.interrupted,
@@ -168,7 +181,7 @@ impl Report {
     }
 }
 
-fn spec_report(sr: &SpecResult) -> SpecReport {
+pub(crate) fn spec_report(sr: &SpecResult) -> SpecReport {
     use crate::specs::OutcomeKind as SpecOutcomeKind;
 
     let report_outcome_kind = match sr.outcome {
@@ -258,6 +271,7 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
             result_consistent,
         },
         outcomes,
+        evidence_ids: sr.evidence.clone(),
     }
 }
 
@@ -310,87 +324,41 @@ pub fn print_terminal(report: &Report) {
     );
 }
 
-/// Bundle qualification artefacts into a `qdp.zip` archive.
-///
-/// Collects the JSON report, traceability files, and the entire `evidence/`
-/// directory into a single ZIP archive placed at `output_dir/qdp.zip`.
-/// Each path argument is optional — missing or non-existent files are silently
-/// skipped so that a partial run still produces a usable bundle.
+/// Bundle a run directory into `<run_dir>/qdp.zip`: the report, PDF,
+/// traceability files and the whole `evidence/` tree, under their paths
+/// relative to the run directory.
 ///
 /// # Errors
 ///
 /// Returns an error if the archive cannot be created or any included file
 /// cannot be read.
-pub fn write_qdp(
-    output_dir: &Path,
-    report_json_path: Option<&Path>,
-    report_pdf_path: Option<&Path>,
-    traceability_json: Option<&Path>,
-    traceability_txt: Option<&Path>,
-    evidence_dir: Option<&Path>,
-) -> anyhow::Result<std::path::PathBuf> {
+pub fn write_qdp(run_dir: &Path) -> anyhow::Result<std::path::PathBuf> {
     use std::io::Write as _;
 
     use anyhow::Context as _;
     use zip::write::SimpleFileOptions;
 
-    let qdp_path = output_dir.join("qdp.zip");
-    if let Some(parent) = qdp_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let qdp_path = run_dir.join("qdp.zip");
+    let mut files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(run_dir)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file() && e.path() != qdp_path)
+        .map(walkdir::DirEntry::into_path)
+        .collect();
+    files.sort();
 
     let file = std::fs::File::create(&qdp_path)
         .with_context(|| format!("cannot create QDP archive: {}", qdp_path.display()))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    // Helper closure: add a single file to the archive under `entry_name`.
-    let add_file =
-        |zip: &mut zip::ZipWriter<_>, entry_name: &str, path: &Path| -> anyhow::Result<()> {
-            let data =
-                std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-            zip.start_file(entry_name, options)?;
-            zip.write_all(&data)?;
-            Ok(())
-        };
-
-    if let Some(p) = report_json_path
-        && p.exists()
-    {
-        add_file(&mut zip, "report.json", p)?;
+    for path in files {
+        let rel = path.strip_prefix(run_dir)?;
+        let data =
+            std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        zip.start_file(rel.to_string_lossy(), options)?;
+        zip.write_all(&data)?;
     }
-    if let Some(p) = report_pdf_path
-        && p.exists()
-    {
-        add_file(&mut zip, "report.pdf", p)?;
-    }
-    if let Some(p) = traceability_json
-        && p.exists()
-    {
-        add_file(&mut zip, "traceability.json", p)?;
-    }
-    if let Some(p) = traceability_txt
-        && p.exists()
-    {
-        add_file(&mut zip, "traceability.txt", p)?;
-    }
-
-    // Include all evidence files recursively under their relative paths.
-    if let Some(ev_dir) = evidence_dir
-        && ev_dir.is_dir()
-    {
-        // Strip the evidence dir's parent so paths in the archive are
-        // rooted at "evidence/<file>" rather than absolute.
-        let strip_base = ev_dir.parent().unwrap_or(ev_dir);
-        for entry in walkdir::WalkDir::new(ev_dir).min_depth(1) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                let rel = entry.path().strip_prefix(strip_base)?;
-                add_file(&mut zip, &rel.display().to_string(), entry.path())?;
-            }
-        }
-    }
-
     zip.finish()?;
     tracing::info!("QDP archive written to {}", qdp_path.display());
     Ok(qdp_path)
@@ -787,7 +755,7 @@ mod tests {
         let report = Report::from_run_result(&run_result, make_provenance());
         let json = serde_json::to_string(&report).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["schema_version"], "1.0", "schema_version must be present and correct");
+        assert_eq!(parsed["schema_version"], "1.1", "schema_version must be present and correct");
     }
 
     /// Verifies: SRS-DATA-001
@@ -869,38 +837,24 @@ mod tests {
     #[test]
     fn write_qdp_bundles_artefacts() {
         let dir = tempfile::tempdir().unwrap();
-        let out = dir.path();
+        let run = dir.path();
+        std::fs::write(run.join("report.json"), b"{}").unwrap();
+        std::fs::write(run.join("traceability.txt"), b"ok").unwrap();
+        std::fs::create_dir_all(run.join("evidence/runner")).unwrap();
+        std::fs::write(run.join("evidence/runner/0001-get_version.json"), b"{}").unwrap();
+        // A stale archive from an earlier attempt must not end up inside itself.
+        std::fs::write(run.join("qdp.zip"), b"stale").unwrap();
 
-        // Write dummy artefact files.
-        let report_path = out.join("report.json");
-        std::fs::write(&report_path, b"{\"schema_version\":\"1.0\"}").unwrap();
-        let t_json = out.join("traceability.json");
-        std::fs::write(&t_json, b"{}").unwrap();
-        let t_txt = out.join("traceability.txt");
-        std::fs::write(&t_txt, b"ok").unwrap();
+        let qdp = write_qdp(run).expect("write_qdp must succeed");
 
-        // Create a small evidence dir with one file.
-        let ev_dir = out.join("evidence");
-        std::fs::create_dir_all(&ev_dir).unwrap();
-        std::fs::write(ev_dir.join("run-001.json"), b"{\"job\":\"run-001\"}").unwrap();
-
-        let qdp =
-            write_qdp(out, Some(&report_path), None, Some(&t_json), Some(&t_txt), Some(&ev_dir))
-                .expect("write_qdp must succeed");
-
-        assert!(qdp.exists(), "qdp.zip must be created");
-        // Verify the archive contains the expected entries.
-        let zip_file = std::fs::File::open(&qdp).unwrap();
-        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&qdp).unwrap()).unwrap();
         let names: Vec<String> = (0..archive.len())
             .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
-        assert!(names.contains(&"report.json".to_owned()), "must contain report.json");
-        assert!(names.contains(&"traceability.json".to_owned()), "must contain traceability.json");
-        assert!(names.contains(&"traceability.txt".to_owned()), "must contain traceability.txt");
-        assert!(
-            names.iter().any(|n| n.ends_with("run-001.json")),
-            "must contain evidence file; got {names:?}"
+        assert_eq!(
+            names,
+            ["evidence/runner/0001-get_version.json", "report.json", "traceability.txt"],
+            "archive must hold the run directory, minus itself"
         );
     }
 

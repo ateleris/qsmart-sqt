@@ -27,7 +27,8 @@ pub struct TraceEntry {
     pub verification_methods: Vec<String>,
     /// `"PASS"`, `"FAIL"`, `"INFRA_ERROR"`, or `None` when no result exists.
     pub outcome: Option<String>,
-    /// Relative paths from the report directory.
+    /// Evidence ids of the matching result: paths relative to the run
+    /// directory, listed in `evidence/manifest.json`.
     pub evidence_paths: Vec<String>,
 }
 
@@ -73,9 +74,7 @@ pub fn build(
                     crate::specs::OutcomeKind::InfraError => "INFRA_ERROR",
                 }
                 .to_string();
-                let ev: Vec<String> =
-                    sr.outcomes.iter().flat_map(|o| o.evidence.values().cloned()).collect();
-                (Some(outcome_str), ev)
+                (Some(outcome_str), sr.evidence.clone())
             }
             None => (None, Vec::new()),
         };

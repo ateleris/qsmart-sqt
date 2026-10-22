@@ -63,7 +63,8 @@ cargo run -p sqt-runner -- -c examples/sqt-runner.example.yaml
 # 2. (optional) Validate config, connectivity, auth, and specs without running jobs
 cargo run -p sqt-reporter -- preflight -c examples/sqt-reporter.example.yaml
 
-# 3. Run the session; writes report.json/report.pdf/traceability.*/qdp.zip + evidence
+# 3. Run the session; writes report.json, report.pdf, traceability.*, qdp.zip and
+#    the evidence into examples/reports/runs/<run_id>/ (-o also copies the report)
 cargo run -p sqt-reporter -- run -c examples/sqt-reporter.example.yaml -o report.json
 ```
 

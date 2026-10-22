@@ -67,9 +67,11 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
 - **Baseline** (`baseline/`): parses baseline requirement docs, classifies by
   verification method, coverage gate.
 - **Evidence / report / traceability** (`evidence/`, `report.rs`,
-  `traceability/`): per-job evidence store; `Report` with `schema_version` and
+  `traceability/`, `outputs.rs`): one directory per run (`runs/<run_id>/`), raw
+  Runner responses and per-spec outcomes as evidence with a SHA-256 manifest;
+  `Report` (schema 1.1) with run id, manifest and per-spec evidence ids, and
   provenance (SRS-DATA-001/003); JSON + PDF (`printpdf`) + terminal outputs;
-  dual-audience traceability matrix; `qdp.zip` bundling.
+  dual-audience traceability matrix; `qdp.zip` of the run directory.
 - **CLI** (`main.rs`): `sqt run` and `sqt preflight` (also `run --preflight`);
   exit codes 0/1/2.
 
