@@ -1,9 +1,15 @@
 # SQT Review Findings & TODO
 
 **Review date**: 2026-07-03
-**Basis**: workspace code vs. `ARCHITECTURE.md`, `IMPLEMENTATION.md`, and
-`../ecss-qsmart-docs/templates/SRS.sdoc` (71 requirements).
+**Basis**: workspace code vs. `ARCHITECTURE.md`, `IMPLEMENTATION.md`, and the SRS
+of the time (71 requirements).
 **State at review**: 279 tests passing, `cargo clippy --workspace` clean.
+**Status update**: 2026-10-15, against `main` at `b4ed836` and the SRS
+SQT-SP-0001-ATS Issue 1 Rev 2 in
+[`qsmart-sqt-documentation`](https://github.com/ateleris/qsmart-sqt-documentation)
+(74 requirements; SRS-IF-004, -005 and -009 moved to SRS-FUNC-018, -019 and -020).
+Fixed items are marked **Fixed** with the commit and pull request; everything not
+marked is still open.
 
 This is the actionable backlog from the review. Each item has an ID, severity,
 location, the SRS/contract reference it touches, and a fix direction. Items are
@@ -11,14 +17,16 @@ ordered by severity. The doc-drift items were **fixed in this pass** (see the la
 section); everything above that is outstanding code work or a decision.
 
 Related: `ARCHITECTURE.md` (target design, refreshed), `IMPLEMENTATION.md`
-(current state), `TO_UPDATE.md` (older U-001…U-009 list — now essentially
-complete; superseded by this file).
+(current state). The older U-001…U-009 list (`TO_UPDATE.md`) was superseded by
+this file and removed on 2026-10-15; its remainders are D-3 below.
 
 ---
 
 ## Critical — fix before SQT can gate a qualification
 
 ### F-C1 — Unauthenticated command injection via `input` (security)
+**Fixed** in `847f4e5` (#8): every shell element and the stdin target are single-quoted.
+
 `sqt-runner/src/tools/run_binary.rs:119` interpolates the client-supplied
 `JobRequest.input` into a shell command run via `sh -c`
 (`format!("{} < {inp}", …)`). `shell_join` (`:131-143`) only quotes on space/quote,
@@ -31,6 +39,8 @@ input's parent dir is bind-mounted read-write into the container
 allowed root. Pairs with F-C2.
 
 ### F-C2 — Runner enforces no bearer auth (security, SRS-IF-006)
+**Fixed** in `847f4e5` (#8): optional `auth.token_env`; bearer middleware on every route except `/health`, 401 on failure.
+
 No auth middleware on any route; `sqt-runner/src/handlers.rs:146` has an explicit
 `TODO(auth)`. The OpenAPI declares `bearerAuth` globally and 401s; the runner never
 returns 401. The reporter sends and redacts a token correctly — only the server
@@ -40,6 +50,8 @@ side is missing. This also makes the reporter's preflight auth check vacuous.
 failure.
 
 ### F-C3 — `time.avg_ms` measures Docker overhead, not the binary (SRS-FUNC-005)
+**Fixed** in `64d4576` (#10): `time.avg_ms` from the inner GNU time elapsed line; overhead reported as `harness.docker_overhead_ms`.
+
 `run_binary.rs:96` reports `output.wall_time` (the whole `docker run` duration).
 `/usr/bin/time -v` runs inside the container and its "Elapsed (wall clock) time"
 line is captured but discarded (only Max RSS / CPU% parsed at `:89-90`). The
@@ -51,6 +63,8 @@ reporter constraint name. `JobMetrics` has `deny_unknown_fields`, so this is a
 deliberate schema addition (SRS-DATA-001 additive change).
 
 ### F-C4 — All-INFRA_ERROR run exits 0 (SRS-OPS-001, SRS-OPS-006)
+**Fixed** in `1dc6a1d` (#9): `Summary::is_gate_failure()` covers infra errors.
+
 `sqt-reporter/src/main.rs:170` exits non-zero only when `summary.failed > 0`, but
 `report.rs:148` computes `failed = total − passed − infra_errors`. A run where
 every spec is INFRA_ERROR (none FAIL) exits 0 — a broken CI gate.
@@ -61,6 +75,8 @@ every spec is INFRA_ERROR (none FAIL) exits 0 — a broken CI gate.
 ## High — SRS / contract conformance
 
 ### F-H1 — Runner never returns `output`; ML features dead end-to-end
+**Fixed** in `cad966f` (#14): stdout captured as the job output with checksum and `result_consistent`.
+
 `sqt-runner/src/handlers.rs:232` hardcodes `output: None`; the executor captures no
 inference outputs. The reporter-side precision (SRS-FUNC-016), accuracy
 (SRS-FUNC-017, marked **Active** in the SRS), and `result_consistent`
@@ -72,6 +88,8 @@ into `JobOutput.outputs` (+ checksum + `result_consistent` across repetitions);
 correct the reporter's fall-through message.
 
 ### F-H2 — OpenAPI `model` vs code `use_case` (SRS-IF-001)
+**Mostly fixed** in `2e0fc77` (#12): `use_case` throughout, `batch_size` removed, drift test `sqt-types/tests/openapi_contract.rs`. Still open: the `JobInput` union versus the free-form `input` the code accepts is documented as a pending contract decision.
+
 `job-api.openapi.yaml` requires `model` on `JobRequest`/`JobStatusResponse`; all
 code (sqt-types, runner, reporter) and `ARCHITECTURE.md` use `use_case`. `input`
 is a further mismatch (contract discriminated union vs. bare path string on both
@@ -80,6 +98,8 @@ sides); `batch_size` is in the contract but not in `JobRequest`.
 contract test that fails on drift.
 
 ### F-H3 — Concurrency unimplemented (SRS-PERF-001/002/003)
+**Fixed** in `fa71128` (#15): permits held across submit → poll, concurrent polling, poll-interval config wired, wall-clock envelope test.
+
 `orchestrator/mod.rs:213-215` acquires and immediately drops the semaphore permit
 around each single submit inside a sequential loop → `max_concurrent_jobs` bounds
 nothing; polling is also sequential. `poll_interval_initial_secs` /
@@ -91,6 +111,8 @@ only because the runner runs jobs serially.
 wall-clock envelope.
 
 ### F-H4 — Closed metric/constraint vocabulary vs SRS-FUNC-006 (decision)
+**Decided** at the ADD review for PDR: SRS-FUNC-006 stands and the ADD designs an open namespace (C-ORC-05, LLR-019). Implementation in SQT-SW-1, issue #17. See D-1.
+
 `JobMetrics` `deny_unknown_fields` + `Constraint::from_name` hardcoded list means a
 new project metric requires editing `sqt-types` **and** `sqt-reporter`. Also
 `ml.mse`/`ml.mae` are computed but have no constraint variant, and
@@ -98,6 +120,8 @@ new project metric requires editing `sqt-types` **and** `sqt-reporter`. Also
 **Decision needed** — see Decisions section.
 
 ### F-H5 — No LICENSE / attribution (SRS-DES-002)
+**Fixed** in `25be6ca` (#13): ESA-PL Permissive v2.4 `LICENSE`, workspace licence and authors metadata, root README.
+
 No `LICENSE` file, no `license`/`authors` in any `Cargo.toml`, no README at the
 workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 **Fix**: add LICENSE + license metadata + attribution + a root README.
@@ -113,7 +137,8 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   distinguish "clean" from "did not run".
 - **F-M2** Submit-path failure aborts the whole session (`orchestrator/mod.rs:214`
   `?`), and a non-conformant submit response does the same — should be per-job
-  INFRA_ERROR (SRS-IF-007/IF-009).
+  INFRA_ERROR (SRS-IF-007/FUNC-020). **Fixed** in `fa71128` (#15): a submit
+  failure is now an INFRA_ERROR of that job only.
 - **F-M3** Server job failures mislabeled: `wait_for_job` bails on `Failed`
   (`client.rs:269`), so the `RUNNER_JOB_FAILED` branch is unreachable and failures
   surface as `TRANSPORT_ERROR`; the structured `details` field is dropped
@@ -128,7 +153,7 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M6** Runner ignores `repetitions` / `warmup_repetitions` / `mode` — binary
   runs once, `mode` always echoed `latency` (`handlers.rs:221`). `time.avg_ms` is a
   single sample despite the name.
-- **F-M7** No default use-case fan-out (SRS-IF-005): `use_case` is required, so an
+- **F-M7** No default use-case fan-out (SRS-FUNC-019): `use_case` is required, so an
   undeclared workload is a hard error rather than one-job-per-type.
 - **F-M8** Traceability matrix lacks provenance (SRS-DATA-003 wants it on *every*
   output) and omits actual constraint values; `evidence_paths` holds evidence-map
@@ -140,7 +165,7 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   100%), not normalised as the field name and AD-015 promise
   (`run_binary.rs:90` → `executor/docker.rs:358`).
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
-  parsing — verbatim baseline evidence never reaches the report/QDP (SRS-IF-004);
+  parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
 
 ---
@@ -167,6 +192,10 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 ## Decisions needed (not obviously code-vs-doc)
 
 ### D-1 — Metric/constraint extensibility (SRS-FUNC-006 vs. F-H4)
+**Decided: option 2.** The ADD review for PDR kept SRS-FUNC-006 and the open-namespace
+design; implementation in SQT-SW-1 (issue #17). The options are kept below for the
+record.
+
 The code deliberately uses a closed vocabulary (`deny_unknown_fields` +
 `Constraint::from_name`). Options:
 1. **Accept & reword SRS-FUNC-006** to "extensible by recompiling the open-source
@@ -211,6 +240,13 @@ producing this file:
 - `IMPLEMENTATION.md` rewritten from the stale reporter-only plan to a current
   three-crate state description.
 
-Still outstanding on the docs side (code changes, tracked above): the OpenAPI
-`model`/`use_case` mismatch (F-H2) is a *contract* file, fixed by regenerating it,
-not by prose.
+The OpenAPI `model`/`use_case` mismatch (F-H2) has since been fixed in the
+contract file itself (`2e0fc77`).
+
+## Documentation update — 2026-10-15
+
+`ARCHITECTURE.md`, `IMPLEMENTATION.md` and this file were aligned with the PDR
+documents: the moved requirement IDs, the term *workload type* (AD-025), the
+API-profile qualification of SRS-FUNC-021 to SRS-FUNC-023 (`ARCHITECTURE.md` §4.7,
+AD-028), the open-metric-namespace decision (§10.2, AD-029), and the status of the
+findings above. `TO_UPDATE.md`, superseded since 2026-07-03, was removed.

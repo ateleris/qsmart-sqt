@@ -1,8 +1,9 @@
 # SQT — Implementation State
 
 **Status**: Working end-to-end (reporter + reference runner)
-**Date**: 2026-07-03
-**Tests**: 279 passing (`cargo test --workspace`); `cargo clippy --workspace` clean
+**Date**: 2026-10-15 (`main` at `b4ed836`)
+**Tests**: `cargo test --workspace` green in CI on `b4ed836` (279 at the 2026-07-03
+review); `cargo clippy --workspace` clean
 
 ---
 
@@ -53,19 +54,21 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
   closed metric vocabulary via `Constraint::from_name`. Missing metric → failing
   outcome (SRS-REL-002); zero-constraint spec → FAIL (SRS-REL-001).
 - **API client** (`api/client.rs`): `submit_job`, `get_job_status`,
-  `wait_for_job`, `get_version`, `get_docs`; bounded transient-error retry
+  `wait_for_job`, `get_version`, `get_docs`; polling cadence from the
+  `poll_interval_*` config (SRS-PERF-003); bounded transient-error retry
   distinct from polling backoff, never resending a submission that may have
   reached the Runner, with a per-request timeout (SRS-FUNC-020); bearer token
   wrapped in a `Redacted`
   newtype (SRS-OPS-005).
 - **Orchestrator** (`orchestrator/mod.rs`): version-compatibility gate at session
-  start (SRS-IF-008); groups specs by `(use_case, input)`; submits, polls, and
-  evaluates; INFRA_ERROR outcome category that does not abort the run
-  (SRS-OPS-006); SIGTERM/Ctrl-C handler that drains, persists a partial run, and
+  start (SRS-IF-008); groups specs by `(use_case, input)`; submits and polls the
+  jobs concurrently, holding a `max_concurrent_jobs` permit from submit to
+  completion (SRS-PERF-001/002), then evaluates; INFRA_ERROR outcome category,
+  including a failed submit, that does not abort the run (SRS-OPS-006); SIGTERM/Ctrl-C handler that drains, persists a partial run, and
   exits 2 (SRS-OPS-008); per-step progress logging (SRS-FUNC-012).
 - **Accuracy/precision** (`accuracy/`): client-side accuracy metrics and
   element-wise precision comparison against spec-declared references (SRS-FUNC-016,
-  SRS-FUNC-017) — see gaps re: end-to-end reachability.
+  SRS-FUNC-017), fed by the output the runner now returns.
 - **Baseline** (`baseline/`): parses baseline requirement docs, classifies by
   verification method, coverage gate.
 - **Evidence / report / traceability** (`evidence/`, `report.rs`,
@@ -81,8 +84,10 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
 
 - **Server** (`main.rs`, `handlers.rs`): axum routes `POST /api/v1/jobs`,
   `GET /api/v1/jobs/{id}`, `GET /api/v1/docs`, `GET /api/v1/version`,
-  `GET /api/v1/health`. In-memory job store; one job at a time
-  (`Semaphore::new(1)`); blocking work runs on `spawn_blocking`.
+  `GET /api/v1/health`. Bearer-token middleware on every route except `/health`
+  when `auth.token_env` is configured, 401 otherwise (SRS-IF-006); without a
+  token, auth is off with a startup warning. In-memory job store; one job at a
+  time (`Semaphore::new(1)`); blocking work runs on `spawn_blocking`.
 - **Config** (`config.rs`): `backend:` discriminant + `docker:` section (tools +
   optional build step), `binary`, `workspace`, `hardware`, `runner_hardware`,
   optional `docs`. All paths resolved to absolute at load.
@@ -90,7 +95,11 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
   ergonomic `LifecycleBackend` (prepare/run/collect/teardown) with a blanket impl;
   `DockerExecutor` is the shipped backend; `build_executor` factory keyed on
   `backend:`.
-- **Tools** (`tools/`): `run_binary` (time/RSS/CPU via `/usr/bin/time -v`),
+- **Tools** (`tools/`): `run_binary` (time/RSS/CPU via `/usr/bin/time -v`;
+  `time.avg_ms` is the binary's own elapsed time, the Docker overhead goes to
+  `harness.docker_overhead_ms`; arguments and stdin target are shell-quoted),
+  `output_capture` (stdout as the job output with checksum and
+  `result_consistent`),
   `valgrind`, `coverage`, `static_analysis` (cppcheck), `sonarqube`,
   `binary_size` — each run in its configured Docker image; unconfigured tools are
   skipped and their metrics reported `null`.
@@ -100,62 +109,51 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
 ## sqt-types — Implemented
 
 Single `lib.rs` with all shared DTOs and their tests pinning wire names (e.g. the
-six APCO use-case values). The DTOs are the single source of truth shared by both
-sides; there is intentionally no per-crate duplication.
+six `WorkloadType` values, sent in the `use_case` field). The DTOs are the single
+source of truth shared by both sides; there is intentionally no per-crate
+duplication. `tests/openapi_contract.rs` fails the build if `job-api.openapi.yaml`
+and the DTOs disagree on field names.
 
 ---
 
 ## Known Gaps & Deviations
 
 Full detail, severity, and file:line evidence live in **`REVIEW_FINDINGS.md`**
-(2026-07-03 review). Summary of what is *not* yet aligned with the architecture /
-SRS:
+(2026-07-03 review, status updated 2026-10-15). The critical and high findings of
+that review are fixed except as listed here. Summary of what is *not* yet aligned
+with the architecture / SRS:
 
-**Security / correctness (must-fix):**
-- Command injection via the client-supplied `input` field in the Docker backend
-  (`tools/run_binary.rs`); the runner enforces no bearer auth (`handlers.rs` TODO)
-  despite the contract requiring it (SRS-IF-006).
-- `time.avg_ms` reports the whole `docker run` wall-clock, not the binary's own
-  elapsed time (Docker overhead inflates the primary latency metric). See the
-  "Timing" note below for the fix.
-- A run in which every spec is INFRA_ERROR exits 0 (`main.rs` checks only
-  `summary.failed`, which excludes `infra_errors`) — violates SRS-OPS-001/006.
+**Planned for SQT-SW-1:**
+- API-profile qualification (SRS-FUNC-021 to SRS-FUNC-023): declared API profile,
+  generic workload set, coverage report — not implemented; target design in
+  `ARCHITECTURE.md` §4.7.
+- Closed metric/constraint vocabulary versus SRS-FUNC-006(a): decided to open the
+  namespace, issue #17 (`ARCHITECTURE.md` §10.2).
 
 **Contract / behaviour:**
-- `job-api.openapi.yaml` still says `model`; the code uses `use_case` everywhere.
-  The OpenAPI file must be regenerated (add a contract test).
-- The runner never returns `output`, so client-side accuracy (SRS-FUNC-017) and
-  precision (SRS-FUNC-016) and `result_consistent` (SRS-REL-004) are dead
-  end-to-end against the shipped runner.
-- Concurrency (SRS-PERF-001/002/003) is not realised: submit and poll are
-  sequential and the `max_concurrent_jobs` semaphore permit is dropped immediately
-  after each submit (no-op). `poll_interval_*` config keys are parsed but unwired.
-- Closed metric/constraint vocabulary conflicts with SRS-FUNC-006 (open design
-  decision — see `REVIEW_FINDINGS.md` §Decisions and `ARCHITECTURE.md` §10.2).
+- `input`: the OpenAPI `JobInput` union versus the free-form value the code
+  accepts is still a pending contract decision (rest of F-H2).
+- Runner job failures surface as transport errors, not `RUNNER_JOB_FAILED`
+  (F-M3); the runner ignores `repetitions` / `warmup_repetitions` / `mode` (F-M6);
+  no default fan-out when a spec declares no workload type (F-M7, SRS-FUNC-019).
+- Evidence is not run-scoped and the JSON report needs `--output` (F-M4); other
+  robustness items F-M1, F-M5 and F-M8 to F-M11.
 
 **Housekeeping:**
-- No `LICENSE` / license metadata (SRS-DES-002).
 - rustfmt CI gate is advisory (`continue-on-error: true`) — SRS-QUAL-002/CDR-003.
+- No release tags yet (SRS-CDR-001); `v0.1.0` is planned for SQT-SW-0 at PDR.
 
 ---
 
-## Timing metric: execution vs. Docker overhead (resolution of review item C3)
+## Timing metric: execution vs. Docker overhead (review item C3, resolved)
 
-`/usr/bin/time -v` runs **inside** the container and already reports the binary's
-true elapsed time ("Elapsed (wall clock) time"), but `run_binary.rs` currently
-discards that line and reports the outer `docker run` duration instead. We can and
-should distinguish, and report, both:
-
-- **`time.avg_ms`** → the binary's own elapsed time, parsed from the `time -v`
-  "Elapsed" line (the value constraints care about).
-- **harness overhead** → outer `docker run` wall-clock minus the inner elapsed
-  time (container create/start, image setup, shell spawn, teardown), reported as a
-  separate diagnostic field.
-
-Reporting the overhead separately is worth it for transparency. It requires an
-additive field on `sqt-types::JobMetrics` (which has `deny_unknown_fields`, so
-this is a deliberate schema addition and a matching constraint name on the reporter
-side). Tracked in `REVIEW_FINDINGS.md`.
+`/usr/bin/time -v` runs **inside** the container and reports the binary's own
+elapsed time ("Elapsed (wall clock) time"). `run_binary` parses that line for
+**`time.avg_ms`** and reports the outer `docker run` wall-clock minus the inner
+elapsed time — container create/start, image setup, shell spawn, teardown — as the
+additive diagnostic **`harness.docker_overhead_ms`**, which can also be declared as
+a constraint. Without GNU time in the image, `time.avg_ms` falls back to the outer
+wall-clock.
 
 ---
 
