@@ -58,14 +58,8 @@ async fn main() -> Result<()> {
             cfg.print_summary();
 
             let token_val = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
-            let client = api::ApiClient::new(
-                &cfg.runner.url,
-                token_val.as_deref(),
-                cfg.runner.retry_max,
-                cfg.runner.retry_backoff_initial_secs,
-                cfg.runner.poll_interval_initial_secs,
-                cfg.runner.poll_interval_max_secs,
-            )?;
+            let client =
+                api::ApiClient::new(&cfg.runner.url, token_val.as_deref(), (&cfg.runner).into())?;
 
             match preflight::preflight(&cfg, &client).await {
                 Ok(()) => {
@@ -106,14 +100,8 @@ async fn main() -> Result<()> {
             // Read API token from the env var named in config.
             // Note: validate() already checked the var is non-empty if token_env is set.
             let token_val = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
-            let client = api::ApiClient::new(
-                &cfg.runner.url,
-                token_val.as_deref(),
-                cfg.runner.retry_max,
-                cfg.runner.retry_backoff_initial_secs,
-                cfg.runner.poll_interval_initial_secs,
-                cfg.runner.poll_interval_max_secs,
-            )?;
+            let client =
+                api::ApiClient::new(&cfg.runner.url, token_val.as_deref(), (&cfg.runner).into())?;
 
             if do_preflight {
                 match preflight::preflight(&cfg, &client).await {

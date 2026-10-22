@@ -313,8 +313,9 @@ runner:
   # Operational tuning (defaults shown):
   max_concurrent_jobs: 8             # in-flight submission bound (SRS-PERF-002)
   job_timeout_secs: 300              # project-default per-job timeout; overridable per spec (SRS-PERF-004)
-  retry_max: 3                       # transient-error retry ceiling (SRS-IF-009)
-  retry_backoff_initial_secs: 1      # initial retry backoff (SRS-IF-009)
+  retry_max: 3                       # transient-error retry ceiling (SRS-FUNC-020)
+  retry_backoff_initial_secs: 1      # initial retry backoff (SRS-FUNC-020)
+  request_timeout_secs: 30           # bound on one HTTP request, body included
   poll_interval_initial_secs: 1      # first polling interval (SRS-PERF-003)
   poll_interval_max_secs: 30         # polling backoff cap (SRS-PERF-003)
 
@@ -882,11 +883,25 @@ non-zero exit with a clear mismatch message.
 against the published contract schema before consumption. A non-conformant response
 causes the affected job to be recorded as infrastructure-failed.
 
-**Transient error retry (SRS-IF-009):** Network resets, connection timeouts, and
-recoverable 5xx responses trigger bounded retries with exponential backoff (up to
-`runner.retry_max` attempts). After exhausting retries, the affected job is
-recorded as infrastructure-failed. This is distinct from the steady-state polling
-backoff in §5.9.
+**Transient error retry (SRS-FUNC-020):** transient failures are retried up to
+`runner.retry_max` more times, with back-off doubling from
+`runner.retry_backoff_initial_secs`. After the last retry the affected job is
+recorded as infrastructure-failed. Each request, body included, is bounded by
+`runner.request_timeout_secs` (connection set-up by 10 s). What counts as
+transient depends on whether the request may be sent twice:
+
+| Failure | `GET` (version, docs, job status) | `POST /jobs` |
+|---|---|---|
+| Connection not established (refused, DNS, connect timeout) | retry | retry |
+| Timeout, or connection reset before or during the response | retry | not retried |
+| 502, 503, 504, 429 | retry | 503, 429 only |
+| 500 and 4xx | not retried | not retried |
+
+The contract has no idempotency key, so a submission is sent again only when
+the Runner cannot have created the job: the connection never came up, or the
+Runner answered that it did not accept the request. Anything else could
+duplicate the job. A response that triggered a retry is kept as run evidence
+like any other. This is distinct from the steady-state polling backoff in §5.9.
 
 **Credential redaction (SRS-OPS-005):** Bearer tokens are redacted from all
 operational output (log lines, terminal summary, persisted evidence, verbose
@@ -1368,7 +1383,7 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
    - Concurrent polling of all outstanding IDs with exponential backoff (SRS-PERF-003)
    - Per-job timeout enforcement; project-default applied when spec omits one (SRS-PERF-004)
    - Response schema validation before consuming (SRS-IF-007)
-   - Transient error retry with bounded back-off (SRS-IF-009)
+   - Transient error retry with bounded back-off (SRS-FUNC-020)
 
 7. **Metric Constraint Evaluation**
    - Unit-aware evaluation: reconcile compatible units (ms↔s, KB↔bytes) (SRS-FUNC-004)

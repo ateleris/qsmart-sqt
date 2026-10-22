@@ -839,7 +839,18 @@ mod tests {
     /// a `delay_ms` per-poll, returning the wall-clock time.
     async fn measure(njobs: usize, concurrency: usize, delay_ms: u64) -> Duration {
         let base = spawn_mock_runner(delay_ms).await;
-        let client = crate::api::ApiClient::new(&base, None, 2, 0, 1, 1).expect("client builds");
+        let client = crate::api::ApiClient::new(
+            &base,
+            None,
+            crate::api::client::ClientOptions {
+                retry_max: 2,
+                retry_backoff_initial_secs: 0,
+                poll_interval_initial_secs: 1,
+                poll_interval_max_secs: 1,
+                request_timeout_secs: 30,
+            },
+        )
+        .expect("client builds");
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
         let shutdown = tokio_util::sync::CancellationToken::new();
 
