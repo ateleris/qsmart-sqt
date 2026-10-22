@@ -22,8 +22,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Coverage & test tooling
+# Coverage & test tooling. Versions are pinned for reproducible CI and are
+# listed in the release's SRelD; bump them deliberately.
+ARG CARGO_LLVM_COV_VERSION=0.9.1
+ARG CARGO_NEXTEST_VERSION=0.9.149
 RUN rustup component add llvm-tools-preview clippy rustfmt \
     && rustup target add x86_64-unknown-linux-musl \
-    && cargo install cargo-llvm-cov --locked \
-    && cargo install cargo-nextest --locked
+    && cargo install cargo-llvm-cov --locked --version "$CARGO_LLVM_COV_VERSION" \
+    && cargo install cargo-nextest --locked --version "$CARGO_NEXTEST_VERSION"
