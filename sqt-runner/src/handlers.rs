@@ -310,20 +310,11 @@ pub async fn get_health(State(state): State<AppState>) -> (StatusCode, Json<Heal
 // ---------------------------------------------------------------------------
 
 pub async fn get_docs(State(state): State<AppState>) -> Response {
+    // A Runner without documents declares no requirements: an empty set, not
+    // an error (the contract defines only 200, 401 and 500 here).
     let Some(ref docs_dir) = state.docs_dir else {
-        tracing::warn!("GET /api/v1/docs - no docs directory configured");
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: ApiErrorBody {
-                    code: "DOCS_NOT_CONFIGURED".into(),
-                    message: "no qualification documents configured on this runner".into(),
-                    details: None,
-                    timestamp: crate::now_iso(),
-                },
-            }),
-        )
-            .into_response();
+        tracing::info!("GET /api/v1/docs - no docs directory configured; serving an empty set");
+        return Json(DocsResponse { documents: vec![], attachments: vec![] }).into_response();
     };
 
     let dir = docs_dir.clone();
@@ -536,16 +527,17 @@ mod tests {
 
     /// Verifies: SRS-INST-001
     #[tokio::test]
-    async fn get_docs_not_configured_returns_404() {
+    async fn get_docs_not_configured_returns_an_empty_set() {
         let app = test_app(None);
         let req = axum::http::Request::builder()
             .uri("/api/v1/docs")
             .body(axum::body::Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp.into_body()).await;
-        assert_eq!(json["error"]["code"], "DOCS_NOT_CONFIGURED");
+        assert_eq!(json["documents"], serde_json::json!([]));
+        assert_eq!(json["attachments"], serde_json::json!([]));
     }
 
     /// Verifies: SRS-INST-001

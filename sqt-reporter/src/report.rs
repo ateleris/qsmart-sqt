@@ -10,7 +10,7 @@ use crate::specs::{RunResult, SpecResult};
 /// Increment the minor component when new fields are added in a backward-compatible
 /// way. Increment the major component for breaking changes (SRS-DATA-001).
 ///
-/// 1.1 adds `run_id`, `evidence_manifest` and per-spec `evidence_ids`.
+/// 1.1 adds `run_id`, `evidence_manifest`, per-spec `evidence_ids` and `discovery`.
 pub const SCHEMA_VERSION: &str = "1.1";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,10 @@ pub struct Report {
     /// `true` when the run was cut short by SIGTERM or Ctrl-C.
     pub interrupted: bool,
     pub provenance: RunProvenance,
+    /// The Runner-declared requirements and their preserved documents
+    /// (SRS-FUNC-018).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<crate::baseline::DiscoveryRecord>,
     pub summary: Summary,
     pub results: Vec<SpecReport>,
 }
@@ -175,6 +179,7 @@ impl Report {
             config_version: result.config_version.clone(),
             interrupted: result.interrupted,
             provenance,
+            discovery: result.discovery.clone(),
             summary: Summary { total, passed, failed, infra_errors },
             results,
         }
@@ -314,6 +319,20 @@ pub fn print_terminal(report: &Report) {
         }
     }
     println!("{}", "─".repeat(50));
+    match &report.discovery {
+        Some(d) if d.status == "empty" => {
+            println!("Runner-declared requirements: none obtained (empty discovery)");
+        }
+        Some(d) => println!(
+            "Runner-declared requirements: {} testable, {} compliant by declaration \
+             ({} documents, {} attachments preserved)",
+            d.testable,
+            d.compliant_by_declaration,
+            d.documents.len(),
+            d.attachments.len()
+        ),
+        None => {}
+    }
     let interrupted_note = if report.interrupted { " [INTERRUPTED]" } else { "" };
     println!(
         "{}/{} specs passed, {} failed, {} infra errors{interrupted_note}",
@@ -602,6 +621,7 @@ mod tests {
             config_version: "1.0.0".to_string(),
             interrupted: false,
             requirement_set: None,
+            discovery: None,
         }
     }
 

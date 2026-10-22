@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqt_types::{
     Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
 };
@@ -294,19 +294,40 @@ pub async fn run(
     // -----------------------------------------------------------------------
     // Baseline coverage check (T-043)
     // -----------------------------------------------------------------------
-    let docs = client.get_docs().await.unwrap_or_else(|e| {
-        tracing::warn!("docs fetch failed: {e}");
-        sqt_types::DocsResponse { documents: vec![], attachments: vec![] }
-    });
+    // -----------------------------------------------------------------------
+    // Requirements discovery (SRS-FUNC-018)
+    //
+    // The Runner's documents are the authoritative requirement set. A fetch
+    // that fails (after retries) is not an empty set: the run stops before any
+    // job is submitted. An empty set proceeds with a diagnostic.
+    // -----------------------------------------------------------------------
+    let docs = client.get_docs().await.context(
+        "requirements discovery (GET /api/v1/docs) failed; the Runner's requirement set \
+         could not be established, so no job was submitted",
+    )?;
+    persist_runner_responses(client, evidence_store);
+    let docs_response_id = evidence_store
+        .manifest()
+        .iter()
+        .rev()
+        .find(|e| e.details.get("operation").is_some_and(|op| op == "get_docs"))
+        .map(|e| e.id.clone());
+
+    let req_set = baseline::parse_requirements(&docs);
+    let discovery = baseline::record_discovery(&docs, &req_set, docs_response_id, evidence_store);
     let baseline_req_set: Option<crate::baseline::RequirementSet> = if docs.documents.is_empty() {
-        tracing::warn!("No baseline documents available — coverage check skipped");
+        tracing::warn!(
+            "The Runner declared no requirement documents; proceeding with the \
+             project's qualification specifications only"
+        );
         None
     } else {
-        let req_set = baseline::parse_requirements(&docs);
         tracing::info!(
+            documents = docs.documents.len(),
+            attachments = docs.attachments.len(),
             testable = req_set.testable.len(),
             by_declaration = req_set.compliant_by_declaration.len(),
-            "Baseline requirements parsed"
+            "Runner-declared requirements obtained"
         );
         let spec_uids: Vec<String> = specs.iter().map(|s| s.requirement_uid.clone()).collect();
         baseline::check_coverage(&req_set, &spec_uids)?;
@@ -321,6 +342,7 @@ pub async fn run(
                 config_version: config.project.version.clone(),
                 interrupted: false,
                 requirement_set: baseline_req_set,
+                discovery: Some(discovery),
             },
             provenance,
         ));
@@ -555,6 +577,7 @@ pub async fn run(
             config_version: config.project.version.clone(),
             interrupted,
             requirement_set: baseline_req_set,
+            discovery: Some(discovery),
         },
         provenance,
     ))

@@ -118,6 +118,8 @@ pub struct RunResult {
     pub interrupted: bool,
     /// Baseline requirement set parsed during this run, if available.
     pub requirement_set: Option<crate::baseline::RequirementSet>,
+    /// What the Runner's discovery operation returned (SRS-FUNC-018).
+    pub discovery: Option<crate::baseline::DiscoveryRecord>,
 }
 
 /// Collect all registered specs via inventory.

@@ -469,7 +469,8 @@ runner_hardware:
     gcc: "13.2"
 
 # Qualification documents served via GET /api/v1/docs (optional).
-# When absent the endpoint returns 404. The runner scans this directory
+# When absent the endpoint serves an empty set (200, empty arrays): the
+# Runner declares no requirements. The runner scans this directory
 # (non-recursively) at request time:
 #   *.sdoc -> documents[]   (raw UTF-8 text, parsed client-side by the Reporter)
 #   *.*    -> attachments[] (base64 blobs)
@@ -1414,12 +1415,22 @@ once per qualification session before any jobs are submitted.
 
 **SQT Reporter behaviour**:
 
-1. Fetch `GET /api/v1/docs`.
+1. Fetch `GET /api/v1/docs`. If the fetch fails after retries (transport error,
+   401, 500, unparsable body), the run stops with exit code 1 before any job is
+   submitted: a failed discovery is not an empty one. An empty `documents` array
+   proceeds with the project's specs only, and the terminal summary and report
+   (`discovery.status: empty`) say that no Runner-declared requirements were
+   obtained (SRS-FUNC-018).
 2. Parse each `content` string as StrictDoc; extract all `[REQUIREMENT]` blocks.
 3. For each requirement, inspect the `VERIFICATION` field:
    - Contains `Test` → schedule for normal constraint evaluation (requires a listed spec in config).
    - No `Test` → record as `compliant` with `evidence_source: server_declaration`.
 4. Include all requirements in the report traceability matrix, grouped by verification path.
+5. Preserve every document and attachment verbatim in the run's evidence
+   (`evidence/discovery/documents/`, `evidence/discovery/attachments/`,
+   attachments base64-decoded; the raw response stays under `evidence/runner/`).
+   The report's `discovery` block lists each with its evidence id and the
+   requirement counts.
 
 See **Section 4.6** for the full rationale and report output format.
 
