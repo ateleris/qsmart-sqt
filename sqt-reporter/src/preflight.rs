@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Pre-flight check for `sqt run --preflight` (SRS-OPS-007).
 //!
 //! Validates config, checks Runner connectivity, and verifies spec files

@@ -6,9 +6,9 @@
 # `--host 0.0.0.0` to listen beyond the container's loopback.
 #
 # Build context: a directory containing the release binary `sqt-runner`
-# and `LICENSE` (see ci/release-images.sh).
+# `LICENSE` and `NOTICE` (see ci/release-images.sh).
 FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb
-COPY LICENSE /usr/share/doc/sqt/LICENSE
+COPY LICENSE NOTICE /usr/share/doc/sqt/
 COPY sqt-runner /usr/local/bin/sqt-runner
 EXPOSE 3000
 ENTRYPOINT ["/usr/local/bin/sqt-runner"]

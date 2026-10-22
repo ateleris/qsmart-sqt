@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Traceability matrix builder (T-053).
 //!
 //! Builds a traceability matrix from the baseline `RequirementSet` and `RunResult`,

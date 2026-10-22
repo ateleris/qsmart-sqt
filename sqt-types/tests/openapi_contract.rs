@@ -1,9 +1,12 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Contract drift guard (F-H2, SRS-IF-001).
 //!
 //! Fails when `job-api.openapi.yaml` and the Rust DTOs disagree on field names.
 //! The historic break this guards: the contract used `model` where the code
 //! (and `ARCHITECTURE.md`) use `use_case`, so a conformant client generated
-//! from the OpenAPI file could not talk to the runner.
+//! from the `OpenAPI` file could not talk to the runner.
 
 use std::collections::BTreeSet;
 

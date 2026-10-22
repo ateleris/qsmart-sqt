@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ateleris GmbH
+# SPDX-License-Identifier: ESA-PL-permissive-2.4
 """Generate the requirements fulfilment matrix from test metadata.
 
 Every test names the SRS requirement(s) it verifies in a doc-comment line

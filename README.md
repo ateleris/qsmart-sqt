@@ -6,7 +6,7 @@ coverage, static analysis, …), checks the results against
 requirement-derived constraints, and produces a qualification report and
 evidence bundle.
 
-Developed by Ateleris in the context of the ESA Q-SMART project.
+Developed by Ateleris GmbH in the context of the ESA Q-SMART project.
 
 ## Workspace layout
 
@@ -86,7 +86,9 @@ git clone git@github.com:ateleris/qsmart-sqt-documentation.git
 
 ## Licence
 
-Copyright © Ateleris.
+Copyright © 2026 Ateleris GmbH. Distributed under the ESA Software Community
+Licence Permissive v2.4 (ESA-PL Permissive, Type 3); see [`LICENSE`](LICENSE)
+and [`NOTICE`](NOTICE).
 
 Licensed under the **European Space Agency Public License (ESA-PL) Permissive –
 v2.4** (SPDX identifier `ESA-PL-permissive-2.4`). See [`LICENSE`](LICENSE) for the

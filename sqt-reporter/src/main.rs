@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -41,7 +44,6 @@ enum Commands {
 }
 
 #[tokio::main]
-#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(

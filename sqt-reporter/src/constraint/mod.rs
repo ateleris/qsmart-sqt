@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::fmt;
 
 pub use evaluator::ConstraintOutcome;
@@ -240,7 +243,10 @@ impl Constraint {
     /// Create a constraint from its wire name, operator, and threshold.
     ///
     /// Returns `None` if `name` is not a known metric.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "thresholds of integer metrics (return code, counts) are whole numbers"
+    )]
     pub fn from_name(name: &str, op: Op, value: f64) -> Option<Self> {
         Some(match name {
             "return_code" => Self::ReturnCode { op, value: value as i64 },
@@ -377,7 +383,10 @@ impl Constraint {
     }
 
     /// Expected threshold as `f64`.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "integer thresholds (return code, counts) are far below 2^52 and convert exactly"
+    )]
     pub fn expected(&self) -> f64 {
         match self {
             Self::ReturnCode { value, .. }

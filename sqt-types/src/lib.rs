@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -226,7 +229,10 @@ pub struct JobMetrics {
 impl JobMetrics {
     /// Look up a metric value by its wire name. Returns `None` when the field
     /// is absent or the name is unknown.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "integer metrics (return code, counts) are far below 2^52 and convert exactly"
+    )]
     pub fn get(&self, name: &str) -> Option<f64> {
         match name {
             "return_code" => self.return_code.map(|v| v as f64),
@@ -411,7 +417,7 @@ pub struct DocsResponse {
     pub attachments: Vec<Attachment>,
 }
 
-/// A StrictDoc `.sdoc` file served as raw text for client-side parsing.
+/// A `StrictDoc` `.sdoc` file served as raw text for client-side parsing.
 ///
 /// `deny_unknown_fields` implements SRS-IF-007.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -422,7 +428,7 @@ pub struct StrictdocDocument {
     /// the server does not pre-parse the document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Full raw StrictDoc text, UTF-8, LF line endings.
+    /// Full raw `StrictDoc` text, UTF-8, LF line endings.
     pub content: String,
 }
 

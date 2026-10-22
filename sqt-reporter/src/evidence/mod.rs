@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Per-run output directory and evidence store (SRS-FUNC-008, SRS-OPS-004).
 //!
 //! Every qualification run writes into its own directory:

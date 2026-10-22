@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Everything a qualification run writes after its jobs are evaluated: the
 //! persisted outcomes, the evidence manifest, the run report, the PDF, the
 //! traceability matrix and the QDP archive, all inside the run's directory

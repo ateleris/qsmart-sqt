@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Ateleris GmbH
+# SPDX-License-Identifier: ESA-PL-permissive-2.4
 # Runs inside the ci build image (ci/Dockerfile); cwd is the repo checkout.
 # Tests with coverage (rustfmt and clippy are separate CI jobs). Produces,
 # in the workspace:

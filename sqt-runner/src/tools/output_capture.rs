@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Capture the binary-under-test's inference output into a `JobOutput`
 //! (F-H1, SRS-FUNC-016/017, SRS-REL-004).
 //!

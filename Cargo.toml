@@ -3,10 +3,21 @@ members = ["sqt-types", "sqt-reporter", "sqt-runner"]
 resolver = "2"
 
 [workspace.package]
-authors = ["Ateleris"]
+authors = ["Ateleris GmbH"]
 license = "ESA-PL-permissive-2.4"
 repository = "https://github.com/ateleris/qsmart-sqt"
 publish = false
+
+# The static-analysis ruleset for every crate (SRS-QUAL-001): clippy's
+# pedantic group on top of the default lints, enforced as errors in CI
+# (`cargo clippy --workspace --all-targets -- -D warnings`). Suppressing a lint
+# in code takes `#[expect(clippy::..., reason = "...")]`.
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 
 [workspace.dependencies]
 sqt-types = { path = "./sqt-types" }
