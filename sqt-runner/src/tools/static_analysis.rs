@@ -49,6 +49,7 @@ fn count_warnings(text: &str) -> i64 {
 mod tests {
     use super::*;
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn count_warnings_basic() {
         let text = "file.c:10: warning: unused variable 'x'\n\
@@ -57,6 +58,7 @@ mod tests {
         assert_eq!(count_warnings(text), 2);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn count_warnings_empty() {
         assert_eq!(count_warnings(""), 0);

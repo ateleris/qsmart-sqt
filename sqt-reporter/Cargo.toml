@@ -32,6 +32,7 @@ inventory = { workspace = true }
 futures = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 walkdir = "2"
+sha2 = "0.11"
 printpdf = { version = "0.12", default-features = false }
 
 [dev-dependencies]

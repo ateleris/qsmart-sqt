@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -31,6 +32,25 @@ impl std::fmt::Display for Redacted {
 }
 
 // ---------------------------------------------------------------------------
+// Recorded responses
+// ---------------------------------------------------------------------------
+
+/// A Runner response body exactly as received, kept as run evidence
+/// (SRS-FUNC-008). Request headers, and so the bearer token, are never recorded.
+#[derive(Debug, Clone)]
+pub struct RecordedResponse {
+    /// Contract operation: `get_version`, `get_docs`, `submit_job` or `get_job_status`.
+    pub operation: &'static str,
+    pub url: String,
+    pub status: u16,
+    /// RFC 3339 UTC time the body was received.
+    pub received_at: String,
+    /// The job the response belongs to, when known.
+    pub job_id: Option<String>,
+    pub body: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
 // ApiClient
 // ---------------------------------------------------------------------------
 
@@ -47,6 +67,8 @@ pub struct ApiClient {
     /// `poll_interval_max_secs` (SRS-PERF-003).
     poll_interval_initial_secs: u64,
     poll_interval_max_secs: u64,
+    /// Every response body received, in arrival order (see [`Self::take_recorded`]).
+    recorded: Mutex<Vec<RecordedResponse>>,
 }
 
 impl ApiClient {
@@ -81,7 +103,34 @@ impl ApiClient {
             retry_backoff_initial_secs,
             poll_interval_initial_secs,
             poll_interval_max_secs,
+            recorded: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Take every response recorded so far, oldest first, leaving the record empty.
+    pub fn take_recorded(&self) -> Vec<RecordedResponse> {
+        std::mem::take(
+            &mut *self.recorded.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn record(
+        &self,
+        operation: &'static str,
+        url: &str,
+        status: reqwest::StatusCode,
+        job_id: Option<&str>,
+        body: &[u8],
+    ) {
+        let entry = RecordedResponse {
+            operation,
+            url: url.to_owned(),
+            status: status.as_u16(),
+            received_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            job_id: job_id.map(str::to_owned),
+            body: body.to_vec(),
+        };
+        self.recorded.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(entry);
     }
 
     /// Attach the `Authorization` header to a request builder if a token is configured.
@@ -112,8 +161,10 @@ impl ApiClient {
                         || e.is_timeout()
                         || e.status().is_some_and(|s| s.is_server_error()) =>
                 {
-                    let backoff =
-                        Duration::from_secs(self.retry_backoff_initial_secs * 2u64.pow(attempt));
+                    let backoff = Duration::from_secs(
+                        self.retry_backoff_initial_secs
+                            .saturating_mul(2u64.saturating_pow(attempt)),
+                    );
                     tracing::warn!(
                         attempt,
                         backoff_secs = backoff.as_secs(),
@@ -146,8 +197,11 @@ impl ApiClient {
             .retry(|| async { self.auth(client.get(&url)).send().await?.error_for_status() })
             .await
             .with_context(|| format!("GET {url} failed"))?;
+        let status = resp.status();
+        let body = resp.bytes().await.context("Failed to read VersionResponse")?;
+        self.record("get_version", &url, status, None, &body);
         let resp: VersionResponse =
-            resp.json::<VersionResponse>().await.context("Failed to parse VersionResponse")?;
+            serde_json::from_slice(&body).context("Failed to parse VersionResponse")?;
         validate_version_response(&resp)?;
         Ok(resp)
     }
@@ -172,7 +226,11 @@ impl ApiClient {
             .retry(|| async { self.auth(client.get(&url)).send().await?.error_for_status() })
             .await
             .with_context(|| format!("GET {url} failed"))?;
-        let docs: DocsResponse = resp.json().await.context("Failed to parse DocsResponse")?;
+        let status = resp.status();
+        let body = resp.bytes().await.context("Failed to read DocsResponse")?;
+        self.record("get_docs", &url, status, None, &body);
+        let docs: DocsResponse =
+            serde_json::from_slice(&body).context("Failed to parse DocsResponse")?;
         if docs.documents.is_empty() {
             tracing::warn!("GET /api/v1/docs returned empty documents array");
         }
@@ -210,17 +268,21 @@ impl ApiClient {
             .await
             .with_context(|| format!("POST {url} failed"))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                bail!("API error {status}: {} - {}", err.error.code, err.error.message);
-            }
-            bail!("API returned {status}: {body}");
+        let status = response.status();
+        let body = response.bytes().await.context("Failed to read the job submission response")?;
+        if !status.is_success() {
+            self.record("submit_job", &url, status, None, &body);
+            bail_with_error_body(status, &body)?;
         }
 
-        let accepted: JobAccepted =
-            response.json().await.context("Failed to parse JobAccepted response")?;
+        let accepted = match serde_json::from_slice::<JobAccepted>(&body) {
+            Ok(a) => a,
+            Err(e) => {
+                self.record("submit_job", &url, status, None, &body);
+                return Err(e).context("Failed to parse JobAccepted response");
+            }
+        };
+        self.record("submit_job", &url, status, Some(&accepted.job_id), &body);
         Ok(accepted.job_id)
     }
 
@@ -241,17 +303,15 @@ impl ApiClient {
             .await
             .with_context(|| format!("GET {url} failed"))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body) {
-                bail!("API error {status}: {} - {}", err.error.code, err.error.message);
-            }
-            bail!("API returned {status}: {body}");
+        let status = response.status();
+        let body = response.bytes().await.context("Failed to read JobStatusResponse")?;
+        self.record("get_job_status", &url, status, Some(job_id), &body);
+        if !status.is_success() {
+            bail_with_error_body(status, &body)?;
         }
 
         let resp: JobStatusResponse =
-            response.json().await.context("Failed to parse JobStatusResponse")?;
+            serde_json::from_slice(&body).context("Failed to parse JobStatusResponse")?;
         validate_job_status(&resp)?;
         Ok(resp)
     }
@@ -299,6 +359,15 @@ impl ApiClient {
     }
 }
 
+/// Turn a non-success response body into an error, preferring the structured
+/// `ErrorResponse` when the body is one.
+fn bail_with_error_body(status: reqwest::StatusCode, body: &[u8]) -> Result<()> {
+    if let Ok(err) = serde_json::from_slice::<ErrorResponse>(body) {
+        bail!("API error {status}: {} - {}", err.error.code, err.error.message);
+    }
+    bail!("API returned {status}: {}", String::from_utf8_lossy(body));
+}
+
 // ---------------------------------------------------------------------------
 // Response schema validators  (SRS-IF-007)
 // ---------------------------------------------------------------------------
@@ -341,6 +410,7 @@ mod tests {
             .expect("client should build")
     }
 
+    /// Verifies: SRS-OPS-005
     #[test]
     fn token_not_in_debug_output() {
         let client = make_client(3);
@@ -352,6 +422,7 @@ mod tests {
         assert!(debug.contains("[REDACTED]"), "Debug output should contain [REDACTED]: {debug}");
     }
 
+    /// Verifies: SRS-OPS-005
     #[test]
     fn token_not_in_display_of_redacted() {
         let r = Redacted("my-secret".to_owned());
@@ -359,6 +430,7 @@ mod tests {
         assert_eq!(format!("{r:?}"), "[REDACTED]");
     }
 
+    /// Verifies: SRS-IF-006
     #[test]
     fn client_builds_without_token() {
         let client = ApiClient::new("http://localhost:9999", None, 3, 1, 1, 30)
@@ -366,6 +438,7 @@ mod tests {
         assert!(client.token.is_none());
     }
 
+    /// Verifies: SRS-PERF-003, SRS-FUNC-020
     #[test]
     fn client_builds_with_retry_and_poll_params() {
         let client = ApiClient::new("http://localhost:9999", Some("tok"), 5, 2, 3, 45)
@@ -400,6 +473,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_job_status_rejects_empty_job_id() {
         let resp = make_job_status_resp("");
@@ -407,6 +481,7 @@ mod tests {
         assert!(err.to_string().contains("job_id"), "error should mention job_id: {err}");
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_job_status_accepts_valid_response() {
         let resp = make_job_status_resp("job-abc");
@@ -423,6 +498,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_version_response_rejects_empty_api_version() {
         let resp = make_version_resp("", "1.0.0");
@@ -430,6 +506,7 @@ mod tests {
         assert!(err.to_string().contains("api_version"), "error should mention api_version: {err}");
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_version_response_rejects_empty_runner_version() {
         let resp = make_version_resp("v1", "");
@@ -440,6 +517,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-IF-007
     #[test]
     fn validate_version_response_accepts_valid_response() {
         let resp = make_version_resp("v1", "1.2.3");

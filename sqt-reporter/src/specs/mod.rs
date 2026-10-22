@@ -14,12 +14,25 @@ pub struct TestSpec {
     pub workload_type: WorkloadType,
     pub target: Target,
     pub constraints: Vec<Constraint>,
+    /// Constraints whose value unit does not reduce to the metric's unit. Each
+    /// is reported as a failing outcome (SRS-FUNC-004).
+    pub unreconcilable: Vec<UnreconcilableConstraint>,
     /// Reference outputs for client-side ml.* accuracy evaluation (T-054).
     pub reference_outputs: Option<Vec<serde_json::Value>>,
     /// Reference outputs for numerical precision comparison (SRS-FUNC-016).
     pub precision_reference: Option<Vec<serde_json::Value>>,
     /// Absolute tolerance for `ml.output_within_tolerance` (SRS-FUNC-016).
     pub precision_tolerance: Option<f64>,
+}
+
+/// A constraint that was declared but cannot be evaluated because its value's
+/// unit does not reduce to the unit of its metric.
+#[derive(Debug, Clone)]
+pub struct UnreconcilableConstraint {
+    pub metric: String,
+    /// Display form of the operator, e.g. `<=`.
+    pub operator: String,
+    pub reason: String,
 }
 
 /// A factory that produces a `TestSpec`.
@@ -52,6 +65,9 @@ pub struct SpecResult {
     pub outcome: OutcomeKind,
     /// Backward-compat helper: `true` only for `OutcomeKind::Pass`.
     pub passed: bool,
+    /// Ids of the evidence artefacts behind this result (SRS-FUNC-009): the
+    /// Runner's final response for the job, then the persisted outcomes.
+    pub evidence: Vec<String>,
 }
 
 impl SpecResult {
@@ -66,7 +82,7 @@ impl SpecResult {
             OutcomeKind::Fail
         };
         let passed = kind == OutcomeKind::Pass;
-        Self { spec, outcomes, outcome: kind, passed }
+        Self { spec, outcomes, outcome: kind, passed, evidence: Vec::new() }
     }
 
     /// Construct a synthetic `SpecResult` representing a Runner infrastructure
@@ -83,7 +99,13 @@ impl SpecResult {
             message,
             evidence,
         };
-        Self { spec, outcomes: vec![outcome], outcome: OutcomeKind::InfraError, passed: false }
+        Self {
+            spec,
+            outcomes: vec![outcome],
+            outcome: OutcomeKind::InfraError,
+            passed: false,
+            evidence: Vec::new(),
+        }
     }
 }
 
@@ -136,17 +158,20 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-REL-001
     #[test]
     fn spec_result_fails_if_no_outcomes() {
         let result = SpecResult::new(make_spec(), vec![]);
         assert!(!result.passed);
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn all_specs_returns_nonempty_vec() {
         assert!(!all_specs().is_empty());
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn all_specs_discovers_both_examples() {
         let specs = all_specs();
@@ -155,6 +180,7 @@ mod tests {
         assert!(uids.contains(&"REQ-EXAMPLE-002"), "missing REQ-EXAMPLE-002");
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn spec_result_derives_passed_from_outcomes() {
         let result = SpecResult::new(make_spec(), vec![passing_outcome(), passing_outcome()]);
@@ -162,6 +188,7 @@ mod tests {
         assert_eq!(result.outcome, OutcomeKind::Pass);
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn spec_result_fails_if_any_outcome_fails() {
         let result = SpecResult::new(make_spec(), vec![passing_outcome(), failing_outcome()]);
@@ -169,6 +196,7 @@ mod tests {
         assert_eq!(result.outcome, OutcomeKind::Fail);
     }
 
+    /// Verifies: SRS-OPS-006
     #[test]
     fn spec_result_infra_error_is_not_passed() {
         let result = SpecResult::infra_error(
@@ -182,6 +210,7 @@ mod tests {
         assert!(result.outcomes[0].message.contains("runner crashed"));
     }
 
+    /// Verifies: SRS-OPS-006, SRS-FUNC-008
     #[test]
     fn spec_result_infra_error_carries_evidence() {
         let mut evidence = std::collections::HashMap::new();
@@ -195,6 +224,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn test_spec_with_default_target() {
         use std::time::Duration;
@@ -203,6 +233,7 @@ mod tests {
         assert_eq!(spec.target.timeout, Duration::from_secs(30));
     }
 
+    /// Verifies: SRS-FUNC-019
     #[test]
     fn discovered_specs_carry_image_classification_workload_type() {
         // Both example specs must explicitly declare ImageClassification.

@@ -59,6 +59,42 @@ fn default_poll_interval_max_secs() -> u64 {
     30
 }
 
+/// Upper bound on `runner.retry_max`: bounded retry (SRS-FUNC-020).
+const RETRY_MAX_LIMIT: u32 = 10;
+/// Upper bound on `runner.retry_backoff_initial_secs`.
+const RETRY_BACKOFF_INITIAL_LIMIT_SECS: u64 = 60;
+
+impl RunnerConfig {
+    fn validate_ranges(&self) -> Result<()> {
+        if self.max_concurrent_jobs == 0 {
+            bail!("runner.max_concurrent_jobs must be at least 1");
+        }
+        if self.job_timeout_secs == 0 {
+            bail!("runner.job_timeout_secs must be at least 1");
+        }
+        if self.poll_interval_initial_secs == 0 {
+            bail!("runner.poll_interval_initial_secs must be at least 1");
+        }
+        if self.poll_interval_max_secs < self.poll_interval_initial_secs {
+            bail!(
+                "runner.poll_interval_max_secs ({}) must not be less than runner.poll_interval_initial_secs ({})",
+                self.poll_interval_max_secs,
+                self.poll_interval_initial_secs
+            );
+        }
+        if self.retry_max > RETRY_MAX_LIMIT {
+            bail!("runner.retry_max must be at most {RETRY_MAX_LIMIT}, got {}", self.retry_max);
+        }
+        if self.retry_backoff_initial_secs > RETRY_BACKOFF_INITIAL_LIMIT_SECS {
+            bail!(
+                "runner.retry_backoff_initial_secs must be at most {RETRY_BACKOFF_INITIAL_LIMIT_SECS}, got {}",
+                self.retry_backoff_initial_secs
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ReportConfig {
     pub output_dir: PathBuf,
@@ -69,8 +105,9 @@ impl SqtConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error if required fields are empty, `runner.url` has an invalid scheme,
-    /// `test_specs.files` is empty, or the bearer token env var is missing/empty.
+    /// Returns an error naming the offending field (SRS-FUNC-002) if a required field is
+    /// empty, `runner.url` has an invalid scheme, `test_specs.files` is empty, a runner
+    /// setting is out of range, or the bearer token env var is missing/empty.
     pub fn validate(&mut self, config_dir: &Path) -> Result<()> {
         if self.project.name.is_empty() {
             bail!("project.name must not be empty");
@@ -85,8 +122,15 @@ impl SqtConfig {
         if self.test_specs.files.is_empty() {
             bail!("test_specs.files must not be empty");
         }
+        if self.report.output_dir.as_os_str().is_empty() {
+            bail!("report.output_dir must not be empty");
+        }
+        self.runner.validate_ranges()?;
         // Validate bearer token env var if configured.
         if let Some(ref var_name) = self.runner.token_env {
+            if var_name.is_empty() {
+                bail!("runner.token_env must not be empty; omit it to run unauthenticated");
+            }
             match std::env::var(var_name) {
                 Ok(val) if !val.is_empty() => {}
                 _ => {
@@ -157,6 +201,7 @@ report:
   output_dir: "./reports"
 "#;
 
+    /// Verifies: SRS-FUNC-001
     #[test]
     fn valid_config_parses() {
         // Set the token env var so validation passes.
@@ -185,6 +230,7 @@ report:
         assert_eq!(cfg.runner.token_env.as_deref(), Some("SQT_TEST_MY_TOKEN_ZZZZZ"));
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn missing_required_field_rejected() {
         // Missing 'runner' section
@@ -203,6 +249,7 @@ report:
         assert!(result.is_err());
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn empty_project_name_rejected() {
         let result = load(
@@ -223,6 +270,7 @@ report:
         assert!(result.unwrap_err().to_string().contains("project.name"));
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn invalid_url_scheme_rejected() {
         let result = load(
@@ -243,6 +291,7 @@ report:
         assert!(result.unwrap_err().to_string().contains("runner.url"));
     }
 
+    /// Verifies: SRS-IF-006
     #[test]
     fn optional_token_env_can_be_omitted() {
         let cfg = load(
@@ -263,6 +312,7 @@ report:
         assert!(cfg.runner.token_env.is_none());
     }
 
+    /// Verifies: SRS-FUNC-001
     #[test]
     fn extra_fields_ignored() {
         let cfg = load(
@@ -286,6 +336,7 @@ unknown_top_level: 42
         assert_eq!(cfg.project.name, "Test");
     }
 
+    /// Verifies: SRS-RES-001
     #[test]
     fn relative_paths_resolved_against_config_dir() {
         let f = write_config(
@@ -313,6 +364,7 @@ report:
         }
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn url_scheme_check_is_case_insensitive() {
         // RFC 3986: URI schemes are case-insensitive. HTTPS:// must not be
@@ -334,6 +386,7 @@ report:
         assert!(cfg.is_ok(), "uppercase scheme must be accepted");
     }
 
+    /// Verifies: SRS-FUNC-002
     #[test]
     fn empty_test_specs_files_rejected() {
         let result = load(
@@ -356,6 +409,7 @@ report:
         );
     }
 
+    /// Verifies: SRS-FUNC-001, SRS-PERF-002, SRS-PERF-003
     #[test]
     fn runner_operational_defaults_applied() {
         let cfg = load(MINIMAL_YAML).unwrap();
@@ -367,6 +421,7 @@ report:
         assert_eq!(cfg.runner.poll_interval_max_secs, 30);
     }
 
+    /// Verifies: SRS-FUNC-001, SRS-PERF-002, SRS-PERF-003
     #[test]
     fn runner_operational_fields_can_be_overridden() {
         let cfg = load(
@@ -398,6 +453,7 @@ report:
         assert_eq!(cfg.runner.poll_interval_max_secs, 60);
     }
 
+    /// Verifies: SRS-IF-006, SRS-FUNC-002
     #[test]
     fn token_env_validation_fires_when_var_missing() {
         // Use an env var name that is guaranteed not to be set.
@@ -427,6 +483,7 @@ report:
         assert!(msg.contains(var_name), "error should mention the var name: {msg}");
     }
 
+    /// Verifies: SRS-IF-006, SRS-FUNC-002
     #[test]
     fn token_env_validation_fires_when_var_empty() {
         let var_name = "SQT_TEST_EMPTY_TOKEN_VAR_ZZZZZ";
@@ -455,5 +512,63 @@ report:
         assert!(result.is_err(), "should fail when token env var is empty");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("bearer token env var"), "error should mention bearer token: {msg}");
+    }
+
+    /// `MINIMAL_YAML` with extra lines under `runner:` and the given `output_dir`.
+    fn config_with(runner_extra: &str, output_dir: &str) -> String {
+        format!(
+            r#"
+project:
+  name: "Test"
+  version: "1.0.0"
+test_specs:
+  files:
+    - "./specs/example.yaml"
+runner:
+  url: "https://example.com"
+{runner_extra}
+report:
+  output_dir: "{output_dir}"
+"#
+        )
+    }
+
+    /// Verifies: SRS-FUNC-002
+    #[test]
+    fn out_of_range_runner_settings_are_rejected_naming_the_field() {
+        let cases = [
+            ("  max_concurrent_jobs: 0", "runner.max_concurrent_jobs"),
+            ("  job_timeout_secs: 0", "runner.job_timeout_secs"),
+            ("  poll_interval_initial_secs: 0", "runner.poll_interval_initial_secs"),
+            (
+                "  poll_interval_initial_secs: 10\n  poll_interval_max_secs: 5",
+                "runner.poll_interval_max_secs",
+            ),
+            ("  retry_max: 11", "runner.retry_max"),
+            ("  retry_backoff_initial_secs: 61", "runner.retry_backoff_initial_secs"),
+            ("  token_env: \"\"", "runner.token_env"),
+        ];
+        for (extra, field) in cases {
+            let err = load(&config_with(extra, "./reports")).expect_err(extra);
+            assert!(err.to_string().contains(field), "{extra:?}: error must name {field}: {err}");
+        }
+    }
+
+    /// Verifies: SRS-FUNC-002
+    #[test]
+    fn boundary_runner_settings_are_accepted() {
+        let extra = "  max_concurrent_jobs: 1\n  job_timeout_secs: 1\n  retry_max: 10\n  \
+                     retry_backoff_initial_secs: 60\n  poll_interval_initial_secs: 5\n  \
+                     poll_interval_max_secs: 5";
+        let cfg = load(&config_with(extra, "./reports")).unwrap();
+        assert_eq!(cfg.runner.max_concurrent_jobs, 1);
+        assert_eq!(cfg.runner.retry_max, 10);
+    }
+
+    /// Verifies: SRS-FUNC-002, SRS-RES-001
+    #[test]
+    fn empty_output_dir_rejected() {
+        let err = load(&config_with("", "")).unwrap_err();
+        assert!(err.to_string().contains("report.output_dir"), "{err}");
     }
 }

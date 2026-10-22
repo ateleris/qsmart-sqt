@@ -12,7 +12,7 @@ use sqt_types::WorkloadType;
 
 use crate::constraint::{Constraint, Op};
 use crate::metrics::Target;
-use crate::specs::TestSpec;
+use crate::specs::{TestSpec, UnreconcilableConstraint};
 
 // ---------------------------------------------------------------------------
 // Raw deserialization types
@@ -89,34 +89,81 @@ fn parse_operator(s: &str) -> anyhow::Result<Op> {
 // Unit-aware value parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a YAML value (string or number) into a canonical `f64` for the given
-/// metric.
-///
-/// Canonical units:
-/// - `time.*` metrics → milliseconds
-/// - `memory.*` metrics → kilobytes
-/// - Everything else → parse as-is (no unit conversion)
-fn parse_value(raw: &serde_yaml::Value, metric: &str) -> anyhow::Result<f64> {
+/// Why a constraint value could not be turned into the metric's canonical unit.
+#[derive(Debug)]
+enum ValueError {
+    /// The value is malformed; the spec itself is invalid.
+    Malformed(anyhow::Error),
+    /// The value is well formed but its unit does not reduce to the metric's
+    /// unit. The constraint is reported as failing, not the run (SRS-FUNC-004).
+    Unreconcilable(String),
+}
+
+impl From<anyhow::Error> for ValueError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Malformed(e)
+    }
+}
+
+const BYTE: &[&str] = &["b", "byte", "bytes"];
+const KILOBYTE: &[&str] = &["kb", "kib", "kilobyte", "kilobytes"];
+const MEGABYTE: &[&str] = &["mb", "mib", "megabyte", "megabytes"];
+const GIGABYTE: &[&str] = &["gb", "gib", "gigabyte", "gigabytes"];
+
+/// For each canonical unit (`Constraint::unit`): the accepted spellings of a
+/// unit of the same dimension (lower case) and the factor converting a value
+/// in that unit into the canonical one. 1 KB = 1024 bytes.
+const UNIT_FACTORS: &[(&str, &[&str], f64)] = &[
+    ("ms", &["us", "µs", "microsecond", "microseconds"], 0.001),
+    ("ms", &["ms", "millisecond", "milliseconds"], 1.0),
+    ("ms", &["s", "sec", "second", "seconds"], 1_000.0),
+    ("ms", &["min", "minute", "minutes"], 60_000.0),
+    ("ms", &["h", "hour", "hours"], 3_600_000.0),
+    ("KB", BYTE, 1.0 / 1_024.0),
+    ("KB", KILOBYTE, 1.0),
+    ("KB", MEGABYTE, 1_024.0),
+    ("KB", GIGABYTE, 1_048_576.0),
+    ("bytes", BYTE, 1.0),
+    ("bytes", KILOBYTE, 1_024.0),
+    ("bytes", MEGABYTE, 1_048_576.0),
+    ("bytes", GIGABYTE, 1_073_741_824.0),
+    ("%", &["%", "pct", "percent"], 1.0),
+    ("fps", &["fps"], 1.0),
+];
+
+/// The canonical unit a metric is reported in (`Constraint::unit`), or `None`
+/// for an unknown metric.
+fn canonical_unit(metric: &str) -> Option<&'static str> {
+    Constraint::from_name(metric, Op::Eq, 0.0).map(|c| c.unit())
+}
+
+/// Parse a YAML value (string, number or boolean) into the canonical unit of
+/// `metric`. A bare number is taken to be in the canonical unit already.
+fn parse_value(raw: &serde_yaml::Value, metric: &str) -> Result<f64, ValueError> {
     match raw {
-        serde_yaml::Value::Number(n) => {
-            let v = n
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("invalid numeric value for metric '{metric}'"))?;
-            Ok(v)
-        }
+        serde_yaml::Value::Number(n) => Ok(n
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("invalid numeric value for metric '{metric}'"))?),
         serde_yaml::Value::String(s) => parse_unit_value(s.trim(), metric),
         serde_yaml::Value::Bool(b) => {
             // Support `true`/`false` for boolean-like metrics (e.g., output.result_consistent)
             Ok(if *b { 1.0 } else { 0.0 })
         }
-        _ => bail!("unsupported value type for metric '{metric}': {raw:?}"),
+        _ => Err(anyhow::anyhow!("unsupported value type for metric '{metric}': {raw:?}").into()),
     }
 }
 
-/// Parse a string like `"100ms"`, `"1.5s"`, `"512KB"`, `"2 MB"`, `"0"` into
-/// a canonical `f64` for the given metric.
-fn parse_unit_value(s: &str, metric: &str) -> anyhow::Result<f64> {
-    // Try bare number first (no suffix)
+/// Parse a string like `"100ms"`, `"1.5s"`, `"512KB"`, `"2 MB"`, `"30fps"` or
+/// `"0"` into the canonical unit of `metric`.
+///
+/// Time converts to ms, data to KB or bytes (1 KB = 1024 bytes), and `%` and
+/// `fps` must match. A unit suffix on a unitless metric (counts, return code,
+/// ML scores) is unreconcilable, never silently ignored.
+fn parse_unit_value(s: &str, metric: &str) -> Result<f64, ValueError> {
+    let canonical =
+        canonical_unit(metric).ok_or_else(|| anyhow::anyhow!("unknown metric '{metric}'"))?;
+
+    // Bare number: already in the canonical unit.
     if let Ok(v) = s.parse::<f64>() {
         return Ok(v);
     }
@@ -126,31 +173,22 @@ fn parse_unit_value(s: &str, metric: &str) -> anyhow::Result<f64> {
         .parse()
         .with_context(|| format!("invalid numeric part '{num_part}' in value '{s}'"))?;
 
-    let unit_lower = unit_part.to_ascii_lowercase();
-
-    if metric.starts_with("time.") || metric.starts_with("time_") {
-        // Canonical unit: milliseconds
-        match unit_lower.as_str() {
-            "ms" | "millisecond" | "milliseconds" => Ok(num),
-            "s" | "sec" | "second" | "seconds" => Ok(num * 1_000.0),
-            "m" | "min" | "minute" | "minutes" => Ok(num * 60_000.0),
-            _ => bail!("unknown time unit '{unit_part}' in '{s}' for metric '{metric}'"),
-        }
-    } else if metric.starts_with("memory.") || metric.starts_with("memory_") {
-        // Canonical unit: kilobytes
-        match unit_lower.as_str() {
-            "b" | "byte" | "bytes" => Ok(num / 1_024.0),
-            "kb" | "kib" | "kilobyte" | "kilobytes" => Ok(num),
-            "mb" | "mib" | "megabyte" | "megabytes" => Ok(num * 1_024.0),
-            "gb" | "gib" | "gigabyte" | "gigabytes" => Ok(num * 1_024.0 * 1_024.0),
-            _ => bail!("unknown memory unit '{unit_part}' in '{s}' for metric '{metric}'"),
-        }
-    } else {
-        // No unit conversion — parse the numeric part as-is and ignore the
-        // suffix (or error if a suffix is present for metrics that don't
-        // expect one).
-        Ok(num)
+    if canonical.is_empty() {
+        return Err(ValueError::Unreconcilable(format!(
+            "'{s}' carries the unit '{unit_part}', but {metric} has no unit"
+        )));
     }
+    let unit = unit_part.to_ascii_lowercase();
+    let factor = UNIT_FACTORS
+        .iter()
+        .find(|(c, spellings, _)| *c == canonical && spellings.contains(&unit.as_str()))
+        .map(|(_, _, factor)| *factor)
+        .ok_or_else(|| {
+            ValueError::Unreconcilable(format!(
+                "unit '{unit_part}' in '{s}' does not reduce to {canonical}, the unit of {metric}"
+            ))
+        })?;
+    Ok(num * factor)
 }
 
 /// Split a string like `"100ms"` or `"512 KB"` into `("100", "ms")`.
@@ -194,15 +232,39 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
         ..Target::default()
     };
 
+    // A spec without constraints could only ever pass vacuously (SRS-FUNC-003,
+    // SRS-REL-001).
+    if raw.constraints.is_empty() {
+        bail!("spec '{uid}' has no constraints; at least one is required");
+    }
+
     let mut constraints = Vec::with_capacity(raw.constraints.len());
+    let mut unreconcilable = Vec::new();
     for (i, rc) in raw.constraints.into_iter().enumerate() {
         let op = parse_operator(&rc.operator)
             .with_context(|| format!("constraint[{i}].operator in spec '{uid}'"))?;
 
-        let value = parse_value(&rc.value, &rc.metric)
-            .with_context(|| format!("constraint[{i}].value in spec '{uid}'"))?;
-
         let metric = &rc.metric;
+        if canonical_unit(metric).is_none() {
+            bail!("unknown metric '{metric}' in constraint[{i}] of spec '{uid}'");
+        }
+
+        let value = match parse_value(&rc.value, metric) {
+            Ok(v) => v,
+            Err(ValueError::Malformed(e)) => {
+                return Err(e.context(format!("constraint[{i}].value in spec '{uid}'")));
+            }
+            Err(ValueError::Unreconcilable(reason)) => {
+                tracing::warn!("spec '{uid}' constraint[{i}]: {reason}");
+                unreconcilable.push(UnreconcilableConstraint {
+                    metric: metric.clone(),
+                    operator: op.to_string(),
+                    reason,
+                });
+                continue;
+            }
+        };
+
         let constraint = Constraint::from_name(metric, op, value).ok_or_else(|| {
             anyhow::anyhow!("unknown metric '{metric}' in constraint[{i}] of spec '{uid}'")
         })?;
@@ -214,6 +276,7 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
         workload_type,
         target,
         constraints,
+        unreconcilable,
         reference_outputs: raw.reference_outputs,
         precision_reference: raw.precision_reference,
         precision_tolerance: raw.precision_tolerance,
@@ -262,6 +325,7 @@ fn load_one_spec(path: &Path, default_timeout_secs: u64) -> anyhow::Result<TestS
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(clippy::float_cmp, reason = "unit conversions here are exact; tests assert exact results")]
 mod tests {
     use super::*;
     use crate::constraint::Op;
@@ -272,6 +336,7 @@ mod tests {
         convert_spec(raw, 300)
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn parse_minimal_spec() {
         let yaml = r"
@@ -290,6 +355,7 @@ constraints:
         assert_eq!(spec.constraints.len(), 1);
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn parse_full_spec_with_all_fields() {
         let yaml = r#"
@@ -317,6 +383,7 @@ constraints:
         assert_eq!(spec.constraints.len(), 3);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_ms_value() {
         let yaml = r#"
@@ -334,6 +401,7 @@ constraints:
         assert!((c.expected() - 100.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_s_value() {
         let yaml = r#"
@@ -350,6 +418,7 @@ constraints:
         assert!((c.expected() - 1_500.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_kb_value() {
         let yaml = r#"
@@ -366,6 +435,7 @@ constraints:
         assert!((c.expected() - 512.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn parse_unit_suffixed_mb_value() {
         let yaml = r#"
@@ -382,6 +452,7 @@ constraints:
         assert!((c.expected() - 2_048.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn missing_required_field_returns_error() {
         // Missing `use_case` — serde should reject this.
@@ -396,6 +467,7 @@ constraints:
         assert!(result.is_err(), "missing use_case must be an error");
     }
 
+    /// Verifies: SRS-FUNC-003, SRS-FUNC-019
     #[test]
     fn unknown_use_case_returns_error() {
         let yaml = r"
@@ -413,6 +485,7 @@ constraints:
         assert!(msg.contains("depth_estimation"), "error must mention the bad value: {msg}");
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn unknown_operator_returns_error() {
         let yaml = r"
@@ -427,6 +500,7 @@ constraints:
         assert!(result.is_err(), "unknown operator must be an error");
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn unknown_metric_returns_error() {
         let yaml = r"
@@ -443,6 +517,7 @@ constraints:
         assert!(msg.contains("no.such.metric"), "error must mention the bad metric: {msg}");
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn bare_number_value_is_accepted() {
         let yaml = r"
@@ -457,6 +532,7 @@ constraints:
         assert!((spec.constraints[0].expected() - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-PERF-004
     #[test]
     fn timeout_falls_back_to_default() {
         let yaml = r"
@@ -472,6 +548,7 @@ constraints:
         assert_eq!(spec.target.timeout, Duration::from_mins(10));
     }
 
+    /// Verifies: SRS-PERF-004
     #[test]
     fn per_spec_timeout_overrides_default() {
         let yaml = r"
@@ -487,6 +564,7 @@ constraints:
         assert_eq!(spec.target.timeout, Duration::from_secs(30));
     }
 
+    /// Verifies: SRS-FUNC-019
     #[test]
     fn all_use_case_variants_parse() {
         let cases = [
@@ -503,6 +581,7 @@ constraints:
         }
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn all_operators_parse() {
         let cases = [
@@ -519,6 +598,7 @@ constraints:
         }
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn time_unit_conversions() {
         assert!((parse_unit_value("100ms", "time.avg_ms").unwrap() - 100.0).abs() < f64::EPSILON);
@@ -526,6 +606,7 @@ constraints:
         assert!((parse_unit_value("2s", "time.avg_ms").unwrap() - 2_000.0).abs() < f64::EPSILON);
     }
 
+    /// Verifies: SRS-FUNC-004
     #[test]
     fn memory_unit_conversions() {
         assert!(
@@ -544,6 +625,7 @@ constraints:
         );
     }
 
+    /// Verifies: SRS-FUNC-003, SRS-MAINT-002
     #[test]
     fn load_specs_from_temp_files() {
         use std::io::Write;
@@ -567,11 +649,125 @@ constraints:
         assert_eq!(specs[0].requirement_uid, "REQ-FILE-001");
     }
 
+    /// Verifies: SRS-FUNC-003
     #[test]
     fn load_specs_bad_file_returns_error() {
         let result = load_specs(&[PathBuf::from("/nonexistent/path/spec.yaml")], 300);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("nonexistent"), "error should mention the bad path: {msg}");
+    }
+
+    /// A spec with one `metric`/`value` constraint.
+    fn spec_with(metric: &str, value: &str) -> String {
+        format!(
+            "requirement_uid: REQ-UNIT\nuse_case: regression\nconstraints:\n  \
+             - metric: {metric}\n    operator: lte\n    value: \"{value}\"\n"
+        )
+    }
+
+    /// Converts `value` for `metric`, panicking if it is not reconcilable.
+    fn canonical(value: &str, metric: &str) -> f64 {
+        parse_unit_value(value, metric).unwrap()
+    }
+
+    /// Verifies: SRS-FUNC-004
+    #[test]
+    fn leak_bytes_convert_to_bytes_not_kilobytes() {
+        assert_eq!(canonical("1KB", "memory.leaks_bytes"), 1_024.0);
+        assert_eq!(canonical("512 bytes", "memory.leaks_bytes"), 512.0);
+        assert_eq!(canonical("2MB", "memory.leaks_bytes"), 2_097_152.0);
+        assert_eq!(canonical("1024", "memory.leaks_bytes"), 1_024.0);
+    }
+
+    /// Verifies: SRS-FUNC-004
+    #[test]
+    fn throughput_accepts_fps() {
+        assert_eq!(canonical("30fps", "time.throughput_fps"), 30.0);
+        assert_eq!(canonical("30 FPS", "time.throughput_fps"), 30.0);
+    }
+
+    /// Verifies: SRS-FUNC-004
+    #[test]
+    fn time_units_cover_micro_to_hours() {
+        assert_eq!(canonical("500us", "time.avg_ms"), 0.5);
+        assert_eq!(canonical("2min", "time.latency_p99_ms"), 120_000.0);
+        assert_eq!(canonical("1h", "harness.docker_overhead_ms"), 3_600_000.0);
+    }
+
+    /// Verifies: SRS-FUNC-004
+    #[test]
+    fn percent_and_kilobyte_metrics_accept_their_units() {
+        assert_eq!(canonical("80%", "coverage.line_pct"), 80.0);
+        assert_eq!(canonical("1MB", "binary.size_kb"), 1_024.0);
+        assert_eq!(canonical("2048 bytes", "memory.stack_kb"), 2.0);
+    }
+
+    /// Verifies: SRS-FUNC-004
+    #[test]
+    fn unit_on_unitless_metric_is_unreconcilable() {
+        let spec = parse_yaml(&spec_with("return_code", "0ms")).expect("spec must still load");
+        assert!(spec.constraints.is_empty());
+        assert_eq!(spec.unreconcilable.len(), 1);
+        assert_eq!(spec.unreconcilable[0].metric, "return_code");
+        assert!(spec.unreconcilable[0].reason.contains("has no unit"));
+    }
+
+    /// Verifies: SRS-FUNC-004
+    #[test]
+    fn unit_of_another_dimension_is_unreconcilable() {
+        for (metric, value) in [
+            ("memory.peak_rss_kb", "5ms"),
+            ("time.avg_ms", "5KB"),
+            ("time.throughput_fps", "30ms"),
+            ("coverage.line_pct", "80fps"),
+            ("time.avg_ms", "3 parsecs"),
+        ] {
+            let spec = parse_yaml(&spec_with(metric, value)).expect("spec must still load");
+            assert_eq!(spec.unreconcilable.len(), 1, "{metric} {value}");
+            assert!(spec.unreconcilable[0].reason.contains("does not reduce"), "{metric} {value}");
+        }
+    }
+
+    /// Verifies: SRS-FUNC-003
+    #[test]
+    fn malformed_value_is_still_a_load_error() {
+        let err = parse_yaml(&spec_with("time.avg_ms", "ms")).unwrap_err();
+        assert!(format!("{err:#}").contains("constraint[0].value"), "{err:#}");
+    }
+
+    /// Verifies: SRS-FUNC-003, SRS-REL-001
+    #[test]
+    fn empty_constraint_list_is_rejected() {
+        let yaml = "requirement_uid: REQ-EMPTY\nuse_case: regression\nconstraints: []\n";
+        let err = parse_yaml(yaml).unwrap_err();
+        assert!(format!("{err:#}").contains("has no constraints"), "{err:#}");
+    }
+
+    /// Verifies: SRS-FUNC-003, SRS-FUNC-004
+    #[test]
+    fn shipped_example_specs_load_without_unit_problems() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/specs");
+        let files: Vec<PathBuf> = [
+            "example.sqt.yaml",
+            "REQ-ML-L-002.sqt.yaml",
+            "REQ-ML-L-003.sqt.yaml",
+            "REQ-ML-L-004.sqt.yaml",
+        ]
+        .iter()
+        .map(|f| dir.join(f))
+        .collect();
+        let specs = load_specs(&files, 300).unwrap();
+        assert_eq!(specs.len(), 4);
+        for spec in &specs {
+            assert!(
+                spec.unreconcilable.is_empty(),
+                "{}: {:?}",
+                spec.requirement_uid,
+                spec.unreconcilable
+            );
+        }
+        let size = specs.iter().find(|s| s.requirement_uid == "REQ-ML-L-004").unwrap();
+        assert_eq!(size.constraints[0].expected(), 51_200.0);
     }
 }

@@ -518,6 +518,7 @@ mod tests {
 
     // ---- GET /api/v1/jobs/{job_id} ------------------------------------------
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_job_unknown_id_returns_404() {
         let app = test_app(None);
@@ -533,6 +534,7 @@ mod tests {
 
     // ---- GET /api/v1/docs ---------------------------------------------------
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_docs_not_configured_returns_404() {
         let app = test_app(None);
@@ -546,6 +548,7 @@ mod tests {
         assert_eq!(json["error"]["code"], "DOCS_NOT_CONFIGURED");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_docs_empty_directory_returns_empty_arrays() {
         let dir = tempfile::tempdir().unwrap();
@@ -561,6 +564,7 @@ mod tests {
         assert_eq!(json["attachments"], serde_json::json!([]));
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_docs_returns_sdoc_in_documents_and_pdf_in_attachments() {
         let dir = tempfile::tempdir().unwrap();
@@ -592,6 +596,7 @@ mod tests {
         assert!(!json["attachments"][0]["data"].as_str().unwrap().is_empty());
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_docs_nonexistent_directory_returns_500() {
         let app = test_app(Some(std::path::PathBuf::from("/nonexistent/path/12345")));
@@ -607,6 +612,7 @@ mod tests {
 
     // ---- POST /api/v1/jobs --------------------------------------------------
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn post_job_accepted_returns_202() {
         let app = test_app(None);
@@ -625,6 +631,7 @@ mod tests {
         assert_eq!(json["queue_position"], 1);
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn post_job_returns_job_id_that_is_retrievable() {
         let state = AppState {
@@ -665,6 +672,7 @@ mod tests {
         assert_eq!(json["use_case"], "regression");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_job_surfaces_captured_output() {
         // F-H1: a completed job's captured output must reach the response
@@ -717,6 +725,7 @@ mod tests {
         assert_eq!(json["output"]["outputs"][0]["prediction"], 0.5);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn extract_title_from_document_block() {
         let sdoc =
@@ -724,18 +733,21 @@ mod tests {
         assert_eq!(extract_sdoc_title(sdoc), Some("ML-L Requirements".into()));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn extract_title_ignores_requirement_title() {
         let sdoc = "[DOCUMENT]\nTITLE: Doc Title\n\n[REQUIREMENT]\nTITLE: Req Title\n";
         assert_eq!(extract_sdoc_title(sdoc), Some("Doc Title".into()));
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn extract_title_returns_none_when_absent() {
         let sdoc = "[DOCUMENT]\nVERSION: 1.0\n\n[REQUIREMENT]\nUID: R-001\n";
         assert_eq!(extract_sdoc_title(sdoc), None);
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn mime_type_known_extensions() {
         assert_eq!(mime_type_for("report.pdf"), "application/pdf");
@@ -746,12 +758,14 @@ mod tests {
         assert_eq!(mime_type_for("notes.txt"), "text/plain");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn mime_type_unknown_falls_back_to_octet_stream() {
         assert_eq!(mime_type_for("binary.bin"), "application/octet-stream");
         assert_eq!(mime_type_for("noextension"), "application/octet-stream");
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn scan_docs_dir_splits_sdoc_from_attachments() {
         use std::io::Write as _;
@@ -776,6 +790,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn scan_docs_dir_empty_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -784,6 +799,7 @@ mod tests {
         assert!(result.attachments.is_empty());
     }
 
+    /// Verifies: SRS-INST-001
     #[test]
     fn scan_docs_dir_sorted_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -797,6 +813,7 @@ mod tests {
 
     // ---- GET /api/v1/version ------------------------------------------------
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_version_returns_200_with_required_fields() {
         let app = test_app(None);
@@ -814,6 +831,7 @@ mod tests {
         assert!(json["toolchain_versions"].is_object(), "toolchain_versions must be an object");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_version_api_version_is_1_0() {
         let app = test_app(None);
@@ -826,6 +844,7 @@ mod tests {
         assert_eq!(json["api_version"], "1.0");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_version_runner_version_matches_stub() {
         let app = test_app(None);
@@ -839,6 +858,7 @@ mod tests {
         assert_eq!(json["runner_version"], "0.0.0-test");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_version_target_id_and_os_from_state() {
         let app = test_app(None);
@@ -854,6 +874,7 @@ mod tests {
 
     // ---- GET /api/v1/health -------------------------------------------------
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_health_healthy_when_workspace_and_docs_ok() {
         let dir = tempfile::tempdir().unwrap();
@@ -874,6 +895,7 @@ mod tests {
         assert_eq!(json["target_id"], "test-target");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_health_degraded_when_docs_not_configured() {
         let app = test_app(None);
@@ -889,6 +911,7 @@ mod tests {
         assert_eq!(json["checks"]["docs_dir"], "not_configured");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_health_degraded_when_docs_dir_missing() {
         let app = test_app(Some(std::path::PathBuf::from("/nonexistent/docs/zzz")));
@@ -903,6 +926,7 @@ mod tests {
         assert_eq!(json["checks"]["docs_dir"], "missing");
     }
 
+    /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn get_health_unhealthy_when_workspace_missing() {
         // Build a state whose workspace directory does not exist (critical check).

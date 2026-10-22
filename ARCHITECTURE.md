@@ -384,9 +384,9 @@ report:
   output_dir: "./reports"            # relative paths resolve against this config file
 ```
 
-The Reporter emits, into `report.output_dir`: the machine-readable JSON report,
-a PDF summary, the traceability matrix (`.json` + `.txt`), per-job evidence under
-`evidence/`, and the QDP bundle (`qdp.zip`). Report *format selection* (choosing
+Every run gets its own directory, `report.output_dir/runs/<run_id>/`, holding the
+machine-readable JSON report, a PDF summary, the traceability matrix (`.json` +
+`.txt`), the run's evidence under `evidence/`, and the QDP bundle (`qdp.zip`). Report *format selection* (choosing
 which of these to emit, alternate PDF engines, HTML) is not a config surface today
 — all outputs are always produced. See §9.
 
@@ -732,10 +732,11 @@ precision_reference:
 The `value` field accepts `<number><unit>` strings. The evaluator reconciles
 compatible units (ms↔s, KB↔MB↔bytes, etc.) before comparison (SRS-FUNC-004).
 Irreconcilable units (e.g. ms vs bytes) cause the constraint to fail with an
-explanatory message. A spec with zero constraints at evaluation time is recorded
-as FAIL — vacuous passes are rejected (SRS-REL-001). The ADD enforces this at both
-ends (C-ORC-02, LLR-006): a spec with an empty `constraints` list is also to be
-rejected when it is loaded, which the loader does not do yet.
+explanatory message; the rest of the spec and the run are evaluated as usual.
+A spec with zero constraints at evaluation time is recorded as FAIL — vacuous
+passes are rejected (SRS-REL-001). The ADD enforces this at both ends (C-ORC-02,
+LLR-006): a spec file with an empty `constraints` list is also rejected when it
+is loaded.
 
 #### 4.5.3 Core Metric Catalogue
 
@@ -1990,12 +1991,29 @@ rendering is derived from one report data model (LLR-026), every machine-readabl
 output declares its schema version (LLR-027), and every report and traceability
 matrix is stamped from one provenance record (LLR-028).
 
-Target (SRS-OPS-004, ADD LLR-024): each run writes into its own location under
-`report.output_dir`, whose identifier orders runs chronologically. Current state
-(F-M4 in `REVIEW_FINDINGS.md`): evidence goes to `report.output_dir/evidence/<job_id>/`
-and the PDF, traceability files and `qdp.zip` directly into `report.output_dir`,
-so a later run overwrites them; the JSON report is written only when
-`sqt run --output <path>` is given. There is no per-format on/off switch.
+Every `sqt run` writes into a directory reserved for that run (SRS-FUNC-008,
+SRS-OPS-004, ADD LLR-024). All outputs are produced on every run — there is no
+per-format on/off switch. `-o <path>` additionally copies `report.json` elsewhere.
+
+```text
+<report.output_dir>/runs/<run_id>/       run_id = UTC timestamp, e.g. 20261022T101530123Z
+    report.json                          run report, schema 1.1 (SRS-FUNC-009)
+    report.pdf
+    traceability.json, traceability.txt  when the Runner serves a baseline
+    qdp.zip                              the whole run directory
+    evidence/
+        manifest.json                    every artefact: id, kind, SHA-256, size, job/spec
+        runner/NNNN-<operation>[-<job_id>].json   raw Runner responses, in arrival order
+        outcomes/NNN-<requirement_uid>.json       constraint outcomes per spec
+```
+
+An evidence artefact's stable identifier is its path relative to the run
+directory. The report names the manifest (`evidence_manifest`) and, per spec,
+the ids of its evidence (`evidence_ids`): the Runner's final response for the
+job and the persisted outcomes. Raw responses are stored byte for byte as
+received; request headers, and so the bearer token, are never recorded. When a
+run stops early, the responses received so far and the manifest are still
+written.
 
 #### JSON Report (Machine-Readable) — the primary artefact
 - **Target audience**: CI/CD, automation, downstream tooling
@@ -2023,8 +2041,8 @@ so a later run overwrites them; the JSON report is written only when
   and evidence location (SRS-OPS-003)
 
 #### QDP (Quality Data Package)
-- `qdp.zip` bundling the report, traceability, and per-job evidence — the ECSS
-  qualification output artefact
+- `qdp.zip` bundling the whole run directory (report, PDF, traceability and
+  evidence) — the ECSS qualification output artefact
 
 #### API-profile coverage (SQT-SW-1)
 - Per declared profile element: exercised, with the outcomes of the workloads
@@ -2145,7 +2163,8 @@ rendered to each output:
   from one matrix model, but that model is built from the `RunResult` and the
   requirement set rather than from `Report` (ADD LLR-026 asks for one model behind
   every output) and does not yet carry provenance (F-M8)
-- `write_qdp` — zips report + traceability + evidence into `qdp.zip`
+- `write_qdp` — zips the run directory into `qdp.zip`
+- `outputs::write_run_outputs` — persists outcomes, writes the manifest, then all of the above
 
 There is no template-engine layer: the PDF is emitted directly by `printpdf`
 (AD-006). Substituting another engine would be a change behind `write_pdf` only;
@@ -2191,14 +2210,14 @@ Runner, one file, and — via the open namespace of §10.2 — no Reporter chang
 extension point does not exist yet (SQT-SW-1). There is no
 runtime plugin protocol, no dynamic loading, and no external process bridge — the
 Runner is a single auditable statically-linked binary, which suits a qualification
-tool, and the ADD rules out run-time plug-in discovery in the Orchestrator. (The historic reporter-side `MetricCollector`/`inventory` collector tree in
-`sqt-reporter/src/metrics/` is **legacy reference code from the pre-workspace
-single-crate era**; it is not wired into either the orchestrator or the runner and
-is a deletion candidate — see `REVIEW_FINDINGS.md`. The same holds for the
-`inventory`-based `SpecFactory` / `all_specs()` and the example specs in
-`sqt-reporter/src/specs/`, which `main.rs` never calls. The ADD ("Deactivated
-code") commits the SQT to shipping no deactivated code, so both have to be removed
-or wired before a release that claims it.)
+tool, and the ADD rules out run-time plug-in discovery in the Orchestrator. (The
+reporter-side `MetricCollector` collector tree of the pre-workspace single-crate
+era was removed on 2026-10-22; `sqt-reporter/src/metrics/` now holds only the
+specification `Target` descriptor. The `inventory`-based `SpecFactory` /
+`all_specs()` and the example specs in `sqt-reporter/src/specs/` are still never
+called by `main.rs`. The ADD ("Deactivated code") commits the SQT to shipping no
+deactivated code, so they have to be removed or wired before a release that
+claims it.)
 
 ### 10.2 The Closed-Vocabulary Constraint (decided: open namespace in SQT-SW-1)
 
@@ -2251,7 +2270,7 @@ anyhow
 tokio-util, futures   # concurrency + graceful shutdown
 zip, walkdir          # QDP bundling
 printpdf              # PDF report rendering
-inventory             # (legacy metric registry — see §10.1)
+inventory             # compile-time registration of the example specs
 
 # sqt-runner (server)
 axum = "0.8"          # HTTP server
@@ -2333,7 +2352,7 @@ qsmart-sqt/                       # Cargo workspace root (ADD ids: §2.4)
 │       ├── traceability/         # dual-audience matrix
 │       ├── report.rs             # Report model, JSON/PDF/terminal/QDP output
 │       ├── preflight.rs          # SRS-OPS-007 pre-flight mode
-│       └── metrics/              # legacy collectors (unwired; see §10.1)
+│       └── metrics/              # specification Target descriptor
 │
 └── sqt-runner/                   # Server (axum) — the reference SQT Runner
     └── src/

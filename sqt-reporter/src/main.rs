@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use sqt_reporter::{api, config, orchestrator, preflight, report, specs};
+use sqt_reporter::{api, config, evidence, orchestrator, outputs, preflight, report, specs};
 
 #[derive(Parser)]
 #[command(name = "sqt", version, about = "Software Qualification Toolkit")]
@@ -17,7 +17,11 @@ enum Commands {
     Run {
         #[arg(short, long, env = "SQT_CONFIG")]
         config: PathBuf,
-        #[arg(short, long, help = "Write JSON report to this path")]
+        #[arg(
+            short,
+            long,
+            help = "Also copy the JSON report to this path (it is always written into the run directory)"
+        )]
         output: Option<PathBuf>,
         #[arg(
             long,
@@ -124,47 +128,42 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let evidence_dir = cfg.report.output_dir.join("evidence");
-            let mut ev_store = sqt_reporter::evidence::EvidenceStore::new(evidence_dir.clone())?;
+            // Everything this run writes goes into its own directory (SRS-FUNC-008).
+            let run_dir = evidence::RunDir::create(&cfg.report.output_dir)?;
+            let mut ev_store = evidence::EvidenceStore::new(run_dir)?;
 
-            let (result, provenance) =
-                orchestrator::run(&specs, &client, &cfg, token, &mut ev_store).await?;
+            let (mut result, provenance) =
+                match orchestrator::run(&specs, &client, &cfg, token, &mut ev_store).await {
+                    Ok(run) => run,
+                    Err(e) => {
+                        // Keep what the Runner sent before the run stopped.
+                        orchestrator::persist_runner_responses(&client, &mut ev_store);
+                        if let Err(me) = ev_store.write_manifest() {
+                            tracing::warn!("cannot write evidence manifest: {me}");
+                        }
+                        eprintln!("Run failed; evidence in {}", ev_store.run().path.display());
+                        return Err(e);
+                    }
+                };
+            orchestrator::persist_runner_responses(&client, &mut ev_store);
 
-            let rep = report::Report::from_run_result(&result, provenance);
-            report::print_terminal(&rep);
-
-            if let Some(ref path) = output {
-                report::write_json(&rep, path)?;
-                tracing::info!("Report written to {}", path.display());
-            }
-
-            // Always emit a simple PDF summary into the output dir.
-            let pdf_path = cfg.report.output_dir.join("report.pdf");
-            report::write_pdf(&rep, &pdf_path)?;
-
-            // Traceability matrix (if baseline was available)
-            if let Some(ref req_set) = result.requirement_set {
-                let matrix = sqt_reporter::traceability::build(req_set, &result, &rep.timestamp);
-                let t_json = cfg.report.output_dir.join("traceability.json");
-                let t_txt = cfg.report.output_dir.join("traceability.txt");
-                sqt_reporter::traceability::write_json(&matrix, &t_json)?;
-                sqt_reporter::traceability::write_text(&matrix, &t_txt)?;
-                tracing::info!(
-                    "Traceability matrix written to {}",
-                    cfg.report.output_dir.display()
-                );
-            }
-
-            // Bundle all artefacts into qdp.zip (T-055).
-            let qdp_path = report::write_qdp(
-                &cfg.report.output_dir,
+            let (rep, written) = outputs::write_run_outputs(
+                &mut result,
+                provenance,
+                &mut ev_store,
                 output.as_deref(),
-                Some(&pdf_path),
-                Some(&cfg.report.output_dir.join("traceability.json")),
-                Some(&cfg.report.output_dir.join("traceability.txt")),
-                Some(&evidence_dir),
             )?;
-            tracing::info!("QDP bundle: {}", qdp_path.display());
+            report::print_terminal(&rep);
+            println!(
+                "Run {} — report and evidence in {}",
+                ev_store.run().id,
+                written.run_dir.display()
+            );
+            tracing::info!("Report: {}", written.report_json.display());
+            if let Some(ref path) = output {
+                tracing::info!("Report copied to {}", path.display());
+            }
+            tracing::info!("QDP bundle: {}", written.qdp.display());
 
             // Exit code 2 for interrupted, 1 for any failed or infra-errored
             // spec (SRS-OPS-001/006), 0 only when everything passed.

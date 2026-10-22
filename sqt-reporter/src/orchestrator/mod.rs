@@ -17,7 +17,7 @@ use crate::{
     baseline,
     config::SqtConfig,
     constraint::{ConstraintOutcome, evaluator::evaluate},
-    evidence::EvidenceStore,
+    evidence::{EvidenceMeta, EvidenceStore},
     report::{ConfigSummary, RunProvenance},
     specs::{RunResult, SpecResult, TestSpec},
 };
@@ -81,6 +81,57 @@ fn failing_outcome(metric_name: &str, reason: &str) -> ConstraintOutcome {
         message: format!("{metric_name}: {reason}: FAIL"),
         evidence: HashMap::new(),
     }
+}
+
+/// Evidence kind of a raw Runner response.
+const RUNNER_RESPONSE: &str = "runner_response";
+
+/// Persist every Runner response the client recorded since the last call, as
+/// received, under `evidence/runner/` in arrival order (SRS-FUNC-008).
+///
+/// Returns, per job id, the evidence id of the latest response for that job:
+/// its final status, or the submission response if it was never polled.
+pub fn persist_runner_responses(
+    client: &ApiClient,
+    store: &mut EvidenceStore,
+) -> HashMap<String, String> {
+    let mut latest = HashMap::new();
+    for resp in client.take_recorded() {
+        let seq = store.manifest().iter().filter(|e| e.kind == RUNNER_RESPONSE).count() + 1;
+        let ext = if serde_json::from_slice::<serde_json::Value>(&resp.body).is_ok() {
+            "json"
+        } else {
+            "txt"
+        };
+        let name = match &resp.job_id {
+            Some(job_id) => format!("{seq:04}-{}-{job_id}.{ext}", resp.operation),
+            None => format!("{seq:04}-{}.{ext}", resp.operation),
+        };
+        let details = [
+            ("operation", resp.operation.to_owned()),
+            ("url", resp.url),
+            ("http_status", resp.status.to_string()),
+            ("received_at", resp.received_at),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        let meta = EvidenceMeta {
+            kind: RUNNER_RESPONSE,
+            job_id: resp.job_id.clone(),
+            requirement_uid: None,
+            details,
+        };
+        match store.store("runner", &name, &resp.body, meta) {
+            Ok(id) => {
+                if let Some(job_id) = resp.job_id {
+                    latest.insert(job_id, id);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to persist Runner response {name}"),
+        }
+    }
+    latest
 }
 
 /// Build the evidence map for an `INFRA_ERROR` from a plain error message.
@@ -321,9 +372,12 @@ pub async fn run(
         started.elapsed().as_secs_f64(),
     );
 
+    // Every response received so far, version and docs included, becomes
+    // evidence; the per-job final responses are linked from the spec results.
+    let response_evidence = persist_runner_responses(client, evidence_store);
+
     // Fold the concurrent outcomes back into the per-group maps the constraint
-    // evaluation below expects, persisting evidence sequentially (the evidence
-    // store is not shared across the concurrent tasks).
+    // evaluation below expects.
     let mut job_ids: HashMap<GroupKey, (String, u64)> = HashMap::new();
     let mut job_responses: HashMap<GroupKey, Result<sqt_types::JobStatusResponse>> = HashMap::new();
     for outcome in outcomes {
@@ -333,11 +387,6 @@ pub async fn run(
         match &outcome.result {
             Ok(resp) => {
                 tracing::info!(job_id = ?outcome.job_id, status = ?resp.status, "job finished");
-                if let Some(ref job_id) = outcome.job_id
-                    && let Err(e) = evidence_store.store_json(job_id, "job_response.json", resp)
-                {
-                    tracing::warn!(job_id = %job_id, error = %e, "Failed to persist job response evidence");
-                }
             }
             Err(e) => {
                 tracing::warn!(job_id = ?outcome.job_id, error = %e, "Job submit/poll failed");
@@ -349,7 +398,7 @@ pub async fn run(
     // -----------------------------------------------------------------------
     // Evaluate constraints for each spec (SRS-OPS-006: INFRA_ERROR)
     // -----------------------------------------------------------------------
-    let results: Vec<SpecResult> = specs
+    let mut results: Vec<SpecResult> = specs
         .iter()
         .map(|spec| {
             let key = group_key(spec);
@@ -485,10 +534,19 @@ pub async fn run(
                         None => failing_outcome(name, "metric unavailable"),
                     }
                 })
+                .chain(spec.unreconcilable.iter().map(|u| failing_outcome(&u.metric, &u.reason)))
                 .collect();
             SpecResult::new(spec.clone(), outcomes)
         })
         .collect();
+
+    for result in &mut results {
+        if let Some((job_id, _)) = job_ids.get(&group_key(&result.spec))
+            && let Some(id) = response_evidence.get(job_id)
+        {
+            result.evidence.push(id.clone());
+        }
+    }
 
     Ok((
         RunResult {
@@ -546,6 +604,7 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn grouping_deduplicates_same_input() {
         let t1 = make_spec(WorkloadType::ImageClassification, Some("input.bin"), 30);
@@ -553,6 +612,7 @@ mod tests {
         assert_eq!(group_key(&t1), group_key(&t2));
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn grouping_separates_different_inputs() {
         let t_a = make_spec(WorkloadType::ImageClassification, Some("input_a.bin"), 30);
@@ -560,6 +620,7 @@ mod tests {
         assert_ne!(group_key(&t_a), group_key(&t_b));
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn grouping_separates_different_workloads() {
         let t_a = make_spec(WorkloadType::ImageClassification, None, 30);
@@ -567,12 +628,14 @@ mod tests {
         assert_ne!(group_key(&t_a), group_key(&t_b));
     }
 
+    /// Verifies: SRS-FUNC-007
     #[test]
     fn grouping_none_input() {
         let t = make_spec(WorkloadType::ImageClassification, None, 30);
         assert_eq!(group_key(&t).1, None);
     }
 
+    /// Verifies: SRS-FUNC-007, SRS-PERF-004
     #[test]
     fn grouping_takes_max_timeout() {
         let spec30 = make_spec(WorkloadType::ImageClassification, None, 30);
@@ -583,6 +646,7 @@ mod tests {
         assert_eq!(request.timeout_secs, Some(60));
     }
 
+    /// Verifies: SRS-FUNC-005, SRS-REL-002
     #[test]
     fn null_metric_maps_to_failing_outcome() {
         // AD-013 / ARCH 5.5.2: null metric -> failing outcome, not an error.
@@ -594,6 +658,7 @@ mod tests {
         assert!(outcome.evidence.is_empty(), "unavailable metric has no evidence");
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn present_metric_maps_to_passing_outcome() {
         let constraint = Constraint::execution_time(Op::Lte, 100.0);
@@ -602,6 +667,7 @@ mod tests {
         assert!(outcome.message.contains("PASS"));
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn present_metric_maps_to_failing_outcome() {
         let constraint = Constraint::execution_time(Op::Lte, 100.0);
@@ -610,6 +676,7 @@ mod tests {
         assert!(outcome.message.contains("FAIL"));
     }
 
+    /// Verifies: SRS-FUNC-005
     #[test]
     fn job_metrics_get_works() {
         let m = JobMetrics {
@@ -626,6 +693,7 @@ mod tests {
 
     // --- JobRequest construction (T-042) -------------------------------------
 
+    /// Verifies: SRS-IF-002, SRS-FUNC-019
     #[test]
     fn build_job_request_workload_type_propagates() {
         // The workload type from the group key must appear in the request body.
@@ -635,6 +703,7 @@ mod tests {
         assert_eq!(req.use_case, WorkloadType::ObjectDetection);
     }
 
+    /// Verifies: SRS-IF-002
     #[test]
     fn build_job_request_input_becomes_json_string() {
         // The input path must be forwarded as a JSON string value in the request.
@@ -651,6 +720,7 @@ mod tests {
 
     // --- ml.* constraint guard (T-054) ---------------------------------------
 
+    /// Verifies: SRS-FUNC-017, SRS-REL-002
     #[test]
     fn ml_constraint_produces_failing_outcome_without_reference() {
         // T-054: ml.* metrics are client-side. Without reference_outputs, the
@@ -667,6 +737,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-FUNC-017, SRS-REL-002
     #[test]
     fn client_side_reason_distinguishes_no_output_from_no_reference() {
         // F-H1: when the runner returns no output block, the message must say so
@@ -684,6 +755,7 @@ mod tests {
 
     // --- INFRA_ERROR does not propagate as Err (SRS-OPS-006) -----------------
 
+    /// Verifies: SRS-OPS-006, SRS-OPS-001
     #[test]
     fn infra_error_spec_result_does_not_pass() {
         // T-074: INFRA_ERROR must be recorded as a non-passing SpecResult,
@@ -699,6 +771,7 @@ mod tests {
         assert_eq!(result.outcomes.len(), 1, "must carry exactly one synthetic outcome");
     }
 
+    /// Verifies: SRS-REL-001
     #[test]
     fn zero_constraint_spec_produces_fail_not_pass() {
         // Vacuous-pass prevention: a spec with no constraints must never PASS.
@@ -796,6 +869,7 @@ mod tests {
         elapsed
     }
 
+    /// Verifies: SRS-PERF-001, SRS-PERF-002
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_polling_beats_serialization() {
         let njobs = 5;

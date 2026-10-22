@@ -18,13 +18,13 @@ runner:
   url: http://localhost:3000        # sqt-runner base URL (http:// or https://)
   # token_env: SQT_API_TOKEN        # optional: name of env var holding the bearer token
 
-  # Optional tuning (values shown are the defaults):
-  # max_concurrent_jobs: 8
-  # job_timeout_secs: 300
-  # retry_max: 3
-  # retry_backoff_initial_secs: 1
-  # poll_interval_initial_secs: 1
-  # poll_interval_max_secs: 30
+  # Optional tuning (values shown are the defaults; allowed range after #):
+  # max_concurrent_jobs: 8          # >= 1
+  # job_timeout_secs: 300           # >= 1
+  # retry_max: 3                    # 0..=10
+  # retry_backoff_initial_secs: 1   # 0..=60, doubles per retry
+  # poll_interval_initial_secs: 1   # >= 1, doubles per poll
+  # poll_interval_max_secs: 30      # >= poll_interval_initial_secs
 
 report:
   output_dir: ./reports             # relative paths resolved against this file

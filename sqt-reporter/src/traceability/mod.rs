@@ -27,7 +27,8 @@ pub struct TraceEntry {
     pub verification_methods: Vec<String>,
     /// `"PASS"`, `"FAIL"`, `"INFRA_ERROR"`, or `None` when no result exists.
     pub outcome: Option<String>,
-    /// Relative paths from the report directory.
+    /// Evidence ids of the matching result: paths relative to the run
+    /// directory, listed in `evidence/manifest.json`.
     pub evidence_paths: Vec<String>,
 }
 
@@ -73,9 +74,7 @@ pub fn build(
                     crate::specs::OutcomeKind::InfraError => "INFRA_ERROR",
                 }
                 .to_string();
-                let ev: Vec<String> =
-                    sr.outcomes.iter().flat_map(|o| o.evidence.values().cloned()).collect();
-                (Some(outcome_str), ev)
+                (Some(outcome_str), sr.evidence.clone())
             }
             None => (None, Vec::new()),
         };
@@ -256,6 +255,7 @@ mod tests {
 
     // -------------------------------------------------------------------------
 
+    /// Verifies: SRS-FUNC-010
     #[test]
     fn build_empty_gives_empty_entries() {
         let req_set = empty_req_set();
@@ -268,6 +268,7 @@ mod tests {
         assert_eq!(matrix.summary.uncovered, 0);
     }
 
+    /// Verifies: SRS-FUNC-010
     #[test]
     fn build_matched_spec_maps_to_tested_with_outcome() {
         let req_set = RequirementSet {
@@ -293,6 +294,7 @@ mod tests {
         assert_eq!(matrix.summary.pass, 1);
     }
 
+    /// Verifies: SRS-FUNC-010
     #[test]
     fn build_unmatched_testable_maps_to_uncovered() {
         let req_set = RequirementSet {
@@ -311,6 +313,7 @@ mod tests {
         assert_eq!(matrix.summary.tested, 0);
     }
 
+    /// Verifies: SRS-FUNC-010
     #[test]
     fn build_compliant_by_declaration_entries() {
         let req_set = RequirementSet {
@@ -328,6 +331,7 @@ mod tests {
         assert_eq!(matrix.summary.compliant_by_declaration, 1);
     }
 
+    /// Verifies: SRS-FUNC-010, SRS-DATA-002
     #[test]
     fn write_json_creates_valid_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -341,6 +345,7 @@ mod tests {
         assert!(parsed["entries"].is_array());
     }
 
+    /// Verifies: SRS-FUNC-010, SRS-DATA-002
     #[test]
     fn write_text_creates_file_with_expected_header() {
         let dir = tempfile::tempdir().unwrap();

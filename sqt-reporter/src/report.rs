@@ -8,8 +8,10 @@ use crate::specs::{RunResult, SpecResult};
 /// Schema version for the JSON report format.
 ///
 /// Increment the minor component when new fields are added in a backward-compatible
-/// way. Increment the major component for breaking changes.
-pub const SCHEMA_VERSION: &str = "1.0";
+/// way. Increment the major component for breaking changes (SRS-DATA-001).
+///
+/// 1.1 adds `run_id`, `evidence_manifest` and per-spec `evidence_ids`.
+pub const SCHEMA_VERSION: &str = "1.1";
 
 // ---------------------------------------------------------------------------
 // Provenance
@@ -74,6 +76,12 @@ pub enum OutcomeKind {
 pub struct Report {
     /// JSON schema version. Always the first field in the serialized output.
     pub schema_version: &'static str,
+    /// Identifier of the run; also the name of its directory under `runs/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Id of the evidence manifest, relative to the run directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_manifest: Option<String>,
     pub timestamp: String,
     pub config_version: String,
     /// `true` when the run was cut short by SIGTERM or Ctrl-C.
@@ -109,6 +117,9 @@ pub struct SpecReport {
     pub outcome_kind: OutcomeKind,
     pub target: TargetReport,
     pub outcomes: Vec<OutcomeReport>,
+    /// Ids of the evidence artefacts behind this result, listed in the manifest.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -158,6 +169,8 @@ impl Report {
         let failed = total - passed - infra_errors;
         Self {
             schema_version: SCHEMA_VERSION,
+            run_id: None,
+            evidence_manifest: None,
             timestamp: result.timestamp.clone(),
             config_version: result.config_version.clone(),
             interrupted: result.interrupted,
@@ -168,7 +181,7 @@ impl Report {
     }
 }
 
-fn spec_report(sr: &SpecResult) -> SpecReport {
+pub(crate) fn spec_report(sr: &SpecResult) -> SpecReport {
     use crate::specs::OutcomeKind as SpecOutcomeKind;
 
     let report_outcome_kind = match sr.outcome {
@@ -197,15 +210,19 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
             })
             .collect()
     } else {
+        // One outcome per constraint, followed by one per unreconcilable
+        // constraint (SRS-FUNC-004).
         debug_assert_eq!(
-            sr.spec.constraints.len(),
+            sr.spec.constraints.len() + sr.spec.unreconcilable.len(),
             sr.outcomes.len(),
             "constraint and outcome counts must match — orchestrator bug"
         );
+        let (evaluated, unreconcilable) =
+            sr.outcomes.split_at(sr.spec.constraints.len().min(sr.outcomes.len()));
         sr.spec
             .constraints
             .iter()
-            .zip(sr.outcomes.iter())
+            .zip(evaluated)
             .map(|(constraint, outcome)| {
                 let kind = if outcome.passed { OutcomeKind::Pass } else { OutcomeKind::Fail };
                 OutcomeReport {
@@ -220,6 +237,19 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
                     evidence: outcome.evidence.clone(),
                 }
             })
+            .chain(sr.spec.unreconcilable.iter().zip(unreconcilable).map(|(u, outcome)| {
+                OutcomeReport {
+                    metric: u.metric.clone(),
+                    operator: u.operator.clone(),
+                    outcome_kind: OutcomeKind::Fail,
+                    passed: false,
+                    actual: outcome.actual,
+                    expected: outcome.expected,
+                    unit: String::new(),
+                    message: outcome.message.clone(),
+                    evidence: outcome.evidence.clone(),
+                }
+            }))
             .collect()
     };
 
@@ -241,6 +271,7 @@ fn spec_report(sr: &SpecResult) -> SpecReport {
             result_consistent,
         },
         outcomes,
+        evidence_ids: sr.evidence.clone(),
     }
 }
 
@@ -293,87 +324,41 @@ pub fn print_terminal(report: &Report) {
     );
 }
 
-/// Bundle qualification artefacts into a `qdp.zip` archive.
-///
-/// Collects the JSON report, traceability files, and the entire `evidence/`
-/// directory into a single ZIP archive placed at `output_dir/qdp.zip`.
-/// Each path argument is optional — missing or non-existent files are silently
-/// skipped so that a partial run still produces a usable bundle.
+/// Bundle a run directory into `<run_dir>/qdp.zip`: the report, PDF,
+/// traceability files and the whole `evidence/` tree, under their paths
+/// relative to the run directory.
 ///
 /// # Errors
 ///
 /// Returns an error if the archive cannot be created or any included file
 /// cannot be read.
-pub fn write_qdp(
-    output_dir: &Path,
-    report_json_path: Option<&Path>,
-    report_pdf_path: Option<&Path>,
-    traceability_json: Option<&Path>,
-    traceability_txt: Option<&Path>,
-    evidence_dir: Option<&Path>,
-) -> anyhow::Result<std::path::PathBuf> {
+pub fn write_qdp(run_dir: &Path) -> anyhow::Result<std::path::PathBuf> {
     use std::io::Write as _;
 
     use anyhow::Context as _;
     use zip::write::SimpleFileOptions;
 
-    let qdp_path = output_dir.join("qdp.zip");
-    if let Some(parent) = qdp_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let qdp_path = run_dir.join("qdp.zip");
+    let mut files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(run_dir)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file() && e.path() != qdp_path)
+        .map(walkdir::DirEntry::into_path)
+        .collect();
+    files.sort();
 
     let file = std::fs::File::create(&qdp_path)
         .with_context(|| format!("cannot create QDP archive: {}", qdp_path.display()))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    // Helper closure: add a single file to the archive under `entry_name`.
-    let add_file =
-        |zip: &mut zip::ZipWriter<_>, entry_name: &str, path: &Path| -> anyhow::Result<()> {
-            let data =
-                std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-            zip.start_file(entry_name, options)?;
-            zip.write_all(&data)?;
-            Ok(())
-        };
-
-    if let Some(p) = report_json_path
-        && p.exists()
-    {
-        add_file(&mut zip, "report.json", p)?;
+    for path in files {
+        let rel = path.strip_prefix(run_dir)?;
+        let data =
+            std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+        zip.start_file(rel.to_string_lossy(), options)?;
+        zip.write_all(&data)?;
     }
-    if let Some(p) = report_pdf_path
-        && p.exists()
-    {
-        add_file(&mut zip, "report.pdf", p)?;
-    }
-    if let Some(p) = traceability_json
-        && p.exists()
-    {
-        add_file(&mut zip, "traceability.json", p)?;
-    }
-    if let Some(p) = traceability_txt
-        && p.exists()
-    {
-        add_file(&mut zip, "traceability.txt", p)?;
-    }
-
-    // Include all evidence files recursively under their relative paths.
-    if let Some(ev_dir) = evidence_dir
-        && ev_dir.is_dir()
-    {
-        // Strip the evidence dir's parent so paths in the archive are
-        // rooted at "evidence/<file>" rather than absolute.
-        let strip_base = ev_dir.parent().unwrap_or(ev_dir);
-        for entry in walkdir::WalkDir::new(ev_dir).min_depth(1) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                let rel = entry.path().strip_prefix(strip_base)?;
-                add_file(&mut zip, &rel.display().to_string(), entry.path())?;
-            }
-        }
-    }
-
     zip.finish()?;
     tracing::info!("QDP archive written to {}", qdp_path.display());
     Ok(qdp_path)
@@ -620,12 +605,53 @@ mod tests {
         }
     }
 
+    /// Verifies: SRS-FUNC-004, SRS-FUNC-009
+    #[test]
+    fn unreconcilable_constraint_appears_as_failing_outcome() {
+        let mut spec = make_spec("REQ-UNIT", "build/app");
+        spec.unreconcilable.push(crate::specs::UnreconcilableConstraint {
+            metric: "memory.peak_rss_kb".to_string(),
+            operator: "<=".to_string(),
+            reason: "unit 'ms' in '5ms' does not reduce to KB".to_string(),
+        });
+        let outcomes = vec![
+            ConstraintOutcome {
+                passed: true,
+                actual: 0.0,
+                expected: 0.0,
+                message: "0 == 0: PASS".to_string(),
+                evidence: HashMap::new(),
+            },
+            ConstraintOutcome {
+                passed: false,
+                actual: f64::NAN,
+                expected: f64::NAN,
+                message: "memory.peak_rss_kb: unit 'ms' in '5ms' does not reduce to KB: FAIL"
+                    .to_string(),
+                evidence: HashMap::new(),
+            },
+        ];
+        let result = make_run_result(vec![SpecResult::new(spec, outcomes)]);
+        let report = Report::from_run_result(&result, make_provenance());
+
+        let spec = &report.results[0];
+        assert_eq!(spec.outcome_kind, OutcomeKind::Fail);
+        assert_eq!(spec.outcomes.len(), 2);
+        assert_eq!(spec.outcomes[0].metric, "return_code");
+        assert_eq!(spec.outcomes[1].metric, "memory.peak_rss_kb");
+        assert_eq!(spec.outcomes[1].operator, "<=");
+        assert_eq!(spec.outcomes[1].outcome_kind, OutcomeKind::Fail);
+        assert!(spec.outcomes[1].message.contains("does not reduce"));
+    }
+
+    /// Verifies: SRS-OPS-001
     #[test]
     fn gate_failure_when_a_spec_failed() {
         let s = Summary { total: 2, passed: 1, failed: 1, infra_errors: 0 };
         assert!(s.is_gate_failure());
     }
 
+    /// Verifies: SRS-OPS-001, SRS-OPS-006
     #[test]
     fn gate_failure_when_all_infra_errors_even_with_zero_failed() {
         // The regression this guards (F-C4): a run where every spec is an
@@ -634,18 +660,21 @@ mod tests {
         assert!(s.is_gate_failure());
     }
 
+    /// Verifies: SRS-OPS-001
     #[test]
     fn no_gate_failure_when_all_pass() {
         let s = Summary { total: 2, passed: 2, failed: 0, infra_errors: 0 };
         assert!(!s.is_gate_failure());
     }
 
+    /// Verifies: SRS-OPS-001
     #[test]
     fn no_gate_failure_for_empty_run() {
         let s = Summary { total: 0, passed: 0, failed: 0, infra_errors: 0 };
         assert!(!s.is_gate_failure());
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn report_from_run_result_computes_summary() {
         let run_result = make_run_result(vec![
@@ -659,6 +688,7 @@ mod tests {
         assert_eq!(report.summary.infra_errors, 0);
     }
 
+    /// Verifies: SRS-FUNC-009, SRS-FUNC-008
     #[test]
     fn report_outcome_carries_evidence() {
         let spec = make_spec("REQ-001", "/bin/app");
@@ -678,6 +708,7 @@ mod tests {
         assert_eq!(ev.get("run_id").map(String::as_str), Some("abc-123"));
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn report_serializes_to_json() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -690,6 +721,7 @@ mod tests {
         assert_eq!(parsed["results"][0]["requirement_uid"], "REQ-001");
     }
 
+    /// Verifies: SRS-FUNC-009, SRS-RES-001
     #[test]
     fn write_json_creates_parent_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -700,6 +732,7 @@ mod tests {
         assert!(path.exists(), "report file must be created");
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn report_empty_results() {
         let run_result = make_run_result(vec![]);
@@ -715,15 +748,17 @@ mod tests {
     // New hardening tests (T-075)
     // -------------------------------------------------------------------------
 
+    /// Verifies: SRS-DATA-001
     #[test]
     fn report_schema_version_is_present_in_json() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
         let report = Report::from_run_result(&run_result, make_provenance());
         let json = serde_json::to_string(&report).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["schema_version"], "1.0", "schema_version must be present and correct");
+        assert_eq!(parsed["schema_version"], "1.1", "schema_version must be present and correct");
     }
 
+    /// Verifies: SRS-DATA-001
     #[test]
     fn report_schema_version_is_first_json_field() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -743,6 +778,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-OPS-006
     #[test]
     fn infra_error_serializes_with_infra_error_outcome_kind() {
         use crate::specs::SpecResult;
@@ -767,6 +803,7 @@ mod tests {
         assert_eq!(parsed["summary"]["failed"], 0);
     }
 
+    /// Verifies: SRS-REL-004
     #[test]
     fn result_consistent_propagates_from_evidence() {
         let spec = make_spec("REQ-001", "/bin/app");
@@ -796,44 +833,32 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-FUNC-008
     #[test]
     fn write_qdp_bundles_artefacts() {
         let dir = tempfile::tempdir().unwrap();
-        let out = dir.path();
+        let run = dir.path();
+        std::fs::write(run.join("report.json"), b"{}").unwrap();
+        std::fs::write(run.join("traceability.txt"), b"ok").unwrap();
+        std::fs::create_dir_all(run.join("evidence/runner")).unwrap();
+        std::fs::write(run.join("evidence/runner/0001-get_version.json"), b"{}").unwrap();
+        // A stale archive from an earlier attempt must not end up inside itself.
+        std::fs::write(run.join("qdp.zip"), b"stale").unwrap();
 
-        // Write dummy artefact files.
-        let report_path = out.join("report.json");
-        std::fs::write(&report_path, b"{\"schema_version\":\"1.0\"}").unwrap();
-        let t_json = out.join("traceability.json");
-        std::fs::write(&t_json, b"{}").unwrap();
-        let t_txt = out.join("traceability.txt");
-        std::fs::write(&t_txt, b"ok").unwrap();
+        let qdp = write_qdp(run).expect("write_qdp must succeed");
 
-        // Create a small evidence dir with one file.
-        let ev_dir = out.join("evidence");
-        std::fs::create_dir_all(&ev_dir).unwrap();
-        std::fs::write(ev_dir.join("run-001.json"), b"{\"job\":\"run-001\"}").unwrap();
-
-        let qdp =
-            write_qdp(out, Some(&report_path), None, Some(&t_json), Some(&t_txt), Some(&ev_dir))
-                .expect("write_qdp must succeed");
-
-        assert!(qdp.exists(), "qdp.zip must be created");
-        // Verify the archive contains the expected entries.
-        let zip_file = std::fs::File::open(&qdp).unwrap();
-        let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&qdp).unwrap()).unwrap();
         let names: Vec<String> = (0..archive.len())
             .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
-        assert!(names.contains(&"report.json".to_owned()), "must contain report.json");
-        assert!(names.contains(&"traceability.json".to_owned()), "must contain traceability.json");
-        assert!(names.contains(&"traceability.txt".to_owned()), "must contain traceability.txt");
-        assert!(
-            names.iter().any(|n| n.ends_with("run-001.json")),
-            "must contain evidence file; got {names:?}"
+        assert_eq!(
+            names,
+            ["evidence/runner/0001-get_version.json", "report.json", "traceability.txt"],
+            "archive must hold the run directory, minus itself"
         );
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn write_pdf_produces_a_valid_pdf_file() {
         let result = make_run_result(vec![
@@ -852,6 +877,7 @@ mod tests {
         assert!(bytes.starts_with(b"%PDF-"), "file must start with the PDF magic header");
     }
 
+    /// Verifies: SRS-REL-004
     #[test]
     fn result_consistent_null_when_absent_from_evidence() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -870,6 +896,7 @@ mod tests {
         );
     }
 
+    /// Verifies: SRS-OPS-008
     #[test]
     fn interrupted_flag_propagates_to_report() {
         let mut run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -881,6 +908,7 @@ mod tests {
         assert_eq!(parsed["interrupted"], true);
     }
 
+    /// Verifies: SRS-DATA-003
     #[test]
     fn provenance_fields_appear_in_json() {
         let run_result = make_run_result(vec![passing_spec_result("REQ-001", "/bin/app")]);
@@ -896,6 +924,7 @@ mod tests {
         assert_eq!(parsed["provenance"]["runner_target_id"], "test-target");
     }
 
+    /// Verifies: SRS-FUNC-009
     #[test]
     fn outcome_kind_pass_fail_serialize_correctly() {
         let run_result = make_run_result(vec![
