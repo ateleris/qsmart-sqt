@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use axum::{
     Router,
@@ -18,6 +21,12 @@ use tokio_util::sync::CancellationToken;
 
 /// Spawn a mock Runner on an ephemeral port. Returns the base URL.
 async fn spawn_mock_runner() -> String {
+    spawn_mock_runner_with("1.0", Arc::new(AtomicUsize::new(0))).await
+}
+
+/// Like [`spawn_mock_runner`], but reporting `api_version` and counting job
+/// submissions in `submitted`.
+async fn spawn_mock_runner_with(api_version: &'static str, submitted: Arc<AtomicUsize>) -> String {
     let job_response = Arc::new(JobStatusResponse {
         job_id: "test-job-1".into(),
         use_case: WorkloadType::Regression,
@@ -45,9 +54,9 @@ async fn spawn_mock_runner() -> String {
     let app = Router::new()
         .route(
             "/api/v1/version",
-            get(|| async {
+            get(move || async move {
                 AJson(VersionResponse {
-                    api_version: "1.0".into(),
+                    api_version: api_version.into(),
                     runner_version: "0.1.0-test".into(),
                     target_id: "test-x86".into(),
                     os: "linux".into(),
@@ -57,7 +66,8 @@ async fn spawn_mock_runner() -> String {
         )
         .route(
             "/api/v1/jobs",
-            post(|| async {
+            post(move || async move {
+                submitted.fetch_add(1, Ordering::SeqCst);
                 AJson(JobAccepted {
                     job_id: "test-job-1".into(),
                     status: "accepted".into(),
@@ -122,6 +132,7 @@ report:
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Verifies: SRS-FUNC-007, SRS-OPS-001, SRS-QUAL-003, SRS-VAL-001
 #[tokio::test]
 async fn full_run_pass_path() {
     let url = spawn_mock_runner().await;
@@ -177,6 +188,7 @@ constraints:
     );
 }
 
+/// Verifies: SRS-FUNC-007, SRS-OPS-001, SRS-QUAL-003, SRS-VAL-001
 #[tokio::test]
 async fn run_fails_when_constraint_violated() {
     let url = spawn_mock_runner().await;
@@ -215,4 +227,48 @@ constraints:
         orchestrator::run(&loaded_specs, &client, &cfg, shutdown, &mut ev_store).await.unwrap();
 
     assert_eq!(result.results[0].outcome, specs::OutcomeKind::Fail);
+}
+
+/// Verifies: SRS-IF-008
+#[tokio::test]
+async fn run_rejects_incompatible_runner_api_version_before_submitting() {
+    let submitted = Arc::new(AtomicUsize::new(0));
+    let url = spawn_mock_runner_with("2.0", submitted.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let spec_path = dir.path().join("version.spec.yaml");
+    std::fs::write(
+        &spec_path,
+        r"
+requirement_uid: REQ-INTEGRATION-003
+use_case: regression
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+",
+    )
+    .unwrap();
+
+    let cfg = make_test_config(&url, &spec_path, dir.path());
+    let loaded_specs =
+        specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
+    let client = api::ApiClient::new(
+        &cfg.runner.url,
+        None,
+        cfg.runner.retry_max,
+        cfg.runner.retry_backoff_initial_secs,
+        cfg.runner.poll_interval_initial_secs,
+        cfg.runner.poll_interval_max_secs,
+    )
+    .unwrap();
+    let mut ev_store = evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
+
+    let err =
+        orchestrator::run(&loaded_specs, &client, &cfg, CancellationToken::new(), &mut ev_store)
+            .await
+            .expect_err("a Runner with API major version 2 must be rejected");
+
+    assert!(err.to_string().contains("incompatible"), "unexpected error: {err}");
+    assert_eq!(submitted.load(Ordering::SeqCst), 0, "no job may be submitted");
 }
