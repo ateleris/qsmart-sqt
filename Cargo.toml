@@ -4,8 +4,9 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Ateleris"]
-license-file = "LICENSE"
+license = "ESA-PL-permissive-2.4"
 repository = "https://github.com/ateleris/qsmart-sqt"
+publish = false
 
 [workspace.dependencies]
 sqt-types = { path = "./sqt-types" }

@@ -3,8 +3,9 @@ name = "sqt-reporter"
 version = "0.1.0"
 edition = "2024"
 authors.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [lib]
 name = "sqt_reporter"
