@@ -65,6 +65,9 @@ pub struct SpecResult {
     pub outcome: OutcomeKind,
     /// Backward-compat helper: `true` only for `OutcomeKind::Pass`.
     pub passed: bool,
+    /// Ids of the evidence artefacts behind this result (SRS-FUNC-009): the
+    /// Runner's final response for the job, then the persisted outcomes.
+    pub evidence: Vec<String>,
 }
 
 impl SpecResult {
@@ -79,7 +82,7 @@ impl SpecResult {
             OutcomeKind::Fail
         };
         let passed = kind == OutcomeKind::Pass;
-        Self { spec, outcomes, outcome: kind, passed }
+        Self { spec, outcomes, outcome: kind, passed, evidence: Vec::new() }
     }
 
     /// Construct a synthetic `SpecResult` representing a Runner infrastructure
@@ -96,7 +99,13 @@ impl SpecResult {
             message,
             evidence,
         };
-        Self { spec, outcomes: vec![outcome], outcome: OutcomeKind::InfraError, passed: false }
+        Self {
+            spec,
+            outcomes: vec![outcome],
+            outcome: OutcomeKind::InfraError,
+            passed: false,
+            evidence: Vec::new(),
+        }
     }
 }
 
