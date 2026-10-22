@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Minimal test binary used as a binary-under-test for the dev server.
 //!
 //! Usage:

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Ateleris GmbH
+# SPDX-License-Identifier: ESA-PL-permissive-2.4
 # Runs inside the ci build image (ci/Dockerfile); cwd is the repo checkout.
 # Builds the static release binaries and packages them into dist/:
-#   sqt-reporter-<version>-x86_64-linux-musl.tar.gz   binary + LICENSE + README.md
-#   sqt-runner-<version>-x86_64-linux-musl.tar.gz     binary + LICENSE + README.md
+#   sqt-reporter-<version>-x86_64-linux-musl.tar.gz   binary + LICENSE + NOTICE + README.md
+#   sqt-runner-<version>-x86_64-linux-musl.tar.gz     binary + LICENSE + NOTICE + README.md
 #   sqt-reporter-<version>.cdx.json, sqt-runner-<version>.cdx.json   (from sbom/)
 #   bin/sqt-reporter, bin/sqt-runner                  build context for the images
 #
@@ -41,13 +43,13 @@ for bin in sqt-reporter sqt-runner; do
 
   stage="dist/stage/$bin-$VERSION"
   mkdir -p "$stage"
-  cp "dist/bin/$bin" LICENSE README.md "$stage/"
+  cp "dist/bin/$bin" LICENSE NOTICE README.md "$stage/"
   tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
     -C dist/stage -cf - "$bin-$VERSION" | gzip -n -9 > "dist/$bin-$VERSION-x86_64-linux-musl.tar.gz"
 
   cp "sbom/$bin.cdx.json" "dist/$bin-$VERSION.cdx.json"
 done
-cp LICENSE dist/bin/
+cp LICENSE NOTICE dist/bin/
 rm -rf dist/stage
 # This runs as root in the container; the image step runs on the runner host.
 chmod -R a+rwX dist

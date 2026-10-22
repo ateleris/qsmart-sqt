@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! The target descriptor of a qualification specification (SRS-FUNC-003).
 //!
 //! Measurement happens on the Runner; the Orchestrator reads measured values

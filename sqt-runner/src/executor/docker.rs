@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -220,7 +223,10 @@ impl LifecycleBackend for DockerExecutor {
     //
     // A flat sequence of independent tool invocations; splitting it would only
     // scatter the soft-fail handling without aiding readability.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one step per metric collector, run in sequence against the same container set-up"
+    )]
     fn run(&self, ctx: &JobContext, prepared: &Prepared) -> Result<RawRun> {
         let config = &self.tool_config;
         let binary_config = &prepared.binary_config;
@@ -255,7 +261,10 @@ impl LifecycleBackend for DockerExecutor {
             match valgrind::collect(image, binary_config, workspace, timeout) {
                 Ok(leaks) => {
                     tracing::info!(leaked_bytes = leaks, "valgrind complete");
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "leaked bytes are a whole number parsed from valgrind output"
+                    )]
                     Some(leaks as i64)
                 }
                 Err(e) => {

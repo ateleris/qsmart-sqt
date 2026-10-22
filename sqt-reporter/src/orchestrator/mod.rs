@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -246,7 +249,10 @@ async fn submit_and_poll_all(
 /// Returns an error only for unrecoverable setup failures (version check,
 /// job submission I/O).  Individual job failures are recorded as
 /// `OutcomeKind::InfraError` in the spec results rather than propagated.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the session protocol (version, discovery, submit, evaluate) reads top to bottom as specified"
+)]
 pub async fn run(
     specs: &[TestSpec],
     client: &ApiClient,

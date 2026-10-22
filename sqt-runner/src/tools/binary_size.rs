@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -8,7 +11,10 @@ pub fn collect(binary: &str) -> Result<f64> {
     let metadata =
         std::fs::metadata(path).with_context(|| format!("binary_size: cannot stat '{binary}'"))?;
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "binary sizes are far below 2^52 bytes and convert exactly"
+    )]
     let size_kb = metadata.len() as f64 / 1024.0;
     Ok(size_kb)
 }

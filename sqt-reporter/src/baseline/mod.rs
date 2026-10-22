@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! `StrictDoc` requirement baseline checker (T-043).
 //!
 //! Fetches qualification documents from the Runner, parses ECSS `[REQUIREMENT]`

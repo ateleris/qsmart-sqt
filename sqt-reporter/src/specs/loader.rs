@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! YAML-based spec loader.
 //!
 //! Reads spec files listed explicitly in `config.test_specs.files`.
@@ -34,7 +37,10 @@ struct RawTestSpec {
     // repetitions is deserialized for forward compatibility; the orchestrator
     // reads it from the spec and passes it to JobRequest.  It is not used here.
     #[serde(default)]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "accepted so existing specs keep loading; not yet sent to the Runner (SRS-IF-002, SQT-SW-1)"
+    )]
     repetitions: Option<u32>,
     #[serde(default)]
     timeout_secs: Option<u64>,

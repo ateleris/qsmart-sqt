@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 use std::collections::HashMap;
 
 use sqt_types::WorkloadType;
@@ -72,7 +75,10 @@ fn extract_f64(v: &serde_json::Value) -> Option<f64> {
     v.as_f64()
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sample counts are far below 2^52 and convert exactly"
+)]
 fn classification_metrics(
     outputs: &[serde_json::Value],
     reference: &[serde_json::Value],
@@ -87,7 +93,10 @@ fn classification_metrics(
 
     for (pred, truth) in outputs.iter().zip(reference.iter()) {
         let pred_class = predicted_class(pred);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "class labels are small integers; a fractional label is truncated by design"
+        )]
         let true_class = truth.as_i64().or_else(|| truth.as_f64().map(|f| f as i64));
         if let (Some(p), Some(t)) = (pred_class, true_class) {
             total += 1;
@@ -121,7 +130,11 @@ fn classification_metrics(
     m
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "class indices and argmax positions are small non-negative integers"
+)]
 fn predicted_class(v: &serde_json::Value) -> Option<i64> {
     // If value is an integer, use it directly.
     if let Some(i) = v.as_i64() {
@@ -146,7 +159,10 @@ fn predicted_class(v: &serde_json::Value) -> Option<i64> {
     None
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sample counts are far below 2^52 and convert exactly"
+)]
 fn regression_metrics(
     outputs: &[serde_json::Value],
     reference: &[serde_json::Value],

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Bounded retry of transient Runner errors (SRS-FUNC-020), against a scripted
 //! HTTP server that can fail in ways a framework mock cannot: resetting the
 //! connection mid-response, closing it before answering, or never answering.

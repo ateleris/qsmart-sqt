@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Ateleris GmbH
+# SPDX-License-Identifier: ESA-PL-permissive-2.4
 # Runs on the CI runner (needs the docker CLI); cwd is the repo checkout.
 # Builds the two release images from the binaries in dist/bin (written by
 # ci/release-build.sh) and saves each as a gzip'd OCI tarball in dist/:

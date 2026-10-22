@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ateleris GmbH
+// SPDX-License-Identifier: ESA-PL-permissive-2.4
+
 //! Bearer-token authentication middleware (SRS-IF-006).
 //!
 //! The `OpenAPI` contract declares `bearerAuth` globally. This middleware
