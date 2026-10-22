@@ -678,8 +678,10 @@ precision_reference:
 The `value` field accepts `<number><unit>` strings. The evaluator reconciles
 compatible units (ms↔s, KB↔MB↔bytes, etc.) before comparison (SRS-FUNC-004).
 Irreconcilable units (e.g. ms vs bytes) cause the constraint to fail with an
-explanatory message. A spec with zero constraints at evaluation time is recorded
-as FAIL — vacuous passes are rejected (SRS-REL-001).
+explanatory message; the rest of the spec and the run are evaluated as usual.
+A spec file with an empty `constraints` list is rejected when it is loaded, and a
+spec with zero constraints at evaluation time is recorded as FAIL — vacuous passes
+are rejected (SRS-REL-001).
 
 #### 4.5.3 Core Metric Catalogue
 

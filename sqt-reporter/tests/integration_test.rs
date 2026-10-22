@@ -101,8 +101,20 @@ fn make_test_config(
     spec_file: &std::path::Path,
     output_dir: &std::path::Path,
 ) -> config::SqtConfig {
-    use std::io::Write as _;
+    make_test_config_files(url, &[spec_file], output_dir)
+}
 
+fn make_test_config_files(
+    url: &str,
+    spec_files: &[&std::path::Path],
+    output_dir: &std::path::Path,
+) -> config::SqtConfig {
+    use std::{fmt::Write as _, io::Write as _};
+
+    let specs = spec_files.iter().fold(String::new(), |mut out, f| {
+        let _ = writeln!(out, "    - \"{}\"", f.display());
+        out
+    });
     let yaml = format!(
         r#"
 project:
@@ -110,15 +122,13 @@ project:
   version: "1.0.0"
 test_specs:
   files:
-    - "{spec}"
-runner:
+{specs}runner:
   url: "{url}"
   retry_max: 0
   retry_backoff_initial_secs: 0
 report:
   output_dir: "{out}"
 "#,
-        spec = spec_file.display(),
         url = url,
         out = output_dir.display()
     );
@@ -271,4 +281,59 @@ constraints:
 
     assert!(err.to_string().contains("incompatible"), "unexpected error: {err}");
     assert_eq!(submitted.load(Ordering::SeqCst), 0, "no job may be submitted");
+}
+
+/// Verifies: SRS-FUNC-004, SRS-OPS-006
+#[tokio::test]
+async fn unreconcilable_unit_fails_only_its_constraint() {
+    let url = spawn_mock_runner().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let good = dir.path().join("good.spec.yaml");
+    std::fs::write(
+        &good,
+        "requirement_uid: REQ-UNIT-OK\nuse_case: regression\nconstraints:\n  \
+         - metric: time.avg_ms\n    operator: lte\n    value: \"1s\"\n",
+    )
+    .unwrap();
+    // The mock reports 1024 KB peak RSS; "5ms" cannot be a memory size.
+    let bad = dir.path().join("bad.spec.yaml");
+    std::fs::write(
+        &bad,
+        "requirement_uid: REQ-UNIT-BAD\nuse_case: classification\nconstraints:\n  \
+         - metric: return_code\n    operator: eq\n    value: 0\n  \
+         - metric: memory.peak_rss_kb\n    operator: lte\n    value: \"5ms\"\n",
+    )
+    .unwrap();
+
+    let cfg = make_test_config_files(&url, &[good.as_path(), bad.as_path()], dir.path());
+    let loaded_specs =
+        specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
+    let client = api::ApiClient::new(
+        &cfg.runner.url,
+        None,
+        cfg.runner.retry_max,
+        cfg.runner.retry_backoff_initial_secs,
+        cfg.runner.poll_interval_initial_secs,
+        cfg.runner.poll_interval_max_secs,
+    )
+    .unwrap();
+    let mut ev_store = evidence::EvidenceStore::new(dir.path().join("evidence")).unwrap();
+
+    let (result, _) =
+        orchestrator::run(&loaded_specs, &client, &cfg, CancellationToken::new(), &mut ev_store)
+            .await
+            .unwrap();
+
+    let by_uid = |uid: &str| result.results.iter().find(|r| r.spec.requirement_uid == uid).unwrap();
+    assert_eq!(by_uid("REQ-UNIT-OK").outcome, specs::OutcomeKind::Pass);
+
+    let bad = by_uid("REQ-UNIT-BAD");
+    assert_eq!(bad.outcome, specs::OutcomeKind::Fail);
+    assert_eq!(bad.outcomes.len(), 2, "both constraints are reported");
+    assert!(bad.outcomes[0].passed, "return_code still evaluates: {:?}", bad.outcomes[0]);
+    let unit = &bad.outcomes[1];
+    assert!(!unit.passed);
+    assert!(unit.message.contains("memory.peak_rss_kb"), "{}", unit.message);
+    assert!(unit.message.contains("does not reduce"), "{}", unit.message);
 }

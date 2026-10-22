@@ -485,6 +485,7 @@ pub async fn run(
                         None => failing_outcome(name, "metric unavailable"),
                     }
                 })
+                .chain(spec.unreconcilable.iter().map(|u| failing_outcome(&u.metric, &u.reason)))
                 .collect();
             SpecResult::new(spec.clone(), outcomes)
         })

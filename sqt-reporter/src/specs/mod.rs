@@ -14,12 +14,23 @@ pub struct TestSpec {
     pub workload_type: WorkloadType,
     pub target: Target,
     pub constraints: Vec<Constraint>,
+    /// Constraints whose value unit does not reduce to the metric's unit. Each
+    /// is reported as a failing outcome (SRS-FUNC-004).
+    pub unreconcilable: Vec<UnreconcilableConstraint>,
     /// Reference outputs for client-side ml.* accuracy evaluation (T-054).
     pub reference_outputs: Option<Vec<serde_json::Value>>,
     /// Reference outputs for numerical precision comparison (SRS-FUNC-016).
     pub precision_reference: Option<Vec<serde_json::Value>>,
     /// Absolute tolerance for `ml.output_within_tolerance` (SRS-FUNC-016).
     pub precision_tolerance: Option<f64>,
+}
+
+/// A constraint that was declared but cannot be evaluated because its value's
+/// unit does not reduce to the unit of its metric.
+#[derive(Debug, Clone)]
+pub struct UnreconcilableConstraint {
+    pub metric: String,
+    pub reason: String,
 }
 
 /// A factory that produces a `TestSpec`.
