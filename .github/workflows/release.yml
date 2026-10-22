@@ -69,8 +69,10 @@ jobs:
         run: |
           git archive --format=tar --prefix="qsmart-sqt-$VERSION/" "$GITHUB_REF_NAME" \
             | gzip -n -9 > "dist/qsmart-sqt-$VERSION-src.tar.gz"
+          cp fulfilment-matrix.json "dist/fulfilment-matrix-$VERSION.json"
+          cp fulfilment-matrix.md "dist/fulfilment-matrix-$VERSION.md"
           cd dist
-          sha256sum -- *.tar.gz *.cdx.json > SHA256SUMS
+          sha256sum -- *.tar.gz *.cdx.json fulfilment-matrix-* > SHA256SUMS
           cat SHA256SUMS
           {
             echo "## Release ${GITHUB_REF_NAME}"
@@ -96,5 +98,6 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.cdx.json
+            dist/fulfilment-matrix-*
             dist/SHA256SUMS
             dist/IMAGES.txt
