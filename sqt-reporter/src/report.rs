@@ -483,10 +483,11 @@ fn report_lines(report: &Report) -> Vec<PdfLine> {
 ///
 /// Returns an error if the document cannot be built or the file cannot be written.
 pub fn write_pdf(report: &Report, path: &Path) -> Result<()> {
-    use std::io::BufWriter;
-
     use anyhow::Context as _;
-    use printpdf::{BuiltinFont, Mm, PdfDocument};
+    use printpdf::{
+        BuiltinFont, Mm, Op, PdfDocument, PdfFontHandle, PdfPage, PdfSaveOptions, Point, Pt,
+        TextItem,
+    };
 
     // A4 portrait. Margins and cursor are in millimetres (printpdf uses f32).
     const PAGE_W: f32 = 210.0;
@@ -499,33 +500,39 @@ pub fn write_pdf(report: &Report, path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let (doc, page1, layer1) =
-        PdfDocument::new("SQT Qualification Report", Mm(PAGE_W), Mm(PAGE_H), "layer");
-    let regular =
-        doc.add_builtin_font(BuiltinFont::Helvetica).context("add Helvetica builtin font")?;
-    let bold =
-        doc.add_builtin_font(BuiltinFont::HelveticaBold).context("add Helvetica-Bold builtin")?;
-
-    let mut layer = doc.get_page(page1).get_layer(layer1);
+    let mut pages = Vec::new();
+    let mut ops = Vec::new();
     let mut y = TOP;
 
     for line in report_lines(report) {
         let line_height = line.size * 0.5; // ~mm per pt, generous leading
         if y - line_height < BOTTOM {
-            let (page, layer_idx) = doc.add_page(Mm(PAGE_W), Mm(PAGE_H), "layer");
-            layer = doc.get_page(page).get_layer(layer_idx);
+            pages.push(PdfPage::new(Mm(PAGE_W), Mm(PAGE_H), std::mem::take(&mut ops)));
             y = TOP;
         }
         if !line.text.is_empty() {
-            let font = if line.bold { &bold } else { &regular };
-            layer.use_text(clip(&line.text), line.size, Mm(LEFT), Mm(y), font);
+            let font = if line.bold { BuiltinFont::HelveticaBold } else { BuiltinFont::Helvetica };
+            ops.extend([
+                Op::StartTextSection,
+                Op::SetTextCursor { pos: Point::new(Mm(LEFT), Mm(y)) },
+                Op::SetFont { font: PdfFontHandle::Builtin(font), size: Pt(line.size) },
+                Op::ShowText { items: vec![TextItem::Text(clip(&line.text))] },
+                Op::EndTextSection,
+            ]);
         }
         y -= line_height;
     }
+    pages.push(PdfPage::new(Mm(PAGE_W), Mm(PAGE_H), ops));
 
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("cannot create PDF report: {}", path.display()))?;
-    doc.save(&mut BufWriter::new(file)).context("failed to write PDF")?;
+    let mut warnings = Vec::new();
+    let bytes = PdfDocument::new("SQT Qualification Report")
+        .with_pages(pages)
+        .save(&PdfSaveOptions::default(), &mut warnings);
+    for w in &warnings {
+        tracing::debug!("PDF writer: {w:?}");
+    }
+    std::fs::write(path, bytes)
+        .with_context(|| format!("cannot write PDF report: {}", path.display()))?;
     tracing::info!("PDF report written to {}", path.display());
     Ok(())
 }
@@ -815,8 +822,9 @@ mod tests {
         // Verify the archive contains the expected entries.
         let zip_file = std::fs::File::open(&qdp).unwrap();
         let mut archive = zip::ZipArchive::new(zip_file).unwrap();
-        let names: Vec<String> =
-            (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_owned()).collect();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
+            .collect();
         assert!(names.contains(&"report.json".to_owned()), "must contain report.json");
         assert!(names.contains(&"traceability.json".to_owned()), "must contain traceability.json");
         assert!(names.contains(&"traceability.txt".to_owned()), "must contain traceability.txt");
