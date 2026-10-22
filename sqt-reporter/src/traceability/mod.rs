@@ -209,6 +209,7 @@ mod tests {
             config_version: "1.0.0".to_string(),
             interrupted: false,
             requirement_set: None,
+            discovery: None,
         }
     }
 
@@ -283,6 +284,7 @@ mod tests {
             config_version: "1.0.0".to_string(),
             interrupted: false,
             requirement_set: None,
+            discovery: None,
         };
         let matrix = build(&req_set, &run_result, "2026-01-01T00:00:00Z");
         assert_eq!(matrix.entries.len(), 1);

@@ -5,7 +5,11 @@
 //! without a matching spec are UNCOVERED → non-zero exit before any jobs run.
 
 use anyhow::{Result, bail};
+use base64::Engine as _;
+use serde::Serialize;
 use sqt_types::DocsResponse;
+
+use crate::evidence::{EvidenceMeta, EvidenceStore};
 
 #[derive(Debug, Clone)]
 pub struct Requirement {
@@ -27,6 +31,110 @@ pub struct RequirementSet {
     pub testable: Vec<Requirement>,
     pub compliant_by_declaration: Vec<Requirement>,
     pub unclassified: Vec<Requirement>,
+}
+
+/// What a run obtained from the Runner's discovery operation (SRS-FUNC-018),
+/// as recorded in the report.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscoveryRecord {
+    /// `obtained`, or `empty` when the Runner declared no requirement documents.
+    pub status: &'static str,
+    /// Evidence id of the raw `GET /api/v1/docs` response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_evidence_id: Option<String>,
+    pub documents: Vec<DiscoveredFile>,
+    pub attachments: Vec<DiscoveredFile>,
+    pub testable: usize,
+    pub compliant_by_declaration: usize,
+    pub unclassified: usize,
+}
+
+/// One document or attachment served by the Runner, preserved verbatim.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscoveredFile {
+    pub filename: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Evidence id of the preserved file; `None` if it could not be written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_id: Option<String>,
+    /// Set when the file could not be preserved as served, e.g. invalid base64.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Preserve every document and attachment of `docs` verbatim under
+/// `evidence/discovery/` (attachments base64-decoded), and summarise the
+/// discovery for the report. `response_evidence_id` is the raw response,
+/// already persisted with the other Runner responses.
+pub fn record_discovery(
+    docs: &DocsResponse,
+    req_set: &RequirementSet,
+    response_evidence_id: Option<String>,
+    store: &mut EvidenceStore,
+) -> DiscoveryRecord {
+    let mut keep = |folder: &str, name: &str, content: &[u8], kind: &'static str| {
+        store
+            .store(folder, name, content, EvidenceMeta { kind, ..EvidenceMeta::default() })
+            .map_err(|e| tracing::warn!("cannot preserve discovered file {name}: {e}"))
+            .ok()
+    };
+
+    let documents = docs
+        .documents
+        .iter()
+        .map(|doc| DiscoveredFile {
+            filename: doc.filename.clone(),
+            title: doc.title.clone(),
+            content_type: None,
+            evidence_id: keep(
+                "discovery/documents",
+                &doc.filename,
+                doc.content.as_bytes(),
+                "discovery_document",
+            ),
+            note: None,
+        })
+        .collect();
+
+    let attachments = docs
+        .attachments
+        .iter()
+        .map(|att| {
+            let (content, note) = match base64::engine::general_purpose::STANDARD.decode(&att.data)
+            {
+                Ok(bytes) => (bytes, None),
+                Err(e) => (
+                    att.data.clone().into_bytes(),
+                    Some(format!("not valid base64 ({e}); kept as served")),
+                ),
+            };
+            DiscoveredFile {
+                filename: att.filename.clone(),
+                title: None,
+                content_type: Some(att.content_type.clone()),
+                evidence_id: keep(
+                    "discovery/attachments",
+                    &att.filename,
+                    &content,
+                    "discovery_attachment",
+                ),
+                note,
+            }
+        })
+        .collect();
+
+    DiscoveryRecord {
+        status: if docs.documents.is_empty() { "empty" } else { "obtained" },
+        response_evidence_id,
+        documents,
+        attachments,
+        testable: req_set.testable.len(),
+        compliant_by_declaration: req_set.compliant_by_declaration.len(),
+        unclassified: req_set.unclassified.len(),
+    }
 }
 
 /// Parse `StrictDoc` documents from `DocsResponse`.

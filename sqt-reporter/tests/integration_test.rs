@@ -5,7 +5,7 @@ use std::sync::{
 
 use axum::{
     Router,
-    response::Json as AJson,
+    response::{IntoResponse as _, Json as AJson},
     routing::{get, post},
 };
 use sqt_reporter::{api, config, evidence, orchestrator, outputs, specs};
@@ -27,6 +27,16 @@ async fn spawn_mock_runner() -> String {
 /// Like [`spawn_mock_runner`], but reporting `api_version` and counting job
 /// submissions in `submitted`.
 async fn spawn_mock_runner_with(api_version: &'static str, submitted: Arc<AtomicUsize>) -> String {
+    let no_docs = sqt_types::DocsResponse { documents: vec![], attachments: vec![] };
+    spawn_mock_runner_full(api_version, submitted, Some(no_docs)).await
+}
+
+/// The full mock: `docs` is what `GET /api/v1/docs` serves, `None` for a 500.
+async fn spawn_mock_runner_full(
+    api_version: &'static str,
+    submitted: Arc<AtomicUsize>,
+    docs: Option<sqt_types::DocsResponse>,
+) -> String {
     let job_response = Arc::new(JobStatusResponse {
         job_id: "test-job-1".into(),
         use_case: WorkloadType::Regression,
@@ -85,8 +95,18 @@ async fn spawn_mock_runner_with(api_version: &'static str, submitted: Arc<Atomic
         )
         .route(
             "/api/v1/docs",
-            get(|| async {
-                AJson(sqt_types::DocsResponse { documents: vec![], attachments: vec![] })
+            get(move || {
+                let docs = docs.clone();
+                async move {
+                    match docs {
+                        Some(docs) => AJson(docs).into_response(),
+                        None => (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            r#"{"error":{"code":"INTERNAL_ERROR","message":"docs unavailable","timestamp":"2026-01-01T00:00:00Z"}}"#,
+                        )
+                            .into_response(),
+                    }
+                }
             }),
         );
 
@@ -406,6 +426,7 @@ async fn run_writes_report_and_evidence_into_its_own_directory() {
     assert_eq!(json["schema_version"], "1.1");
     assert_eq!(json["run_id"], run_id.as_str());
     assert_eq!(json["evidence_manifest"], "evidence/manifest.json");
+    assert_eq!(json["discovery"]["status"], "empty", "the mock declares no requirements");
     let ids: Vec<&str> = json["results"][0]["evidence_ids"]
         .as_array()
         .unwrap()
@@ -439,4 +460,112 @@ async fn run_writes_report_and_evidence_into_its_own_directory() {
     let second_id = second.run_id.unwrap();
     assert!(second_id > run_id, "{second_id} must sort after {run_id}");
     assert!(out.join("runs").join(&run_id).join("report.json").is_file());
+}
+
+const BASELINE_SDOC: &str = "[DOCUMENT]\nTITLE: ML-L SRS\n\n[REQUIREMENT]\nUID: REQ-DISC-001\n\
+TITLE: Exit code\nVERIFICATION: Test\n\n[REQUIREMENT]\nUID: REQ-DISC-002\nTITLE: ECSS process\n\
+VERIFICATION: Inspection, Review\n";
+
+/// Verifies: SRS-FUNC-018, SRS-FUNC-008
+#[tokio::test]
+async fn discovered_documents_and_attachments_are_preserved_verbatim() {
+    use base64::Engine as _;
+    let pdf: &[u8] = b"%PDF-1.4 attestation \x00\xff";
+    let docs = sqt_types::DocsResponse {
+        documents: vec![sqt_types::StrictdocDocument {
+            filename: "ml-l.sdoc".into(),
+            title: Some("ML-L SRS".into()),
+            content: BASELINE_SDOC.into(),
+        }],
+        attachments: vec![
+            sqt_types::Attachment {
+                filename: "attestation.pdf".into(),
+                content_type: "application/pdf".into(),
+                data: base64::engine::general_purpose::STANDARD.encode(pdf),
+            },
+            sqt_types::Attachment {
+                filename: "broken.bin".into(),
+                content_type: "application/octet-stream".into(),
+                data: "not base64!".into(),
+            },
+        ],
+    };
+    let url = spawn_mock_runner_full("1.0", Arc::new(AtomicUsize::new(0)), Some(docs)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let spec_path = dir.path().join("disc.spec.yaml");
+    std::fs::write(
+        &spec_path,
+        "requirement_uid: REQ-DISC-001\nuse_case: regression\nconstraints:\n  \
+         - metric: return_code\n    operator: eq\n    value: 0\n",
+    )
+    .unwrap();
+
+    let (report, written) = run_and_write(&url, &spec_path, &dir.path().join("out"), None).await;
+    let run = &written.run_dir;
+
+    let d = report.discovery.as_ref().expect("report records the discovery");
+    assert_eq!(d.status, "obtained");
+    assert_eq!((d.testable, d.compliant_by_declaration), (1, 1));
+    assert_eq!(d.response_evidence_id.as_deref(), Some("evidence/runner/0002-get_docs.json"));
+    assert_eq!(
+        std::fs::read_to_string(run.join(d.documents[0].evidence_id.as_ref().unwrap())).unwrap(),
+        BASELINE_SDOC
+    );
+    assert_eq!(d.documents[0].title.as_deref(), Some("ML-L SRS"));
+    assert_eq!(
+        std::fs::read(run.join(d.attachments[0].evidence_id.as_ref().unwrap())).unwrap(),
+        pdf
+    );
+    assert!(d.attachments[0].note.is_none());
+    assert_eq!(
+        std::fs::read(run.join(d.attachments[1].evidence_id.as_ref().unwrap())).unwrap(),
+        b"not base64!"
+    );
+    assert!(d.attachments[1].note.as_deref().unwrap().contains("not valid base64"));
+
+    // The report JSON carries the same record, and the traceability matrix
+    // marks the Inspection/Review requirement compliant by declaration.
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written.report_json).unwrap()).unwrap();
+    assert_eq!(
+        json["discovery"]["attachments"][0]["evidence_id"],
+        "evidence/discovery/attachments/attestation.pdf"
+    );
+    let trace: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run.join("traceability.json")).unwrap()).unwrap();
+    let declared = trace["entries"].as_array().unwrap().iter().find(|e| e["uid"] == "REQ-DISC-002");
+    assert_eq!(declared.unwrap()["status"], "compliant_by_declaration");
+}
+
+/// Verifies: SRS-FUNC-018
+#[tokio::test]
+async fn failed_discovery_stops_the_run_before_any_submission() {
+    let submitted = Arc::new(AtomicUsize::new(0));
+    let url = spawn_mock_runner_full("1.0", submitted.clone(), None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let spec_path = dir.path().join("disc.spec.yaml");
+    std::fs::write(
+        &spec_path,
+        "requirement_uid: REQ-DISC-003\nuse_case: regression\nconstraints:\n  \
+         - metric: return_code\n    operator: eq\n    value: 0\n",
+    )
+    .unwrap();
+    let cfg = make_test_config(&url, &spec_path, dir.path());
+    let loaded_specs =
+        specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
+    let mut ev_store =
+        evidence::EvidenceStore::new(evidence::RunDir::create(dir.path()).unwrap()).unwrap();
+
+    let err =
+        orchestrator::run(&loaded_specs, &client, &cfg, CancellationToken::new(), &mut ev_store)
+            .await
+            .expect_err("a failed discovery must not count as an empty one");
+
+    assert!(format!("{err:#}").contains("requirements discovery"), "{err:#}");
+    assert_eq!(submitted.load(Ordering::SeqCst), 0);
+    // The failing response itself is evidence (persisted as main.rs does).
+    orchestrator::persist_runner_responses(&client, &mut ev_store);
+    let docs = ev_store.manifest().iter().find(|e| e.id.contains("get_docs")).unwrap();
+    assert_eq!(docs.details["http_status"], "500");
 }
