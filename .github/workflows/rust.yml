@@ -46,6 +46,19 @@ jobs:
           name: sbom
           path: sbom/*.cdx.json
 
+  # The Orchestrator against the real reference Runner, which runs the binary
+  # under test in Docker (SRS-QUAL-003, SRS-VAL-001).
+  e2e:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-docker
+        with:
+          docker-socket: "true"
+          run: >-
+            SQT_E2E_WORKDIR="$PWD/e2e-work"
+            cargo test --locked -p sqt-runner --test e2e_test -- --ignored
+
   test:
     runs-on: self-hosted
     permissions:

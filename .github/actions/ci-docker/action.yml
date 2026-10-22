@@ -7,6 +7,12 @@ inputs:
   run:
     description: Command to run inside the build image (cwd = repo checkout).
     required: true
+  docker-socket:
+    description: >-
+      Mount the dind daemon's socket so the command can start containers
+      (paths under the checkout are the same for the job and the daemon).
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -20,8 +26,13 @@ runs:
       shell: bash
       env:
         RUN: ${{ inputs.run }}
+        DOCKER_SOCKET: ${{ inputs.docker-socket }}
       run: |
-        docker run --rm \
+        socket=()
+        if [ "$DOCKER_SOCKET" = "true" ]; then
+          socket=(-v /var/run/docker.sock:/var/run/docker.sock)
+        fi
+        docker run --rm "${socket[@]}" \
           -v "$GITHUB_WORKSPACE":"$GITHUB_WORKSPACE" \
           -w "$GITHUB_WORKSPACE" \
           -v sqt-cargo-registry:/usr/local/cargo/registry \

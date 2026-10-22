@@ -175,5 +175,9 @@ cargo run -p sqt-reporter -- run       -c examples/sqt-reporter.example.yaml
 # Tests, format, lints
 cargo test --workspace
 cargo fmt --check
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+
+# End-to-end: the Orchestrator against the real sqt-runner in Docker
+# (SRS-QUAL-003, SRS-VAL-001); the `e2e` CI job runs the same
+cargo test -p sqt-runner --test e2e_test -- --ignored
 ```

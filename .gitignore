@@ -26,3 +26,6 @@ coverage*.json
 coverage-summary.md
 fulfilment-matrix.json
 fulfilment-matrix.md
+
+# Working files of the end-to-end test in CI (SQT_E2E_WORKDIR)
+/e2e-work
