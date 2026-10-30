@@ -1,0 +1,80 @@
+name: Publish images
+
+# Runs when a reviewed draft release is published. Pushes the two container
+# images of that release to GHCR, taken from the release assets themselves, so
+# the registry carries exactly the checksummed images the SRelD records. The
+# assets stay the formal delivery; GHCR is a convenience for `docker pull`.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose images to push (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Same dind daemon as the release job, so image IDs compare like for like.
+    runs-on: self-hosted
+    permissions:
+      contents: write        # read draft releases (dispatch) and attach GHCR.txt
+      packages: write        # push to ghcr.io
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Credentials go to a job-private directory, never the runner's home.
+      - name: Private Docker config
+        run: echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-config" >> "$GITHUB_ENV"
+
+      - name: Download and verify the release images
+        run: |
+          rm -rf assets && mkdir assets
+          gh release download "$TAG" --dir assets \
+            --pattern 'SHA256SUMS' --pattern 'IMAGES.txt' --pattern '*-image.tar.gz'
+          cd assets
+          grep -- '-image\.tar\.gz$' SHA256SUMS | sha256sum -c -
+
+      - name: Load, check and push
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          : > GHCR.txt
+          # IMAGES.txt: "<name>:<version> <image id>" per image, '#' lines are notes.
+          grep -v '^#' assets/IMAGES.txt | while read -r ref id; do
+            name="${ref%%:*}"
+            version="${ref#*:}"
+            docker load -i "assets/$name-$version-image.tar.gz"
+            loaded=$(docker image inspect --format '{{.Id}}' "$ref")
+            if [ "$loaded" != "$id" ]; then
+              echo "::error::$ref loaded as $loaded, IMAGES.txt says $id"
+              exit 1
+            fi
+            remote="ghcr.io/$owner/$name:$version"
+            docker tag "$ref" "$remote"
+            docker push "$remote"
+            digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$remote")
+            echo "$remote $digest" >> GHCR.txt
+          done
+          cat GHCR.txt
+          {
+            echo "## Images pushed for $TAG"
+            echo
+            echo '```'
+            cat GHCR.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach the registry digests to the release
+        run: gh release upload "$TAG" GHCR.txt --clobber
+
+      - name: Log out
+        if: always()
+        run: |
+          docker logout ghcr.io || true
+          rm -rf "$DOCKER_CONFIG" assets GHCR.txt
