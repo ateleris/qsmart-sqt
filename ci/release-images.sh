@@ -6,7 +6,8 @@
 # ci/release-build.sh) and saves each as a gzip'd OCI tarball in dist/:
 #   sqt-reporter-<version>-image.tar.gz   FROM scratch, static sqt-reporter
 #   sqt-runner-<version>-image.tar.gz     FROM docker:cli, static sqt-runner
-# dist/IMAGES.txt records each image ID (its content digest) for the SRelD.
+# dist/IMAGES.txt records each image ID (its content digest) for the SRelD,
+# after a '#' line naming the Docker Engine that built them.
 #
 # Usage: ci/release-images.sh <version>
 set -euo pipefail
@@ -16,7 +17,7 @@ VERSION="${1:?usage: release-images.sh <version>}"
 CREATED=$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
 REVISION=$(git rev-parse HEAD)
 
-: > dist/IMAGES.txt
+echo "# Docker Engine $(docker version --format '{{.Server.Version}}')" > dist/IMAGES.txt
 for bin in sqt-reporter sqt-runner; do
   tag="$bin:$VERSION"
   docker build -f "release/Dockerfile.$bin" -t "$tag" \

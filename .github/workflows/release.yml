@@ -101,7 +101,10 @@ jobs:
             Software Qualification Toolkit ${{ github.ref_name }}.
 
             Verify each asset with `sha256sum -c SHA256SUMS`. Image IDs are listed in
-            `IMAGES.txt`. Release content, tools and known limitations are in the
+            `IMAGES.txt`; `docker load -i` an image archive to install it. Once this
+            release is published, the same images are also on `ghcr.io/ateleris`
+            and `GHCR.txt` lists their registry digests. Release content, tools and
+            known limitations are in the
             Software Release Document (SQT-RP-0002-ATS).
           files: |
             dist/*.tar.gz
