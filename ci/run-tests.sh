@@ -8,11 +8,16 @@
 #   coverage.json                -> raw llvm-cov report
 #   coverage-summary.md          -> appended to the GitHub job summary
 #   fulfilment-matrix.{json,md}  -> requirements fulfilment matrix (ci/fulfilment-matrix.py)
-# Exits non-zero if any test fails (so the workflow fails too), or if
+# Exits non-zero if any test fails (so the workflow fails too), if the coverage
+# report cannot be produced, or if
 # COVERAGE_FAIL_UNDER is set and the Orchestrator's line coverage is below it
 # (the release gate: measured on every merge, enforced at the tag).
 set -uo pipefail
 
+# The target dir is a persistent cache shared by all CI runs. --no-report does
+# not remove earlier .profraw files, so without this every run would merge the
+# profiles of all previous runs (and fail on ones from another toolchain).
+cargo llvm-cov clean --workspace
 cargo llvm-cov --no-report --workspace nextest --profile ci
 status=$?
 
@@ -53,9 +58,10 @@ python3 ci/fulfilment-matrix.py --junit "$JUNIT" \
 # Coverage report + summary (written into the workspace). The Orchestrator
 # figure is sqt-reporter alone: the Runner and the shared types are excluded.
 ORCHESTRATOR_ONLY='/sqt-(runner|types)/'
-cargo llvm-cov report --json --output-path coverage.json || true
+# Coverage is measured on every merge, so a missing figure fails the job.
+cargo llvm-cov report --json --output-path coverage.json || status=1
 cargo llvm-cov report --json --output-path coverage-orchestrator.json \
-  --ignore-filename-regex "$ORCHESTRATOR_ONLY" || true
+  --ignore-filename-regex "$ORCHESTRATOR_ONLY" || status=1
 if [ -f coverage.json ] && [ -f coverage-orchestrator.json ]; then
   node -e '
     const row = (label, f) => {
