@@ -145,7 +145,8 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M3** Server job failures mislabeled: `wait_for_job` bails on `Failed`
   (`client.rs:269`), so the `RUNNER_JOB_FAILED` branch is unreachable and failures
   surface as `TRANSPORT_ERROR`; the structured `details` field is dropped
-  (SRS-IF-003/REL-003).
+  (SRS-IF-003/REL-003). **Fixed** in #35: `wait_for_job` returns the failed job,
+  which is recorded as `RUNNER_JOB_FAILED` with the Runner's error message.
 - **F-M4** Evidence not run-scoped; JSON report only written with `--output`
   (`main.rs:133`) though SRS-FUNC-009 says "shall produce"; successive runs
   overwrite `report.pdf`/`qdp.zip`/`traceability.*` (SRS-OPS-004). Fix: per-run
