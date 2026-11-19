@@ -16,7 +16,7 @@ use std::{
 use axum::{
     Router,
     extract::Request,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Json, Redirect},
     routing::{get, post},
@@ -44,10 +44,22 @@ fn version() -> VersionResponse {
 }
 
 /// A mock Runner that requires `Authorization: Bearer TOKEN` on every route.
+/// Its version response echoes the `Authorization` header in the `os` field,
+/// so a payload log that does not redact the token would show it.
 async fn spawn_runner(hits: Arc<Hits>) -> String {
     let submitted = hits.clone();
     let app = Router::new()
-        .route("/api/v1/version", get(|| async { Json(version()) }))
+        .route(
+            "/api/v1/version",
+            get(|headers: HeaderMap| async move {
+                let echoed = headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_owned();
+                Json(VersionResponse { os: echoed, ..version() })
+            }),
+        )
         .route(
             "/api/v1/docs",
             get(|| async { Json(DocsResponse { documents: vec![], attachments: vec![] }) }),
@@ -176,7 +188,9 @@ async fn a_redirect_to_another_host_is_not_followed() {
 
     let result = client(&runner, None).get_version().await;
 
-    assert!(result.is_err(), "a redirect must fail the request, not be followed");
+    let err = format!("{:#}", result.expect_err("a redirect must fail the request"));
+    assert!(err.contains(&format!("{other}/api/v1/version")), "target not named: {err}");
+    assert!(err.contains("runner.url"), "no hint to fix the configuration: {err}");
     assert_eq!(elsewhere.load(Ordering::SeqCst), 0, "the redirect target was contacted");
 }
 

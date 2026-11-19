@@ -29,7 +29,7 @@ into <report.output_dir>/runs/<run_id>/ and prints that location at the end.";
 )]
 pub struct Cli {
     /// Log more: -v adds debug messages, -vv also every request and response
-    /// payload exchanged with the Runner. Without -v or -q, `RUST_LOG` applies.
+    /// payload exchanged with the Runner. Both add to a `RUST_LOG` filter.
     #[arg(short, long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
 
@@ -74,16 +74,23 @@ pub enum Commands {
 impl Cli {
     /// The log filter for this command line (SRS-OPS-002).
     ///
-    /// `-q` logs warnings and errors only, `-v` adds the SQT's debug messages
-    /// and `-vv` its trace messages, which carry every request and response
-    /// payload of the Runner contract. Without either flag, the filter in
-    /// `RUST_LOG` applies (`rust_log`), and `info` when that is unset.
+    /// `-q` logs warnings and errors only. Otherwise the base filter is
+    /// `RUST_LOG` (`rust_log`), or `info` when that is unset, empty or not a
+    /// valid filter; `-v` adds the SQT's debug messages to it and `-vv` its
+    /// trace messages, which carry every request and response payload of the
+    /// Runner contract.
     pub fn log_filter(&self, rust_log: Option<&str>) -> String {
-        match (self.quiet, self.verbose) {
-            (true, _) => "warn".to_owned(),
-            (false, 0) => rust_log.unwrap_or("info").to_owned(),
-            (false, 1) => "info,sqt_reporter=debug".to_owned(),
-            (false, _) => "info,sqt_reporter=trace".to_owned(),
+        if self.quiet {
+            return "warn".to_owned();
+        }
+        let base = rust_log
+            .map(str::trim)
+            .filter(|f| !f.is_empty() && tracing_subscriber::EnvFilter::try_new(f).is_ok())
+            .unwrap_or("info");
+        match self.verbose {
+            0 => base.to_owned(),
+            1 => format!("{base},sqt_reporter=debug"),
+            _ => format!("{base},sqt_reporter=trace"),
         }
     }
 }
@@ -152,9 +159,26 @@ mod tests {
 
     /// Verifies: SRS-OPS-002
     #[test]
-    fn rust_log_applies_only_without_flags() {
-        assert_eq!(parse(&["sqt", "run", "-c", "x"]).log_filter(Some("debug")), "debug");
-        assert_eq!(parse(&["sqt", "-q", "run", "-c", "x"]).log_filter(Some("debug")), "warn");
+    fn verbosity_flags_add_to_rust_log() {
+        let rust_log = Some("info,reqwest=debug");
+        assert_eq!(parse(&["sqt", "run", "-c", "x"]).log_filter(rust_log), "info,reqwest=debug");
+        assert_eq!(
+            parse(&["sqt", "run", "-c", "x", "-vv"]).log_filter(rust_log),
+            "info,reqwest=debug,sqt_reporter=trace"
+        );
+        assert_eq!(parse(&["sqt", "-q", "run", "-c", "x"]).log_filter(rust_log), "warn");
+    }
+
+    /// Verifies: SRS-OPS-002
+    #[test]
+    fn empty_or_invalid_rust_log_falls_back_to_info() {
+        for rust_log in ["", "  ", "sqt_reporter=loud"] {
+            assert_eq!(parse(&["sqt", "run", "-c", "x"]).log_filter(Some(rust_log)), "info");
+            assert_eq!(
+                parse(&["sqt", "run", "-c", "x", "-v"]).log_filter(Some(rust_log)),
+                "info,sqt_reporter=debug"
+            );
+        }
     }
 
     /// Verifies: SRS-OPS-002

@@ -372,8 +372,14 @@ pub fn render_terminal(report: &Report, run_dir: &Path) -> String {
         "{passed}/{} constraints passed, {failed} failed, {infra} infra errors",
         passed + failed + infra,
     );
-    let run = report.run_id.as_deref().unwrap_or("-");
-    let _ = writeln!(out, "Run {run} — report and evidence in {}", run_dir.display());
+    match report.run_id.as_deref() {
+        Some(run) => {
+            let _ = writeln!(out, "Run {run} — report and evidence in {}", run_dir.display());
+        }
+        None => {
+            let _ = writeln!(out, "Report and evidence in {}", run_dir.display());
+        }
+    }
     out
 }
 

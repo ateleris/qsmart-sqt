@@ -213,6 +213,17 @@ impl ApiClient {
         self.recorded.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(entry);
     }
 
+    /// `text` with every occurrence of the bearer token replaced, for logging a
+    /// payload (SRS-OPS-005): a Runner may echo the token in a response.
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.token {
+            Some(Redacted(ref tok)) if !tok.is_empty() && text.contains(tok.as_str()) => {
+                std::borrow::Cow::Owned(text.replace(tok.as_str(), "[REDACTED]"))
+            }
+            _ => std::borrow::Cow::Borrowed(text),
+        }
+    }
+
     /// Attach the `Authorization` header to a request builder if a token is configured.
     fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(Redacted(ref tok)) = self.token { rb.bearer_auth(tok) } else { rb }
@@ -245,15 +256,29 @@ impl ApiClient {
             let outcome = match self.auth(build()).send().await {
                 Ok(resp) => {
                     let status = resp.status();
+                    if status.is_redirection() {
+                        // Not followed (SRS-RES-002); say where it pointed.
+                        let location = resp
+                            .headers()
+                            .get(reqwest::header::LOCATION)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("(no Location header)")
+                            .to_owned();
+                        bail!(
+                            "the Runner answered {status} with a redirect to {location}; the SQT \
+                             contacts only the configured Runner URL and does not follow \
+                             redirects, so set runner.url to the final address"
+                        );
+                    }
                     match resp.bytes().await {
                         Ok(body) => {
                             // The most verbose level logs every response
-                            // payload (SRS-OPS-002).
+                            // payload (SRS-OPS-002), without the token.
                             tracing::trace!(
                                 operation,
                                 url,
                                 status = status.as_u16(),
-                                payload = %String::from_utf8_lossy(&body),
+                                payload = %self.redact(&String::from_utf8_lossy(&body)),
                                 "Runner response"
                             );
                             Ok((status, body.to_vec()))
@@ -376,8 +401,19 @@ impl ApiClient {
         // The only operation with a request payload; logged at the most
         // verbose level (SRS-OPS-002).
         if tracing::enabled!(tracing::Level::TRACE) {
-            let payload = serde_json::to_string(request).unwrap_or_default();
-            tracing::trace!(operation = "submit_job", url, payload, "Runner request payload");
+            match serde_json::to_string(request) {
+                Ok(payload) => tracing::trace!(
+                    operation = "submit_job",
+                    url,
+                    payload = %self.redact(&payload),
+                    "Runner request payload"
+                ),
+                Err(e) => tracing::trace!(
+                    operation = "submit_job",
+                    url,
+                    "Runner request payload not loggable: {e}"
+                ),
+            }
         }
         let (status, body) = self
             .send("submit_job", &url, None, Resend::OnlyIfNotAccepted, || {

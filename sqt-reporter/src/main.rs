@@ -10,7 +10,7 @@ use sqt_reporter::{api, config, evidence, orchestrator, outputs, preflight, repo
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Verbosity from -v / -q, else RUST_LOG, else info (SRS-OPS-002).
+    // RUST_LOG (or info), raised by -v / -vv, or warn with -q (SRS-OPS-002).
     let rust_log = std::env::var("RUST_LOG").ok();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(cli.log_filter(rust_log.as_deref())))
