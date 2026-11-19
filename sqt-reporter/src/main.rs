@@ -1,58 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
-use std::path::PathBuf;
-
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use sqt_reporter::cli::{Cli, Commands};
 use sqt_reporter::{api, config, evidence, orchestrator, outputs, preflight, report, specs};
-
-#[derive(Parser)]
-#[command(name = "sqt", version, about = "Software Qualification Toolkit")]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Run a full qualification session against the SQT Runner.
-    Run {
-        #[arg(short, long, env = "SQT_CONFIG")]
-        config: PathBuf,
-        #[arg(
-            short,
-            long,
-            help = "Also copy the JSON report to this path (it is always written into the run directory)"
-        )]
-        output: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Validate config and Runner connectivity; exit without submitting jobs"
-        )]
-        preflight: bool,
-    },
-    /// Validate config, check Runner connectivity and auth, load spec files —
-    /// without submitting any jobs (SRS-OPS-007).
-    ///
-    /// Equivalent to `sqt run --preflight` but available as a first-class
-    /// subcommand for CI pipelines that want a dedicated pre-flight step.
-    Preflight {
-        #[arg(short, long, env = "SQT_CONFIG", help = "Path to sqt-reporter.yaml")]
-        config: PathBuf,
-    },
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
+
+    // RUST_LOG (or info), raised by -v / -vv, or warn with -q (SRS-OPS-002).
+    let rust_log = std::env::var("RUST_LOG").ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(cli.log_filter(rust_log.as_deref())))
+        .init();
 
     match cli.command {
         Commands::Preflight { config } => {
@@ -143,12 +105,7 @@ async fn main() -> Result<()> {
                 &mut ev_store,
                 output.as_deref(),
             )?;
-            report::print_terminal(&rep);
-            println!(
-                "Run {} — report and evidence in {}",
-                ev_store.run().id,
-                written.run_dir.display()
-            );
+            report::print_terminal(&rep, &written.run_dir);
             tracing::info!("Report: {}", written.report_json.display());
             if let Some(ref path) = output {
                 tracing::info!("Report copied to {}", path.display());

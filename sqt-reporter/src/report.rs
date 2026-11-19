@@ -287,22 +287,32 @@ pub(crate) fn spec_report(sr: &SpecResult) -> SpecReport {
 // Output
 // ---------------------------------------------------------------------------
 
-/// Print a human-readable summary to stdout.
-pub fn print_terminal(report: &Report) {
+/// Print the end-of-run summary to stdout (SRS-OPS-003).
+pub fn print_terminal(report: &Report, run_dir: &Path) {
+    print!("{}", render_terminal(report, run_dir));
+}
+
+/// The end-of-run summary (SRS-OPS-003): every specification with its state
+/// and its constraints, the counts of specifications and constraints, and
+/// where the run's report and evidence are.
+pub fn render_terminal(report: &Report, run_dir: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     for spec in &report.results {
         let status = match spec.outcome_kind {
             OutcomeKind::Pass => "PASS",
             OutcomeKind::Fail => "FAIL",
             OutcomeKind::InfraError => "[INFRA]",
         };
-        println!("{:<60} {status}", spec.requirement_uid);
+        let _ = writeln!(out, "{:<60} {status}", spec.requirement_uid);
         for outcome in &spec.outcomes {
             let outcome_label = match outcome.outcome_kind {
                 OutcomeKind::Pass => "PASS",
                 OutcomeKind::Fail => "FAIL",
                 OutcomeKind::InfraError => "[INFRA]",
             };
-            println!("    {:<20} {} {}", outcome.metric, outcome_label, outcome.message);
+            let _ =
+                writeln!(out, "    {:<20} {} {}", outcome.metric, outcome_label, outcome.message);
 
             // For INFRA_ERROR outcomes, surface the error details on the next line.
             if outcome.outcome_kind == OutcomeKind::InfraError {
@@ -310,40 +320,67 @@ pub fn print_terminal(report: &Report) {
                     outcome.evidence.get("error_code").map_or("UNKNOWN", String::as_str);
                 let error_message =
                     outcome.evidence.get("error_message").map_or("", String::as_str);
-                println!("        error_code={error_code} error_message={error_message}");
+                let _ =
+                    writeln!(out, "        error_code={error_code} error_message={error_message}");
                 if let Some(details) = outcome.evidence.get("error_details") {
-                    println!("        error_details={details}");
+                    let _ = writeln!(out, "        error_details={details}");
                 }
             }
         }
         // Show result_consistent in the evidence section.
         if let Some(rc) = spec.target.result_consistent {
-            println!("    result_consistent: {rc}");
+            let _ = writeln!(out, "    result_consistent: {rc}");
         }
     }
-    println!("{}", "─".repeat(50));
+    let _ = writeln!(out, "{}", "─".repeat(50));
     match &report.discovery {
         Some(d) if d.status == "empty" => {
-            println!("Runner-declared requirements: none obtained (empty discovery)");
+            let _ = writeln!(out, "Runner-declared requirements: none obtained (empty discovery)");
         }
-        Some(d) => println!(
-            "Runner-declared requirements: {} testable, {} compliant by declaration \
-             ({} documents, {} attachments preserved)",
-            d.testable,
-            d.compliant_by_declaration,
-            d.documents.len(),
-            d.attachments.len()
-        ),
+        Some(d) => {
+            let _ = writeln!(
+                out,
+                "Runner-declared requirements: {} testable, {} compliant by declaration \
+                 ({} documents, {} attachments preserved)",
+                d.testable,
+                d.compliant_by_declaration,
+                d.documents.len(),
+                d.attachments.len()
+            );
+        }
         None => {}
     }
     let interrupted_note = if report.interrupted { " [INTERRUPTED]" } else { "" };
-    println!(
+    let _ = writeln!(
+        out,
         "{}/{} specs passed, {} failed, {} infra errors{interrupted_note}",
         report.summary.passed,
         report.summary.total,
         report.summary.failed,
         report.summary.infra_errors,
     );
+    let (mut passed, mut failed, mut infra) = (0usize, 0usize, 0usize);
+    for outcome in report.results.iter().flat_map(|spec| &spec.outcomes) {
+        match outcome.outcome_kind {
+            OutcomeKind::Pass => passed += 1,
+            OutcomeKind::Fail => failed += 1,
+            OutcomeKind::InfraError => infra += 1,
+        }
+    }
+    let _ = writeln!(
+        out,
+        "{passed}/{} constraints passed, {failed} failed, {infra} infra errors",
+        passed + failed + infra,
+    );
+    match report.run_id.as_deref() {
+        Some(run) => {
+            let _ = writeln!(out, "Run {run} — report and evidence in {}", run_dir.display());
+        }
+        None => {
+            let _ = writeln!(out, "Report and evidence in {}", run_dir.display());
+        }
+    }
+    out
 }
 
 /// Bundle a run directory into `<run_dir>/qdp.zip`: the report, PDF,
@@ -961,5 +998,37 @@ mod tests {
         assert_eq!(parsed["results"][1]["outcome_kind"], "FAIL");
         assert_eq!(parsed["results"][0]["outcomes"][0]["outcome_kind"], "PASS");
         assert_eq!(parsed["results"][1]["outcomes"][0]["outcome_kind"], "FAIL");
+    }
+
+    /// Verifies: SRS-OPS-003
+    #[test]
+    fn terminal_summary_lists_states_counts_and_evidence_location() {
+        let infra = SpecResult::infra_error(
+            make_spec("REQ-C", "build/c"),
+            "RUNNER_JOB_FAILED: boom".to_string(),
+            HashMap::new(),
+        );
+        let result = make_run_result(vec![
+            passing_spec_result("REQ-A", "build/a"),
+            failing_spec_result("REQ-B", "build/b"),
+            infra,
+        ]);
+        let mut report = Report::from_run_result(&result, make_provenance());
+        report.run_id = Some("20260101T000000.000Z".to_string());
+
+        let text = render_terminal(&report, Path::new("/out/runs/20260101T000000.000Z"));
+
+        for (uid, state) in [("REQ-A", "PASS"), ("REQ-B", "FAIL"), ("REQ-C", "[INFRA]")] {
+            let line = text.lines().find(|l| l.starts_with(uid)).unwrap();
+            assert!(line.ends_with(state), "{uid}: {line}");
+        }
+        assert!(text.contains("1/3 specs passed, 1 failed, 1 infra errors"), "{text}");
+        assert!(text.contains("1/3 constraints passed, 1 failed, 1 infra errors"), "{text}");
+        assert!(
+            text.contains(
+                "Run 20260101T000000.000Z — report and evidence in /out/runs/20260101T000000.000Z"
+            ),
+            "{text}"
+        );
     }
 }
