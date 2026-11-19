@@ -40,7 +40,12 @@ async fn spawn_mock_runner_full(
     submitted: Arc<AtomicUsize>,
     docs: Option<sqt_types::DocsResponse>,
 ) -> String {
-    let job_response = Arc::new(JobStatusResponse {
+    spawn_mock_runner_job(api_version, submitted, docs, completed_job()).await
+}
+
+/// The job status every poll of the default mock returns: complete, passing metrics.
+fn completed_job() -> JobStatusResponse {
+    JobStatusResponse {
         job_id: "test-job-1".into(),
         use_case: WorkloadType::Regression,
         mode: MeasurementMode::Latency,
@@ -60,9 +65,17 @@ async fn spawn_mock_runner_full(
             ..Default::default()
         },
         output: None,
-    });
+    }
+}
 
-    let job_response_clone = job_response.clone();
+/// A mock Runner whose job-status operation always returns `job`.
+async fn spawn_mock_runner_job(
+    api_version: &'static str,
+    submitted: Arc<AtomicUsize>,
+    docs: Option<sqt_types::DocsResponse>,
+    job: JobStatusResponse,
+) -> String {
+    let job_response_clone = Arc::new(job);
 
     let app = Router::new()
         .route(
@@ -246,6 +259,56 @@ constraints:
         orchestrator::run(&loaded_specs, &client, &cfg, shutdown, &mut ev_store).await.unwrap();
 
     assert_eq!(result.results[0].outcome, specs::OutcomeKind::Fail);
+}
+
+/// Verifies: SRS-IF-003, SRS-OPS-006, SRS-REL-003
+#[tokio::test]
+async fn runner_side_job_failure_is_recorded_with_the_runners_error() {
+    let mut job = completed_job();
+    job.status = JobStatus::Failed;
+    job.error = Some("binary exited before the first inference".into());
+    job.metrics = JobMetrics::default();
+    let no_docs = sqt_types::DocsResponse { documents: vec![], attachments: vec![] };
+    let url = spawn_mock_runner_job("1.0", Arc::new(AtomicUsize::new(0)), Some(no_docs), job).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let spec_path = dir.path().join("failed.spec.yaml");
+    std::fs::write(
+        &spec_path,
+        r"
+requirement_uid: REQ-INTEGRATION-FAILED
+use_case: regression
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+",
+    )
+    .unwrap();
+
+    let cfg = make_test_config(&url, &spec_path, dir.path());
+    let loaded_specs =
+        specs::loader::load_specs(&cfg.test_specs.files, cfg.runner.job_timeout_secs).unwrap();
+    let client = api::ApiClient::new(&cfg.runner.url, None, (&cfg.runner).into()).unwrap();
+    let mut ev_store =
+        evidence::EvidenceStore::new(evidence::RunDir::create(dir.path()).unwrap()).unwrap();
+
+    let (result, _) =
+        orchestrator::run(&loaded_specs, &client, &cfg, CancellationToken::new(), &mut ev_store)
+            .await
+            .unwrap();
+
+    // Before the fix, wait_for_job turned the failed job into an error, so the
+    // outcome carried TRANSPORT_ERROR and lost the Runner's message.
+    let spec = &result.results[0];
+    assert_eq!(spec.outcome, specs::OutcomeKind::InfraError);
+    let evidence = &spec.outcomes[0].evidence;
+    assert_eq!(evidence.get("error_code").map(String::as_str), Some("RUNNER_JOB_FAILED"));
+    assert_eq!(
+        evidence.get("error_message").map(String::as_str),
+        Some("binary exited before the first inference"),
+    );
+    assert_eq!(evidence.get("job_id").map(String::as_str), Some("test-job-1"));
 }
 
 /// Verifies: SRS-IF-008, SRS-FUNC-008
