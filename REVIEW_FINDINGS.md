@@ -297,6 +297,12 @@ Left open by the `v0.1.0` release. The documents named here are in
   SRelD: FUNC-019 fan-out (F-M7), `repetitions` not sent (IF-002, F-M6), OpenAPI
   range and pattern validation (IF-007), Runner-declared metrics (FUNC-006,
   issue #17, D-1).
+- **R-10** SRS-IF-010 (encrypted transport) is in the SRS but in no release of
+  the SQT-TN-AP release plan, which predates it. It is also not implemented:
+  the Orchestrator verifies TLS certificates (rustls), but it would send the
+  bearer token over plain `http://` to any host, where IF-010 allows that only
+  for the local host. Assign it at the SW-1 release planning; the fix is a
+  configuration check that rejects a token with a non-loopback `http://` URL.
 
 ---
 
@@ -316,10 +322,14 @@ requirement "has tests" when a test names it):
 | State | Requirements |
 |---|---|
 | Has tests (20) | FUNC-005, 010; PERF-001..004; REL-001..004; OPS-001, 005, 006, 008; DATA-001..003; RES-001 |
-| Implemented, no test names it | OPS-002 (verbosity), OPS-003 (end-of-run summary), OPS-007 (pre-flight), RES-002 (no implicit network access), HF-001 (self-discoverable interface) |
-| Feature work | FUNC-006 (Runner-declared metrics, issue #17, D-1); FUNC-011, 013 (configuration-driven run, no manual steps); FUNC-014, 015 (verification activities through the Runner API, needs a contract change); FUNC-021..023 (API profile, representative workloads, profile coverage); RES-003 (bounded memory); HF-002 (end-user operability) |
+| Implemented, no test names it | OPS-002 (verbosity), OPS-003 (end-of-run summary), OPS-007 (pre-flight), RES-002 (no implicit network access), HF-001 (self-discoverable interface). **Done** in #38 (P-1). |
+| Feature work | FUNC-006 (Runner-declared metrics, issue #17, D-1); FUNC-011, 012, 013 (configuration-driven run, operator guidance, no manual steps); FUNC-014, 015 (verification activities through the Runner API, needs a contract change); FUNC-021..023 (API profile, representative workloads, profile coverage); RES-003 (bounded memory); HF-002 (end-user operability) |
 | Verified by a note | Analysis: FUNC-006, MAINT-001, MAINT-002. Inspection: FUNC-015, OPS-004 |
-| SRS defect | FUNC-012 and FUNC-016 have no verification method |
+
+Correction: an earlier version of this table listed FUNC-012 and FUNC-016 as
+having no verification method. Both are Test in the SRS; the matrix script
+misread them (a statement line starting with `[LINK:` ended the requirement
+block early). Fixed together with P-2.
 
 Steps, in this order:
 
@@ -328,6 +338,14 @@ Steps, in this order:
 - **P-2** Make the fulfilment matrix authoritative: run `ci/fulfilment-matrix.py`
   with `--srs` in CI, against the SRS of the docs repository at a pinned tag,
   so every requirement without a passing test shows up on each push.
+  **Done** in the `p2-requirements-list` PR, with a requirement list instead of
+  the SRS: the docs repository is private, and a release must build from a
+  clean clone without secrets (SRS-CDR-002). `ci/requirements.csv` holds UID,
+  title, verification method and planned release, generated from the SRS and
+  the SQT-TN-AP release plan by `ci/requirements-from-srs.py`; regenerate it at
+  every new SRS or plan issue. Every push reports per release in the job
+  summary; a release tag fails unless every Test requirement planned up to that
+  release has a passing test or CI gate.
 - **P-3** Carry-overs and robustness: IF-002 `repetitions` together with the
   Runner repetition loop (F-M6); FUNC-019 fan-out (F-M7); F-M1, F-M5, F-M10;
   SIGTERM cancelling in-flight jobs (OPS-008); `queue_position`; R-7.
@@ -340,8 +358,8 @@ Steps, in this order:
 Process for SQT-SW-1, not code:
 
 - Release planning with ESA and the ML-L role (SQT-TN-AP rolling outlook).
-  SRS change requests to raise there: R-8 (`Generic` allocation) and the
-  missing verification methods of FUNC-012 and FUNC-016.
+  SRS change requests to raise there: R-8 (`Generic` allocation). Also assign
+  SRS-IF-010 to a release (R-10).
 - TRR at the start and the end of the release; lightweight CDR.
 - ADD and SUM kept current with each feature (Definition of Done).
 - Branching: work now goes to `dev` and reaches `main` at a release, with the

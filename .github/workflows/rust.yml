@@ -99,3 +99,6 @@ jobs:
           else
             echo "_Coverage summary unavailable._" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f fulfilment-summary.md ]; then
+            cat fulfilment-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
