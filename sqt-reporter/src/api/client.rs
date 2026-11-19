@@ -403,18 +403,21 @@ impl ApiClient {
         Ok(resp)
     }
 
-    /// Poll until the job reaches `complete`, or fail fast on any terminal error.
+    /// Poll until the job reaches a terminal state, `complete` or `failed`, and
+    /// return that final response (SRS-IF-003).
+    ///
+    /// A `failed` job is returned, not turned into an error, so the caller can
+    /// record it as a Runner-side failure with the Runner's `error` text
+    /// (SRS-OPS-006, SRS-REL-003) rather than as a transport error.
     ///
     /// Uses exponential backoff between polls, configured by
     /// `poll_interval_initial_secs` (×2 per poll) up to `poll_interval_max_secs`
-    /// (SRS-PERF-003). Bails immediately when the server reports `failed`,
-    /// embedding the server-side error field. Bails with a timeout error after
-    /// `timeout`.
+    /// (SRS-PERF-003).
     ///
     /// # Errors
     ///
-    /// Returns an error if a poll request fails, the job transitions to `failed`,
-    /// or `timeout` is exceeded before the job completes.
+    /// Returns an error if a poll request fails or `timeout` is exceeded before
+    /// the job reaches a terminal state.
     pub async fn wait_for_job(&self, job_id: &str, timeout: Duration) -> Result<JobStatusResponse> {
         // Clamp to a sane floor so a misconfigured 0 can't busy-loop.
         let max_delay = Duration::from_secs(self.options.poll_interval_max_secs.max(1));
@@ -426,11 +429,7 @@ impl ApiClient {
             let resp = self.get_job_status(job_id).await?;
             tracing::debug!(job_id, status = ?resp.status, "polled job status");
 
-            if resp.status == JobStatus::Failed {
-                let msg = resp.error.as_deref().unwrap_or("(no detail provided)");
-                bail!("job {job_id} failed on server: {msg}");
-            }
-            if resp.status == JobStatus::Complete {
+            if matches!(resp.status, JobStatus::Complete | JobStatus::Failed) {
                 return Ok(resp);
             }
 
