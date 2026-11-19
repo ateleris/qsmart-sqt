@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The run report: its JSON form (versioned schema, SRS-DATA-001), the PDF,
+//! the end-of-run terminal summary (SRS-OPS-003) and the QDP archive.
+
 use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
@@ -26,10 +29,12 @@ pub const SCHEMA_VERSION: &str = "1.1";
 /// so that operators can see which secret was in use without leaking it.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigSummary {
+    /// Runner URL from the configuration.
     pub runner_url: String,
     /// Name of the bearer-token env var, or `null` when unauthenticated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
+    /// Concurrency limit from the configuration.
     pub max_concurrent_jobs: u32,
 }
 
@@ -66,8 +71,11 @@ pub struct RunProvenance {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OutcomeKind {
+    /// Constraint satisfied.
     Pass,
+    /// Constraint violated.
     Fail,
+    /// The Runner could not execute the job.
     InfraError,
 }
 
@@ -75,6 +83,7 @@ pub enum OutcomeKind {
 // Report DTO
 // ---------------------------------------------------------------------------
 
+/// The JSON report of one run (SRS-FUNC-009).
 #[derive(Serialize)]
 pub struct Report {
     /// JSON schema version. Always the first field in the serialized output.
@@ -85,24 +94,34 @@ pub struct Report {
     /// Id of the evidence manifest, relative to the run directory.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_manifest: Option<String>,
+    /// When the run's results were assembled, RFC 3339 UTC.
     pub timestamp: String,
+    /// `project.version` from the configuration.
     pub config_version: String,
     /// `true` when the run was cut short by SIGTERM or Ctrl-C.
     pub interrupted: bool,
+    /// Versions and configuration the run used (SRS-DATA-003).
     pub provenance: RunProvenance,
     /// The Runner-declared requirements and their preserved documents
     /// (SRS-FUNC-018).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discovery: Option<crate::baseline::DiscoveryRecord>,
+    /// Counts of specifications by outcome.
     pub summary: Summary,
+    /// One entry per specification.
     pub results: Vec<SpecReport>,
 }
 
+/// Counts of specifications by outcome.
 #[derive(Serialize)]
 pub struct Summary {
+    /// Specifications run.
     pub total: usize,
+    /// Specifications whose constraints all passed.
     pub passed: usize,
+    /// Specifications with a failed constraint.
     pub failed: usize,
+    /// Specifications whose job hit an infrastructure error.
     pub infra_errors: usize,
 }
 
@@ -117,23 +136,34 @@ impl Summary {
     }
 }
 
+/// Result of one specification.
 #[derive(Serialize)]
 pub struct SpecReport {
+    /// The ML-L requirement the specification verifies.
     pub requirement_uid: String,
+    /// `true` only when the outcome is `Pass`.
     pub passed: bool,
+    /// Outcome of the specification.
     pub outcome_kind: OutcomeKind,
+    /// What was run.
     pub target: TargetReport,
+    /// One entry per constraint.
     pub outcomes: Vec<OutcomeReport>,
     /// Ids of the evidence artefacts behind this result, listed in the manifest.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub evidence_ids: Vec<String>,
 }
 
+/// What a specification ran.
 #[derive(Serialize)]
 pub struct TargetReport {
+    /// Binary under test as given in the specification; empty when the Runner
+    /// configures it.
     pub binary: String,
+    /// Input file of the specification.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
+    /// Timeout of the job in seconds.
     pub timeout_secs: u64,
     /// Whether all repetitions of the job produced bit-identical outputs.
     ///
@@ -144,16 +174,26 @@ pub struct TargetReport {
     pub result_consistent: Option<bool>,
 }
 
+/// Result of one constraint.
 #[derive(Serialize)]
 pub struct OutcomeReport {
+    /// Wire name of the metric, e.g. `time.avg_ms`.
     pub metric: String,
+    /// Comparison operator, e.g. `<=`.
     pub operator: String,
+    /// Outcome of the constraint.
     pub outcome_kind: OutcomeKind,
+    /// `true` only when the outcome is `Pass`.
     pub passed: bool,
+    /// Measured value; NaN when nothing could be measured.
     pub actual: f64,
+    /// Threshold.
     pub expected: f64,
+    /// Unit of `actual` and `expected`, e.g. `ms`; empty for counts.
     pub unit: String,
+    /// Human-readable result.
     pub message: String,
+    /// Facts behind the result, e.g. the job id or an error code.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub evidence: HashMap<String, String>,
 }

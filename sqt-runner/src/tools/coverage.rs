@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! `coverage.line_pct`: line coverage of a gcov-instrumented binary, via lcov.
+
 use std::path::Path;
 use std::time::Duration;
 

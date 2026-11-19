@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Computation of the `ml.*` metrics from a job's outputs and the reference
+//! outputs of its specification.
+
 use std::collections::HashMap;
 
 use sqt_types::WorkloadType;

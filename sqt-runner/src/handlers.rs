@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! HTTP handlers of the contract operations: jobs, version, health and docs.
+
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context as _;
@@ -26,8 +28,11 @@ use crate::{
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
+    /// All jobs since startup, by id.
     pub store: JobStore,
+    /// Directory under which each job gets its own working directory.
     pub workspace: PathBuf,
+    /// The backend that executes jobs and describes the target.
     pub executor: Arc<dyn ExecutionBackend>,
     /// Limits concurrent job execution to one at a time (sequential queue).
     pub job_semaphore: Arc<Semaphore>,
@@ -46,6 +51,8 @@ pub struct AppState {
 // POST /api/v1/jobs
 // ---------------------------------------------------------------------------
 
+/// `POST /api/v1/jobs`: queue a job and return 202 with its id. The job
+/// runs in the background once the jobs before it have finished.
 pub async fn create_job(
     State(state): State<AppState>,
     Json(req): Json<JobRequest>,
@@ -162,6 +169,8 @@ pub async fn create_job(
 
 type NotFound = (StatusCode, Json<ErrorResponse>);
 
+/// `GET /api/v1/jobs/{job_id}`: the job's current status, metrics and
+/// output; 404 for an unknown id.
 pub async fn get_job(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
@@ -244,6 +253,8 @@ pub async fn get_job(
 // GET /api/v1/version
 // ---------------------------------------------------------------------------
 
+/// `GET /api/v1/version`: contract version, Runner version and the target
+/// description of the backend.
 pub async fn get_version(State(state): State<AppState>) -> Json<VersionResponse> {
     let descriptor = state.executor.describe();
     Json(VersionResponse {
@@ -312,6 +323,9 @@ pub async fn get_health(State(state): State<AppState>) -> (StatusCode, Json<Heal
 // GET /api/v1/docs
 // ---------------------------------------------------------------------------
 
+/// `GET /api/v1/docs`: the `.sdoc` files of the docs directory as documents
+/// and every other file as a base64 attachment; an empty set when no
+/// directory is configured (SRS-FUNC-018).
 pub async fn get_docs(State(state): State<AppState>) -> Response {
     // A Runner without documents declares no requirements: an empty set, not
     // an error (the contract defines only 200, 401 and 500 here).

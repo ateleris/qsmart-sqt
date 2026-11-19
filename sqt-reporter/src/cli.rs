@@ -37,6 +37,7 @@ pub struct Cli {
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
+    /// The command to run.
     #[command(subcommand)]
     pub command: Commands,
 }

@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! HTTP client for the Runner API: the four contract operations the
+//! Orchestrator performs (SRS-IF-001), with bearer authentication
+//! (SRS-IF-006), bounded retry (SRS-FUNC-020), polling with back-off
+//! (SRS-IF-003, SRS-PERF-003), response validation (SRS-IF-007) and a record
+//! of every response body for the evidence (SRS-FUNC-008).
+
 use std::{
     sync::Mutex,
     time::{Duration, Instant},
@@ -43,12 +49,15 @@ impl std::fmt::Display for Redacted {
 pub struct RecordedResponse {
     /// Contract operation: `get_version`, `get_docs`, `submit_job` or `get_job_status`.
     pub operation: &'static str,
+    /// Request URL.
     pub url: String,
+    /// HTTP status code.
     pub status: u16,
     /// RFC 3339 UTC time the body was received.
     pub received_at: String,
     /// The job the response belongs to, when known.
     pub job_id: Option<String>,
+    /// Response body as received.
     pub body: Vec<u8>,
 }
 
@@ -67,6 +76,7 @@ pub struct ClientOptions {
     /// Initial delay between job-status polls; doubles each poll up to
     /// `poll_interval_max_secs` (SRS-PERF-003).
     pub poll_interval_initial_secs: u64,
+    /// Upper bound for the delay between job-status polls.
     pub poll_interval_max_secs: u64,
     /// Upper bound on one HTTP request, body included.
     pub request_timeout_secs: u64,
@@ -144,6 +154,8 @@ impl Resend {
     }
 }
 
+/// Client for one Runner endpoint. Holds the bearer token, the retry and
+/// polling settings, and the responses received so far.
 #[derive(Debug)]
 pub struct ApiClient {
     client: reqwest::Client,
@@ -390,7 +402,7 @@ impl ApiClient {
     /// Submit a qualification job.
     ///
     /// Returns the `job_id` on success (202 Accepted). The submission is sent
-    /// again only when the Runner cannot have accepted it (see [`Resend`]).
+    /// again only when the Runner cannot have accepted it (see `Resend`).
     ///
     /// # Errors
     ///

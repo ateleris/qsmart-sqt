@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Running the binary under test: exit code, execution time, memory and CPU
+//! use, and its standard output.
+
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result};
@@ -9,13 +12,19 @@ use crate::config::{BinaryConfig, InputMode};
 
 /// Execution metrics produced by running the binary in a container.
 pub struct RunBinaryOutput {
+    /// Exit code; `None` if the container did not report one.
     pub return_code: Option<i64>,
     /// The binary's own execution time. When GNU time is available inside the
     /// container this is its "Elapsed (wall clock) time"; otherwise it falls
     /// back to the outer `docker run` wall clock.
     pub time_execution_ms: Option<f64>,
+    /// Peak resident set size in kilobytes, from GNU time.
     pub memory_peak_rss_kb: Option<f64>,
+    /// Average resident set size in kilobytes, from GNU time.
     pub memory_avg_rss_kb: Option<f64>,
+    /// CPU use as GNU time reports it ("Percent of CPU"); can exceed 100 % on
+    /// several cores. Reported as `cpu.avg_normalized_pct` without
+    /// normalisation (backlog F-M10).
     pub cpu_pct: Option<f64>,
     /// Harness/Docker overhead = outer `docker run` wall clock − inner elapsed
     /// time. `None` when GNU time was unavailable (no inner measurement to

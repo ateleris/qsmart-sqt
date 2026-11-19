@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! `static.critical_issues` and `static.major_issues`: issue counts from a
+//! `SonarQube` server.
+
 use anyhow::{Context, Result, bail};
 
 /// Query the `SonarQube` API for critical and major issues.

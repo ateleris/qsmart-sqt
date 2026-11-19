@@ -12,6 +12,9 @@ publish = false
 # pedantic group on top of the default lints, enforced as errors in CI
 # (`cargo clippy --workspace --all-targets -- -D warnings`). Suppressing a lint
 # in code takes `#[expect(clippy::..., reason = "...")]`.
+[workspace.lints.rust]
+missing_docs = "warn"
+
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"

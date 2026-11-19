@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The reference SQT Runner: an HTTP server implementing the Runner API
+//! contract (`job-api.openapi.yaml`) for development and end-to-end testing of
+//! the SQT without target hardware (SRS-INST-001).
+//!
+//! It runs the binary under test and the measurement tools in Docker
+//! containers, one job at a time, and serves the documents of a configured
+//! directory as the Runner's declared requirements. Its timing and memory
+//! figures are functional evidence, not normative for a target platform.
+
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{

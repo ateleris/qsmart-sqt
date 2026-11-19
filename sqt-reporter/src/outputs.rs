@@ -20,8 +20,11 @@ use crate::{
 /// Where the outputs of a run were written.
 #[derive(Debug)]
 pub struct RunOutputs {
+    /// The run directory.
     pub run_dir: PathBuf,
+    /// The JSON report in the run directory.
     pub report_json: PathBuf,
+    /// The QDP archive of the run.
     pub qdp: PathBuf,
 }
 

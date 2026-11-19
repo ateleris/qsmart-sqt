@@ -14,11 +14,16 @@ use sqt_types::DocsResponse;
 
 use crate::evidence::{EvidenceMeta, EvidenceStore};
 
+/// One `[REQUIREMENT]` block from a Runner-declared `StrictDoc` document.
 #[derive(Debug, Clone)]
 pub struct Requirement {
+    /// Requirement identifier (`UID:`).
     pub uid: String,
+    /// Requirement title (`TITLE:`).
     pub title: String,
+    /// Requirement status (`STATUS:`), as written in the document.
     pub status: String,
+    /// Verification methods from the `VERIFICATION:` field.
     pub verification_methods: Vec<String>,
 }
 
@@ -29,10 +34,15 @@ impl Requirement {
     }
 }
 
+/// The Runner-declared requirements, split by how they are verified.
 #[derive(Debug, Clone)]
 pub struct RequirementSet {
+    /// Requirements verified by test: each needs a test specification.
     pub testable: Vec<Requirement>,
+    /// Requirements with another verification method, recorded as compliant by
+    /// declaration.
     pub compliant_by_declaration: Vec<Requirement>,
+    /// Requirements without a verification method.
     pub unclassified: Vec<Requirement>,
 }
 
@@ -45,19 +55,27 @@ pub struct DiscoveryRecord {
     /// Evidence id of the raw `GET /api/v1/docs` response.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_evidence_id: Option<String>,
+    /// The requirement documents served, each preserved as evidence.
     pub documents: Vec<DiscoveredFile>,
+    /// The attachments served, each preserved as evidence.
     pub attachments: Vec<DiscoveredFile>,
+    /// Number of requirements verified by test.
     pub testable: usize,
+    /// Number of requirements with another verification method.
     pub compliant_by_declaration: usize,
+    /// Number of requirements without a verification method.
     pub unclassified: usize,
 }
 
 /// One document or attachment served by the Runner, preserved verbatim.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredFile {
+    /// File name as served by the Runner.
     pub filename: String,
+    /// Document title the Runner extracted, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// MIME type of an attachment; `None` for a requirement document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     /// Evidence id of the preserved file; `None` if it could not be written.
