@@ -10,6 +10,9 @@ SQT-SP-0001-ATS Issue 1 Rev 2 in
 (74 requirements; SRS-IF-004, -005 and -009 moved to SRS-FUNC-018, -019 and -020).
 Fixed items are marked **Fixed** with the commit and pull request; everything not
 marked is still open.
+**Status update**: 2026-11-19, after the release of `v0.1.0` (SQT-SW-0) at
+`6c5b2bb`. Items fixed for the release are marked; the follow-ups the release
+left are in "SQT-SW-0 release follow-ups" below.
 
 This is the actionable backlog from the review. Each item has an ID, severity,
 location, the SRS/contract reference it touches, and a fix direction. Items are
@@ -146,7 +149,9 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M4** Evidence not run-scoped; JSON report only written with `--output`
   (`main.rs:133`) though SRS-FUNC-009 says "shall produce"; successive runs
   overwrite `report.pdf`/`qdp.zip`/`traceability.*` (SRS-OPS-004). Fix: per-run
-  timestamped subdir; always write the JSON report.
+  timestamped subdir; always write the JSON report. **Fixed** in #22 (landed via
+  #28): every run writes into `runs/<run_id>/`, the JSON report always, with an
+  evidence manifest.
 - **F-M5** Runner resource leaks: per-job workspace dirs never cleaned up; job
   store grows unbounded with no eviction / queue-depth cap (`handlers.rs`,
   `store.rs`).
@@ -161,29 +166,37 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M9** Unit reconciliation is load-time only and aborts the run on an
   irreconcilable unit (`specs/loader.rs:137,146`) instead of failing that
   constraint with a message (SRS-FUNC-004); the evaluator itself is unit-blind.
+  **Fixed** in #21 (landed via #28): an irreconcilable unit fails that constraint
+  only.
 - **F-M10** `cpu.avg_normalized_pct` is raw GNU-time "Percent of CPU" (can exceed
   100%), not normalised as the field name and AD-015 promise
   (`run_binary.rs:90` → `executor/docker.rs:358`).
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
   parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
+  **Fixed** in #24: documents and attachments are kept verbatim under
+  `evidence/discovery/`; a failed fetch aborts the run before any job is submitted.
 
 ---
 
 ## Low
 
 - rustfmt CI gate is advisory (`continue-on-error: true`) — contradicts
-  SRS-QUAL-002 / SRS-CDR-003 "any gate blocks". Make it blocking.
+  SRS-QUAL-002 / SRS-CDR-003 "any gate blocks". Make it blocking. **Fixed** in
+  #19; `main` is protected with rustfmt, clippy, supply-chain and test required.
 - No release tags exist; SRS-CDR-001 (tagged immutable releases) and the
-  tag-traceable version in SRS-DATA-003 are currently unsatisfiable.
+  tag-traceable version in SRS-DATA-003 are currently unsatisfiable. **Fixed**:
+  `v0.1.0`, annotated and signed, released 2026-11-19.
 - No infrastructure-failure end-to-end test (SRS-VAL-001); INFRA_ERROR is only
-  unit-tested.
+  unit-tested. **Fixed** in #26: `sqt-runner/tests/e2e_test.rs` runs pass, fail and
+  infrastructure error against the real reference Runner, in CI and at every tag.
 - No bounded-memory strategy for large payloads (SRS-RES-003) — everything is
   buffered whole.
 - SIGTERM handler does not stop the submission loop or cancel in-flight jobs
   server-side (SRS-OPS-008 partial); no cancel operation exists in the API.
 - `sqt-reporter/src/metrics/` legacy collector tree is unwired dead code — delete
-  to keep the qualification surface honest (relevant to SRS-PORT-002).
+  to keep the qualification surface honest (relevant to SRS-PORT-002). **Fixed**
+  in #20 (landed via #28); only the target descriptor remains in `metrics/`.
 - `queue_position` hardcoded to 1 (`handlers.rs:148,215`) though jobs genuinely
   queue behind the runner's `Semaphore(1)`.
 
@@ -216,6 +229,65 @@ or gains bounded parallelism; document the chosen bound.
 than nested under `runner.auth`. The architecture now documents the flat form as
 the target, so this is cosmetic — close U-001's remainder and U-008 (`api/` →
 `runner_api/`) as "won't do" unless there's a reason.
+
+### D-4 — Level-C objectives for SRS-GEN-002
+SRS-GEN-002 asks the SQT to enable qualification of the ML-L to ECSS level C.
+At SQT-SW-0 it is inspected as "partly fulfilled, as planned", because no list
+of the level-C objectives the SQT must cover exists yet. Derive that list from
+SoW Annex A R06 and negotiation minutes Annex 1 Item 5, so later releases can
+verify GEN-002 against it instead of by judgement.
+
+---
+
+## SQT-SW-0 release follow-ups (2026-11-19)
+
+Left open by the `v0.1.0` release. The documents named here are in
+[`qsmart-sqt-documentation`](https://github.com/ateleris/qsmart-sqt-documentation).
+
+- **R-1** Sign-offs for SQT-SW-0. The TRR record
+  (`doc/reviews/SQT-SW-0_TRR.md`) needs its date, participants, go/no-go and
+  signature. The inspection and analysis notes (docs PR #6) need sign-off by a
+  non-author: someone other than Manuel Stutz for CDR-001, DES-001, DES-002,
+  DES-003 and PORT-002; someone other than Laszlo Etesi for GEN-001 and GEN-002.
+- **R-2** The document cover still says "All rights reserved. Proprietary and
+  confidential.", although the SoW (Appendix 1, §3.4) distributes SQT-SW-N
+  including its documentation under ESA-PL Permissive v2.4 (SRS-DES-002). The
+  fix is docs PR #7; merge it after the PDR and reissue the documents at their
+  next issue.
+- **R-3** The CIDL does not list the software release. It is generated from
+  `project_config.yml`, and `external_cis` has no field for a tag or commit.
+  Either add SQT-SW-0 there with the tag and commit in the title, or extend the
+  generator in `baseline`. SQT-TN-AP records source as "commit identifier;
+  release tag" in the CIDL.
+- **R-4** `ci/release-notes.py` says each image must load with the ID in
+  `IMAGES.txt`. That only holds on Docker's containerd image store; the classic
+  store shows the config digest. The SRelD I1R1 lists both IDs. Fix the wording,
+  or write both IDs into `IMAGES.txt`.
+- **R-5** `IMAGES.txt` of `v0.1.0` does not record the Docker Engine version of
+  the build. The line that adds it is in PR #31, which is not merged. Take it
+  over independently of GHCR.
+- **R-6** PR #31 (push images to GHCR) is blocked by the org package permission
+  and is based on `main` from before the 2026-11-19 rewrite. Rebase it once the
+  permission is granted, or close it. Not needed for delivery: the images are
+  release assets.
+- **R-7** cargo-audit warnings at `v0.1.0`, allowed by policy: `chrono`
+  unmaintained (RUSTSEC-2026-0543) and `unsafe-libyaml` unmaintained
+  (RUSTSEC-2024-0449), both in the delivered binaries; `rustix` unsound in
+  `xattr` (RUSTSEC-2026-0486), test dependency only through `tempfile`. Look for
+  maintained replacements before SQT-SW-1.
+- **R-8** The SRS defines the `Generic` allocation as "constrains the
+  Orchestrator-Runner API contract itself" (SRS-GEN-001 and the attribute
+  table), but 13 of the 21 `Generic` requirements constrain the SQT or the
+  project as a whole: GEN-001, GEN-002, FUNC-005, FUNC-022, DES-002, DES-003,
+  QUAL-001, QUAL-002, QUAL-003, CDR-003, CDR-004, DATA-002, VAL-001. Proposal:
+  widen the definition to "the Runner API contract, or the SQT and its delivery
+  as a whole". This is an SRS change, so it goes to the ESA Technical Officer
+  and the ML-L role at the SQT-SW-1 release planning (SQT-TN-AP, change
+  control).
+- **R-9** Known limitations of `v0.1.0` carried into SQT-SW-1, as recorded in the
+  SRelD: FUNC-019 fan-out (F-M7), `repetitions` not sent (IF-002, F-M6), OpenAPI
+  range and pattern validation (IF-007), Runner-declared metrics (FUNC-006,
+  issue #17, D-1).
 
 ---
 
