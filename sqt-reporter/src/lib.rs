@@ -4,6 +4,7 @@
 pub mod accuracy;
 pub mod api;
 pub mod baseline;
+pub mod cli;
 pub mod config;
 pub mod constraint;
 pub mod evidence;

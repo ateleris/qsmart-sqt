@@ -170,7 +170,10 @@ impl ApiClient {
             HeaderValue::from_str(&format!("Bearer {tok}"))
                 .context("API token contains invalid header characters")?;
         }
+        // The SQT contacts only the configured Runner endpoint (SRS-RES-002):
+        // a redirect to another location is not followed but fails the request.
         let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(Duration::from_secs(options.request_timeout_secs.max(1)))
             .build()
@@ -238,11 +241,23 @@ impl ApiClient {
         let mut attempt = 0u32;
         loop {
             let can_retry = attempt < self.options.retry_max;
+            tracing::trace!(operation, url, attempt, "Runner request");
             let outcome = match self.auth(build()).send().await {
                 Ok(resp) => {
                     let status = resp.status();
                     match resp.bytes().await {
-                        Ok(body) => Ok((status, body.to_vec())),
+                        Ok(body) => {
+                            // The most verbose level logs every response
+                            // payload (SRS-OPS-002).
+                            tracing::trace!(
+                                operation,
+                                url,
+                                status = status.as_u16(),
+                                payload = %String::from_utf8_lossy(&body),
+                                "Runner response"
+                            );
+                            Ok((status, body.to_vec()))
+                        }
                         Err(e) => Err((e, resend.retries_body_error())),
                     }
                 }
@@ -358,6 +373,12 @@ impl ApiClient {
     /// responds with a non-success status.
     pub async fn submit_job(&self, request: &JobRequest) -> Result<String> {
         let url = format!("{}/api/v1/jobs", self.base_url);
+        // The only operation with a request payload; logged at the most
+        // verbose level (SRS-OPS-002).
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let payload = serde_json::to_string(request).unwrap_or_default();
+            tracing::trace!(operation = "submit_job", url, payload, "Runner request payload");
+        }
         let (status, body) = self
             .send("submit_job", &url, None, Resend::OnlyIfNotAccepted, || {
                 self.client.post(&url).json(request)
