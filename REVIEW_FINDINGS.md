@@ -269,10 +269,13 @@ Left open by the `v0.1.0` release. The documents named here are in
   the build. The line that adds it is in PR #31, which is not merged. Take it
   over independently of GHCR. **Fixed** in the `image-records` PR, with the
   image store of the build.
-- **R-6** PR #31 (push images to GHCR) is blocked by the org package permission
-  and is based on `main` from before the 2026-11-19 rewrite. Rebase it once the
-  permission is granted, or close it. Not needed for delivery: the images are
-  release assets.
+- **R-6** Publishing the images to GHCR. The old PR #31 was closed: it was
+  based on `main` from before the 2026-11-19 rewrite. Its workflow is carried
+  over, adapted to the three-field `IMAGES.txt`, in the `ghcr-images` PR. Still
+  needed before it can push: an org admin grants `ateleris/qsmart-sqt` write
+  access to container packages (GHCR answered `denied` on 2026-10-30 although
+  the login succeeded), and the packages are made public. Not needed for
+  delivery: the images are release assets.
 - **R-7** cargo-audit warnings at `v0.1.0`, allowed by policy: `chrono`
   unmaintained (RUSTSEC-2026-0543) and `unsafe-libyaml` unmaintained
   (RUSTSEC-2024-0449), both in the delivered binaries; `rustix` unsound in

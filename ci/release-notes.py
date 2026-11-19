@@ -155,6 +155,11 @@ def main() -> int:
         if engine:
             out += ["", f"Built with Docker Engine {engine.group(1)}, "
                     f"{engine.group(2)} image store."]
+        out += ["", "When this release is published, the same images are pushed to "
+                f"`ghcr.io/ateleris/<image>:{version}` "
+                "(`publish-images.yml` workflow), and `GHCR.txt`, attached to "
+                "the release, lists their registry digests. The release assets remain "
+                "the formal delivery."]
     out += [
         "",
         "Verify the downloads with `sha256sum -c SHA256SUMS`. These release notes are "
