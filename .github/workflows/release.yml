@@ -2,7 +2,8 @@ name: Release
 
 # Runs on a pushed version tag. Re-runs every gate, then builds the static
 # binaries, the two container images, the SBOMs and the source archive,
-# records their SHA-256 values and opens a *draft* GitHub release with them.
+# records their SHA-256 values, writes the release notes (ci/release-notes.py)
+# and opens a *draft* GitHub release with them.
 # The draft is published by hand after review.
 on:
   push:
@@ -92,20 +93,41 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The git history is read here, on the runner, because the build image
+      # has no git; the notes themselves are written inside the image.
+      - name: Changes since the previous release
+        id: changes
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$tag^" 2>/dev/null || true)
+          range="$tag"
+          [ -n "$previous" ] && range="$previous..$tag"
+          git log --first-parent --merges --format='%s%x00%b%x1e' "$range" > release-changes.txt
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes
+        uses: ./.github/actions/ci-docker
+        with:
+          run: >-
+            python3 ci/release-notes.py
+            --tag "${{ github.ref_name }}" --commit "${{ github.sha }}"
+            --epoch "${{ steps.tag.outputs.epoch }}"
+            --previous "${{ steps.changes.outputs.previous }}"
+            --changes release-changes.txt
+            --matrix fulfilment-matrix.json --coverage coverage-orchestrator.json
+            --sums dist/SHA256SUMS --images dist/IMAGES.txt
+            --out "dist/RELEASE_NOTES-${{ steps.tag.outputs.version }}.md"
+
       - name: Draft GitHub release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           name: SQT ${{ github.ref_name }}
-          body: |
-            Software Qualification Toolkit ${{ github.ref_name }}.
-
-            Verify each asset with `sha256sum -c SHA256SUMS`. Image IDs are listed in
-            `IMAGES.txt`. Release content, tools and known limitations are in the
-            Software Release Document (SQT-RP-0002-ATS).
+          body_path: dist/RELEASE_NOTES-${{ steps.tag.outputs.version }}.md
           files: |
             dist/*.tar.gz
             dist/*.cdx.json
             dist/fulfilment-matrix-*
             dist/SHA256SUMS
             dist/IMAGES.txt
+            dist/RELEASE_NOTES-*.md
