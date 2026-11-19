@@ -254,12 +254,15 @@ Left open by the `v0.1.0` release. The documents named here are in
   confidential.", although the SoW (Appendix 1, §3.4) distributes SQT-SW-N
   including its documentation under ESA-PL Permissive v2.4 (SRS-DES-002). The
   fix is docs PR #7; merge it after the PDR and reissue the documents at their
-  next issue.
+  next issue. **Fixed** in docs #7 (merged 2026-11-19); the documents carry the
+  new line from their next issue.
 - **R-3** The CIDL does not list the software release. It is generated from
   `project_config.yml`, and `external_cis` has no field for a tag or commit.
   Either add SQT-SW-0 there with the tag and commit in the title, or extend the
   generator in `baseline`. SQT-TN-AP records source as "commit identifier;
-  release tag" in the CIDL.
+  release tag" in the CIDL. **Fixed** in docs #8: SQT-SW-0 is an external CI
+  with tag and commit in its title. Its section heading reads "SW - SW" until
+  `SW` is added to `DOC_TYPE_REGISTRY` in the baseline.
 - **R-4** `ci/release-notes.py` says each image must load with the ID in
   `IMAGES.txt`. That only holds on Docker's containerd image store; the classic
   store shows the config digest. The SRelD I1R1 lists both IDs. Fix the wording,
@@ -271,7 +274,7 @@ Left open by the `v0.1.0` release. The documents named here are in
   image store of the build.
 - **R-6** Publishing the images to GHCR. The old PR #31 was closed: it was
   based on `main` from before the 2026-11-19 rewrite. Its workflow is carried
-  over, adapted to the three-field `IMAGES.txt`, in the `ghcr-images` PR. Still
+  over, adapted to the three-field `IMAGES.txt`, in #36 (merged). Still
   needed before it can push: an org admin grants `ateleris/qsmart-sqt` write
   access to container packages (GHCR answered `denied` on 2026-10-30 although
   the login succeeded), and the packages are made public. Not needed for
@@ -294,6 +297,61 @@ Left open by the `v0.1.0` release. The documents named here are in
   SRelD: FUNC-019 fan-out (F-M7), `repetitions` not sent (IF-002, F-M6), OpenAPI
   range and pattern validation (IF-007), Runner-declared metrics (FUNC-006,
   issue #17, D-1).
+
+---
+
+## SQT-SW-1 plan (2026-11-19)
+
+SQT-SW-1 is `v0.2.0`, reviewed at the project-level CDR (about T0+8M, date to
+be agreed with ESA after the PDR). Its SRS group per SQT-TN-AP: FUNC-005, 006,
+010..015, 021..023; PERF-001..004; REL-001..004; OPS-001..008; HF-001, 002;
+DATA-001..003; RES-001..003; MAINT-001, 002 (37 requirements). Delivery focus:
+metric collectors, traceability matrix, verification-activity triggering,
+operator guidance, performance and reliability; the fulfilment matrix becomes
+authoritative.
+
+State on `dev` at `88db294`, from the test metadata against SRS I1R2 (a
+requirement "has tests" when a test names it):
+
+| State | Requirements |
+|---|---|
+| Has tests (20) | FUNC-005, 010; PERF-001..004; REL-001..004; OPS-001, 005, 006, 008; DATA-001..003; RES-001 |
+| Implemented, no test names it | OPS-002 (verbosity), OPS-003 (end-of-run summary), OPS-007 (pre-flight), RES-002 (no implicit network access), HF-001 (self-discoverable interface) |
+| Feature work | FUNC-006 (Runner-declared metrics, issue #17, D-1); FUNC-011, 013 (configuration-driven run, no manual steps); FUNC-014, 015 (verification activities through the Runner API, needs a contract change); FUNC-021..023 (API profile, representative workloads, profile coverage); RES-003 (bounded memory); HF-002 (end-user operability) |
+| Verified by a note | Analysis: FUNC-006, MAINT-001, MAINT-002. Inspection: FUNC-015, OPS-004 |
+| SRS defect | FUNC-012 and FUNC-016 have no verification method |
+
+Steps, in this order:
+
+- **P-1** Quick wins: write or tag the tests for OPS-002, OPS-003, OPS-007,
+  RES-002 and HF-001.
+- **P-2** Make the fulfilment matrix authoritative: run `ci/fulfilment-matrix.py`
+  with `--srs` in CI, against the SRS of the docs repository at a pinned tag,
+  so every requirement without a passing test shows up on each push.
+- **P-3** Carry-overs and robustness: IF-002 `repetitions` together with the
+  Runner repetition loop (F-M6); FUNC-019 fan-out (F-M7); F-M1, F-M5, F-M10;
+  SIGTERM cancelling in-flight jobs (OPS-008); `queue_position`; R-7.
+- **P-4** Features, after the PDR outcome and the release planning: FUNC-006
+  (#17); FUNC-014/015 with the contract change; FUNC-021..023; FUNC-011, 013;
+  RES-003; HF-002.
+- **P-5** Notes for the analysis and inspection requirements above, signed off
+  by a non-author.
+
+Process for SQT-SW-1, not code:
+
+- Release planning with ESA and the ML-L role (SQT-TN-AP rolling outlook).
+  SRS change requests to raise there: R-8 (`Generic` allocation) and the
+  missing verification methods of FUNC-012 and FUNC-016.
+- TRR at the start and the end of the release; lightweight CDR.
+- ADD and SUM kept current with each feature (Definition of Done).
+- Branching: work now goes to `dev` and reaches `main` at a release, with the
+  release tag on `main`. SQT-TN-AP describes trunk-based development (feature
+  branches into `main`), so describe the `dev` branch at its next issue.
+  Protect `dev` like `main` if PRs into it should require green checks.
+
+Afterwards, SQT-SW-2 (`v1.0.0`, QR): FUNC-016, 017 (implemented, tested),
+CDR-004 (complete SUM and documentation), VAL-001, 002, and end-to-end QDP
+generation on GR740 and GR765/NOEL-V emulation through target Runners.
 
 ---
 
