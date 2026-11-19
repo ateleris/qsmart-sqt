@@ -262,10 +262,12 @@ Left open by the `v0.1.0` release. The documents named here are in
 - **R-4** `ci/release-notes.py` says each image must load with the ID in
   `IMAGES.txt`. That only holds on Docker's containerd image store; the classic
   store shows the config digest. The SRelD I1R1 lists both IDs. Fix the wording,
-  or write both IDs into `IMAGES.txt`.
+  or write both IDs into `IMAGES.txt`. **Fixed** in the `image-records` PR:
+  `IMAGES.txt` records both digests and the notes explain which one applies.
 - **R-5** `IMAGES.txt` of `v0.1.0` does not record the Docker Engine version of
   the build. The line that adds it is in PR #31, which is not merged. Take it
-  over independently of GHCR.
+  over independently of GHCR. **Fixed** in the `image-records` PR, with the
+  image store of the build.
 - **R-6** PR #31 (push images to GHCR) is blocked by the org package permission
   and is based on `main` from before the 2026-11-19 rewrite. Rebase it once the
   permission is granted, or close it. Not needed for delivery: the images are

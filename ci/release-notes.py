@@ -27,6 +27,7 @@ from pathlib import Path
 
 PR_MERGE = re.compile(r"^Merge pull request #(\d+) from [^/\s]+/(\S+)$")
 TOOLCHAIN = re.compile(r'^channel\s*=\s*"([^"]+)"', re.MULTILINE)
+ENGINE = re.compile(r"^# Docker Engine (\S+), (\w+) image store$", re.MULTILINE)
 COVERAGE_GATE = 80
 
 
@@ -94,8 +95,10 @@ def main() -> int:
     matrix = json.loads(args.matrix.read_text())
     lines_cov = json.loads(args.coverage.read_text())["data"][0]["totals"]["lines"]
     sums = [line.split(None, 1) for line in args.sums.read_text().splitlines() if line.strip()]
-    images = [line.split() for line in args.images.read_text().splitlines()
+    images_text = args.images.read_text()
+    images = [line.split() for line in images_text.splitlines()
               if line.strip() and not line.startswith("#")]
+    engine = ENGINE.search(images_text)
 
     out = [
         f"# SQT {args.tag}",
@@ -138,9 +141,20 @@ def main() -> int:
     ]
     out += [f"| `{name.lstrip('*')}` | `{digest}` |" for digest, name in sums]
     if images:
-        out += ["", "Container images (`docker load -i <archive>`), with the image ID "
-                "each must load as (`IMAGES.txt`):", ""]
-        out += [f"- `{ref}`: `{image_id}`" for ref, image_id in images]
+        out += ["", "Container images, installed with `docker load -i <archive>`. "
+                "`docker image inspect --format '{{.Id}}' <image>` must show one of the "
+                "values below: the image ID on a Docker daemon with the same image store "
+                "as the build, or the configuration digest on a daemon with the classic "
+                "image store (`IMAGES.txt`):", ""]
+        for fields in images:
+            ref, image_id = fields[0], fields[1]
+            line = f"- `{ref}`: image ID `{image_id}`"
+            if len(fields) > 2 and fields[2] != image_id:
+                line += f", configuration digest `{fields[2]}`"
+            out.append(line)
+        if engine:
+            out += ["", f"Built with Docker Engine {engine.group(1)}, "
+                    f"{engine.group(2)} image store."]
     out += [
         "",
         "Verify the downloads with `sha256sum -c SHA256SUMS`. These release notes are "
