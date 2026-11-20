@@ -246,6 +246,23 @@ impl ApiClient {
     /// or if a token is given for a URL that may not carry it
     /// ([`check_token_transport`], SRS-IF-010).
     pub fn new(base_url: &str, token: Option<&str>, options: ClientOptions) -> Result<Self> {
+        Self::with_ca_cert(base_url, token, options, None)
+    }
+
+    /// Create a new `ApiClient` that also trusts the CA certificate(s) in
+    /// `ca_cert_pem` (PEM) when it verifies the Runner's HTTPS certificate, for
+    /// a Runner whose certificate comes from a private CA (SRS-IF-010). The
+    /// certificate is always verified; there is no way to turn that off.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`], and if `ca_cert_pem` is not a PEM certificate.
+    pub fn with_ca_cert(
+        base_url: &str,
+        token: Option<&str>,
+        options: ClientOptions,
+        ca_cert_pem: Option<&[u8]>,
+    ) -> Result<Self> {
         // Validate the token up-front so `new` fails fast on bad characters.
         if let Some(tok) = token {
             HeaderValue::from_str(&format!("Bearer {tok}"))
@@ -261,6 +278,13 @@ impl ApiClient {
         if !env_proxy_allowed(base_url) {
             // Plain HTTP goes straight to the local Runner (SRS-IF-010).
             builder = builder.no_proxy();
+        }
+        if let Some(pem) = ca_cert_pem {
+            for cert in reqwest::Certificate::from_pem_bundle(pem)
+                .context("the Runner CA certificate is not a valid PEM certificate")?
+            {
+                builder = builder.add_root_certificate(cert);
+            }
         }
         let client = builder.build().context("Failed to build HTTP client")?;
         Ok(Self {

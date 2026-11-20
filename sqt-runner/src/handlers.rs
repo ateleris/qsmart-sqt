@@ -67,13 +67,15 @@ pub async fn create_job(
     validate_request(&req)?;
     let job_id = Uuid::new_v4().to_string();
 
-    let job = store::JobState::new(job_id.clone(), &req);
-    let created_at = job.created_at.clone();
-
-    let queue_position = {
+    // The job's place in the queue is taken under the store's write lock, so
+    // the submission order and the reported queue positions agree even for
+    // simultaneous submissions.
+    let (created_at, queue_position) = {
         let mut store = state.store.write().await;
+        let job = store::JobState::new(job_id.clone(), &req);
+        let created_at = job.created_at.clone();
         store.insert(job_id.clone(), job);
-        store::queue_position(&store, &job_id).unwrap_or(1)
+        (created_at, store::queue_position(&store, &job_id).unwrap_or(1))
     };
 
     tracing::info!(
@@ -95,9 +97,9 @@ pub async fn create_job(
     let id = job_id.clone();
 
     tokio::spawn(async move {
-        // Wait for an execution slot.  The permit is held for the duration of
-        // the job and dropped automatically when this block exits.
-        let _permit = semaphore.acquire().await.expect("semaphore closed");
+        // Wait for an execution slot. The permit is held while the job runs
+        // and its result is stored, then released before the clean-up.
+        let permit = semaphore.acquire().await.expect("semaphore closed");
 
         {
             let mut s = store.write().await;
@@ -123,15 +125,10 @@ pub async fn create_job(
         let result = tokio::task::spawn_blocking({
             let workspace = workspace.clone();
             let req = req.clone();
+            let executor = executor.clone();
             move || executor.execute(&req, &workspace)
         })
         .await;
-
-        // The metrics and output are in memory now; the working directory
-        // only holds tool output (backlog F-M5).
-        if !keep_workspace && let Err(e) = std::fs::remove_dir_all(&workspace) {
-            tracing::warn!(job_id = %id, error = %e, "could not remove the job workspace");
-        }
 
         let mut s = store.write().await;
         if let Some(job) = s.get_mut(&id) {
@@ -168,13 +165,39 @@ pub async fn create_job(
         if evicted > 0 {
             tracing::debug!(evicted, "dropped the oldest finished jobs from the store");
         }
-        // _permit dropped here — next queued job can acquire the semaphore.
+        drop(s);
+        // The result is stored; the next queued job may start.
+        drop(permit);
+
+        if !keep_workspace {
+            remove_workspace(executor, workspace, &id).await;
+        }
     });
 
     Ok((
         StatusCode::ACCEPTED,
         Json(JobAccepted { job_id, status: "accepted".into(), queue_position, created_at }),
     ))
+}
+
+/// Remove a finished job's working directory. The metrics and output are in
+/// memory by then; the directory only holds tool output (backlog F-M5).
+/// Removing it can take a while and may need a container, so it runs on a
+/// blocking thread. A failure is logged, not fatal.
+async fn remove_workspace(
+    executor: Arc<dyn ExecutionBackend>,
+    workspace: std::path::PathBuf,
+    id: &str,
+) {
+    match tokio::task::spawn_blocking(move || executor.remove_workspace(&workspace)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(
+            job_id = %id,
+            error = format!("{e:#}"),
+            "could not remove the job workspace"
+        ),
+        Err(e) => tracing::warn!(job_id = %id, error = %e, "workspace removal panicked"),
+    }
 }
 
 /// Refuse a job request outside the contract's bounds and the Runner's limits.

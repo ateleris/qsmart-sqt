@@ -31,6 +31,11 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
+# HTTPS listener (SRS-IF-010): rustls with the ring provider, as reqwest uses;
+# no OpenSSL, so the static musl build stays self-contained.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 
 [dev-dependencies]
 sqt-reporter = { path = "../sqt-reporter" }
@@ -38,6 +43,7 @@ tokio-util = "0.7"
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 
 [lints]
 workspace = true

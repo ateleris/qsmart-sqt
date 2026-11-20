@@ -161,14 +161,14 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   evidence manifest.
 - **F-M5** Runner resource leaks: per-job workspace dirs never cleaned up; job
   store grows unbounded with no eviction / queue-depth cap (`handlers.rs`,
-  `store.rs`). **Fixed** in the runner-robustness PR: a job's working
+  `store.rs`). **Fixed** in #44: a job's working
   directory is removed when it finishes (`keep_job_workspaces: true` keeps
   it), and only the newest `max_finished_jobs` finished jobs (default 1000)
   stay in the store; an evicted job answers 404 `JOB_NOT_FOUND`. Waiting jobs
   are not capped.
 - **F-M6** Runner ignores `repetitions` / `warmup_repetitions` / `mode` — binary
   runs once, `mode` always echoed `latency` (`handlers.rs:221`). `time.avg_ms` is a
-  single sample despite the name. **Fixed** in the `repetitions` PR, together with
+  single sample despite the name. **Fixed** in #45, together with
   IF-002 on the Orchestrator side: a spec's `repetitions`, `warmup_repetitions`
   and `mode` are sent; the Runner runs the warm-up runs, then the measured runs,
   all within the job timeout, and reports the mean, the p50/p95/p99 latencies, the
@@ -189,9 +189,10 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M10** `cpu.avg_normalized_pct` is raw GNU-time "Percent of CPU" (can exceed
   100%), not normalised as the field name and AD-015 promise
   (`run_binary.rs:90` → `executor/docker.rs:358`). **Fixed** in the
-  runner-robustness PR: divided by the core count (the configured
-  `hardware.cores`, else the CPUs available to the Runner) and clamped to
-  0..100, as the contract defines it.
+  runner-robustness PR: divided by the core count and clamped to 0..100, as
+  the contract defines it. Since C-5 the count is the configured
+  `hardware.cores` if set (the count the Runner reports), else the CPUs of the
+  Docker host that measured, else the Runner's own.
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
   parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
@@ -287,11 +288,11 @@ Left open by the `v0.1.0` release. The documents named here are in
 - **R-4** `ci/release-notes.py` says each image must load with the ID in
   `IMAGES.txt`. That only holds on Docker's containerd image store; the classic
   store shows the config digest. The SRelD I1R1 lists both IDs. Fix the wording,
-  or write both IDs into `IMAGES.txt`. **Fixed** in the `image-records` PR:
+  or write both IDs into `IMAGES.txt`. **Fixed** in #34:
   `IMAGES.txt` records both digests and the notes explain which one applies.
 - **R-5** `IMAGES.txt` of `v0.1.0` does not record the Docker Engine version of
   the build. The line that adds it is in PR #31, which is not merged. Take it
-  over independently of GHCR. **Fixed** in the `image-records` PR, with the
+  over independently of GHCR. **Fixed** in #34, with the
   image store of the build.
 - **R-6** Publishing the images to GHCR. The old PR #31 was closed: it was
   based on `main` from before the 2026-11-19 rewrite. Its workflow is carried
@@ -341,13 +342,12 @@ metric collectors, traceability matrix, verification-activity triggering,
 operator guidance, performance and reliability; the fulfilment matrix becomes
 authoritative.
 
-State on `dev` at `88db294`, from the test metadata against SRS I1R2 (a
-requirement "has tests" when a test names it):
+State on `dev` at `f9c5639` (2026-11-20, after #38 to #47), from the test
+metadata against SRS I1R2 (a requirement "has tests" when a test names it):
 
 | State | Requirements |
 |---|---|
-| Has tests (20) | FUNC-005, 010; PERF-001..004; REL-001..004; OPS-001, 005, 006, 008; DATA-001..003; RES-001 |
-| Implemented, no test names it | OPS-002 (verbosity), OPS-003 (end-of-run summary), OPS-007 (pre-flight), RES-002 (no implicit network access), HF-001 (self-discoverable interface). **Done** in #38 (P-1). |
+| Has tests (23 of the 32 Test requirements) | FUNC-005, 010; PERF-001..004; REL-001..004; OPS-001, 002, 003, 005, 006, 007, 008; DATA-001..003; RES-001, 002; HF-001 |
 | Feature work | FUNC-006 (Runner-declared metrics, issue #17, D-1); FUNC-011, 012, 013 (configuration-driven run, operator guidance, no manual steps); FUNC-014, 015 (verification activities through the Runner API, needs a contract change); FUNC-021..023 (API profile, representative workloads, profile coverage); RES-003 (bounded memory); HF-002 (end-user operability) |
 | Verified by a note | Analysis: FUNC-006, MAINT-001, MAINT-002. Inspection: FUNC-015, OPS-004 |
 
@@ -363,7 +363,7 @@ Steps, in this order:
 - **P-2** Make the fulfilment matrix authoritative: run `ci/fulfilment-matrix.py`
   with `--srs` in CI, against the SRS of the docs repository at a pinned tag,
   so every requirement without a passing test shows up on each push.
-  **Done** in the `p2-requirements-list` PR, with a requirement list instead of
+  **Done** in #39, with a requirement list instead of
   the SRS: the docs repository is private, and a release must build from a
   clean clone without secrets (SRS-CDR-002). `ci/requirements.csv` holds UID,
   title, verification method and planned release, generated from the SRS and
@@ -374,11 +374,95 @@ Steps, in this order:
 - **P-3** Carry-overs and robustness: IF-002 `repetitions` together with the
   Runner repetition loop (F-M6); FUNC-019 fan-out (F-M7); F-M1, F-M5, F-M10;
   SIGTERM cancelling in-flight jobs (OPS-008); `queue_position`; R-7.
+  **Done** except R-7: #43 (fan-out), #44 (F-M1, F-M5, F-M10, `queue_position`),
+  #45 (repetitions), with the review fixes #46 and #47. The SIGTERM item is
+  replaced by C-3 below: SRS-OPS-008 does not require cancellation, so no
+  contract change is needed. Still open from the reviews: the findings of #44
+  (C-5).
 - **P-4** Features, after the PDR outcome and the release planning: FUNC-006
   (#17); FUNC-014/015 with the contract change; FUNC-021..023; FUNC-011, 013;
   RES-003; HF-002.
 - **P-5** Notes for the analysis and inspection requirements above, signed off
   by a non-author.
+
+### Conformance check against the SRS and the ADD (2026-11-20)
+
+The changes of #38 to #47 were checked against SRS I1R2 and the ADD (SQT-ADD,
+docs tag `pdr`), which are authoritative. They conform: OPS-002, OPS-003 (the
+part covering completed runs), OPS-007 (the part covering requirements,
+reachability and authentication), RES-002, HF-001, IF-002, IF-010 (the
+Orchestrator side), FUNC-019, REL-002, REL-004, PERF-004 and DATA-001, and the
+ADD components C-ORC-03 and C-ORC-04 that carry them. REL-004 holds as the ADD
+designs it: the Runner compares the runs' outputs, the Orchestrator only
+records the Runner's `result_consistent`. The check found these deviations,
+none caused by the recent changes:
+
+- **C-1, pre-flight does not negotiate the contract version.** ADD LLR-017:
+  pre-flight "validates the configuration, negotiates the contract version,
+  fetches the Runner-declared requirements and confirms endpoint reachability
+  and authentication". `preflight::preflight` fetches `/version` but does not
+  apply the major-version check (SRS-IF-008) that a full run applies. Fix: run
+  the same check in pre-flight. **Fixed** in #48: pre-flight reports
+  "[FAIL] incompatible contract version" and fails.
+- **C-2, no summary after an aborted run.** SRS-OPS-003 and ADD LLR-031: a
+  summary of each specification's pass, fail or blocked state, the counts and
+  the evidence location "at the conclusion of every run regardless of
+  outcome". A run that stops before evaluation (contract version mismatch,
+  failed requirement discovery) prints only "Run failed; evidence in …". Fix:
+  print the summary with every specification as blocked. **Fixed** in #48: such
+  a run writes its report and prints the summary with every specification
+  BLOCKED, one outcome per declared constraint, the counts, the evidence
+  location and the reason; the exit status stays 1.
+- **C-3, a termination signal abandons the running jobs.** SRS-OPS-008 and the
+  ADD (C-ORC-04): stop submitting, then "await completion or acknowledged
+  cancellation of in-flight jobs". On a signal the Orchestrator stops polling
+  and records the in-flight jobs as interrupted while the Runner keeps
+  running them, which is neither. Fix: on the first signal stop submitting
+  and keep polling the in-flight jobs to completion (each bounded by its job
+  timeout, SRS-PERF-004); a second signal stops at once. This needs no contract
+  change; a cancel operation stays optional. **Fixed** in #48: the first signal
+  stops submissions and awaits the running jobs, which are evaluated; a second
+  signal stops waiting; the run exits 2.
+- **C-4, the reference Runner serves plain HTTP.** SRS-IF-010 (allocation
+  Generic) and the ADD: the Runner API contract "shall be carried over TLS".
+  The Orchestrator verifies certificates and keeps the token to HTTPS or the
+  local host (#42, #46), but `sqt-runner` has no TLS listener, so a remote
+  reference Runner can only be reached securely through a TLS-terminating
+  proxy. Fix: a TLS listener in `sqt-runner` (certificate and key from its
+  configuration), or document the proxy as the supported deployment.
+
+  **Fixed** in #48: with a `tls:` section (certificate chain and key, PEM) the
+  reference Runner serves HTTPS only, through rustls with the ring provider
+  (no OpenSSL); certificate and key are loaded and checked at start-up.
+  Without it, the Runner serves plain HTTP and logs a warning when bound to a
+  non-loopback address. On the Orchestrator side, the optional
+  `runner.ca_cert` lets it verify a Runner certificate issued by a private CA;
+  certificates are always verified. Still open: assigning IF-010 to a release
+  (R-10).
+- **C-5, open review findings of #44** (reference Runner): job workspaces
+  written by root-owned tool containers cannot be removed by the Runner, so
+  F-M5's cleanup fails in a real Docker set-up (important); CPU normalisation
+  divides by the configured target `hardware.cores` instead of the CPUs of the
+  host that measured; `max_finished_jobs: 0` makes every job vanish on
+  completion; the valgrind collector drops the leak figure when the binary
+  under test itself exits with 125 to 127; the cppcheck "nothing checked"
+  test depends on English message text; the workspace is removed on an async
+  worker thread; `queue_position` can be off under simultaneous submissions.
+
+  **Fixed:** a refused workspace removal falls back to deleting the content
+  through a short-lived container of the configured run image (tool
+  containers keep running as root), and a missing directory counts as
+  removed; the removal runs on a blocking thread after the job's result is
+  stored and its permit released; `max_finished_jobs: 0` is rejected at load;
+  the CPU figure is divided by the configured `hardware.cores` if set (the
+  count the Runner also reports), else by the CPU count of the Docker host
+  that measured (`docker info`), else by the Runner's own, and a figure above
+  what they can produce is logged before it is capped at 100; the
+  valgrind collector relies on its XML report, not the exit code; the
+  container counts the source files before cppcheck runs, so "nothing
+  checked" no longer depends on cppcheck's wording; the queue order is
+  assigned under the store's write lock, and `queue_position` is documented
+  as the position in submission order, a close estimate of the start order.
 
 Process for SQT-SW-1, not code:
 

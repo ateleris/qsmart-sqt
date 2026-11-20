@@ -22,7 +22,8 @@ static NEXT_SEQ: AtomicU64 = AtomicU64::new(0);
 pub struct JobState {
     /// Job id, a UUID.
     pub id: String,
-    /// Order of submission: jobs run, and are evicted, in this order.
+    /// Order of submission, assigned while the store's write lock is held:
+    /// jobs run, and are evicted, in this order.
     pub seq: u64,
     /// Workload type from the request.
     pub workload_type: WorkloadType,
@@ -77,8 +78,14 @@ pub fn new_store() -> JobStore {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
-/// The place of job `id` in the queue: 1 for the next job to run, 2 for the
-/// one after, and so on. `None` once the job has started, or if it is unknown.
+/// The place of job `id` among the waiting jobs, in submission order: 1 for
+/// the next job to run, 2 for the one after, and so on. `None` once the job has
+/// started, or if it is unknown. The submission order is assigned under the
+/// store's write lock, so positions are consistent across simultaneous
+/// submissions. The start order follows it closely but not strictly: each job
+/// waits on a first-in, first-out semaphore from its own task, and a task can
+/// reach the semaphore a moment before an earlier one. The value is therefore
+/// the job's position in submission order, a close estimate of when it runs.
 pub fn queue_position(jobs: &HashMap<String, JobState>, id: &str) -> Option<u32> {
     let job = jobs.get(id).filter(|j| j.status == JobStatus::Accepted)?;
     let ahead =

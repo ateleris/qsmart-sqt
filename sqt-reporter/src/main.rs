@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 use sqt_reporter::cli::{Cli, Commands};
 use sqt_reporter::{api, config, evidence, orchestrator, outputs, preflight, report, specs};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,9 +25,7 @@ async fn main() -> Result<()> {
             let cfg = config::load_config(&config)?;
             cfg.print_summary();
 
-            let token_val = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
-            let client =
-                api::ApiClient::new(&cfg.runner.url, token_val.as_deref(), (&cfg.runner).into())?;
+            let client = build_client(&cfg)?;
 
             match preflight::preflight(&cfg, &client).await {
                 Ok(()) => {
@@ -53,22 +52,9 @@ async fn main() -> Result<()> {
             // ---------------------------------------------------------------
             // Graceful shutdown: SIGTERM + Ctrl-C (SRS-OPS-008)
             // ---------------------------------------------------------------
-            let token = tokio_util::sync::CancellationToken::new();
-            let token_clone = token.clone();
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {},
-                    () = wait_for_sigterm() => {},
-                }
-                token_clone.cancel();
-                tracing::warn!("Shutdown signal received -- draining in-flight jobs");
-            });
+            let (token, abort) = spawn_signal_handler();
 
-            // Read API token from the env var named in config.
-            // Note: validate() already checked the var is non-empty if token_env is set.
-            let token_val = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
-            let client =
-                api::ApiClient::new(&cfg.runner.url, token_val.as_deref(), (&cfg.runner).into())?;
+            let client = build_client(&cfg)?;
 
             if do_preflight {
                 match preflight::preflight(&cfg, &client).await {
@@ -87,19 +73,26 @@ async fn main() -> Result<()> {
             let run_dir = evidence::RunDir::create(&cfg.report.output_dir)?;
             let mut ev_store = evidence::EvidenceStore::new(run_dir)?;
 
-            let (mut result, provenance) =
-                match orchestrator::run(&specs, &client, &cfg, token, &mut ev_store).await {
-                    Ok(run) => run,
-                    Err(e) => {
-                        // Keep what the Runner sent before the run stopped.
-                        orchestrator::persist_runner_responses(&client, &mut ev_store);
-                        if let Err(me) = ev_store.write_manifest() {
-                            tracing::warn!("cannot write evidence manifest: {me}");
-                        }
-                        eprintln!("Run failed; evidence in {}", ev_store.run().path.display());
-                        return Err(e);
-                    }
-                };
+            let run =
+                orchestrator::run_with_abort(&specs, &client, &cfg, token, abort, &mut ev_store)
+                    .await;
+            let (mut result, provenance, stopped) = match run {
+                Ok((result, provenance)) => (result, provenance, None),
+                Err(stopped) => {
+                    // The run stopped before any specification was evaluated.
+                    // The report and the summary still list every specification,
+                    // as blocked (SRS-OPS-003, SRS-FUNC-009).
+                    let reason = stopped.to_string();
+                    let (result, provenance) = orchestrator::blocked_run(
+                        &specs,
+                        &cfg,
+                        &reason,
+                        stopped.version.as_ref(),
+                        stopped.interrupted,
+                    );
+                    (result, provenance, Some(reason))
+                }
+            };
             orchestrator::persist_runner_responses(&client, &mut ev_store);
 
             let (rep, written) = outputs::write_run_outputs(
@@ -109,6 +102,12 @@ async fn main() -> Result<()> {
                 output.as_deref(),
             )?;
             report::print_terminal(&rep, &written.run_dir);
+            if let Some(reason) = &stopped {
+                println!("Run stopped before evaluation: {reason}");
+                // A run a termination signal stopped exits like any interrupted
+                // run (SRS-OPS-008).
+                std::process::exit(if result.interrupted { 2 } else { 1 });
+            }
             tracing::info!("Report: {}", written.report_json.display());
             if let Some(ref path) = output {
                 tracing::info!("Report copied to {}", path.display());
@@ -127,6 +126,48 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The Runner client for `cfg`: the bearer token from the environment variable
+/// the configuration names (already checked by validation) and the configured
+/// CA certificate (SRS-IF-006, SRS-IF-010).
+fn build_client(cfg: &config::SqtConfig) -> Result<api::ApiClient> {
+    let token = cfg.runner.token_env.as_ref().and_then(|var| std::env::var(var).ok());
+    let ca_cert = cfg.runner.ca_cert_pem()?;
+    api::ApiClient::with_ca_cert(
+        &cfg.runner.url,
+        token.as_deref(),
+        (&cfg.runner).into(),
+        ca_cert.as_deref(),
+    )
+}
+
+/// Handle Ctrl-C and SIGTERM (SRS-OPS-008): the first signal cancels the first
+/// token, which stops submitting and lets the jobs already on the Runner
+/// finish; a second signal cancels the second, which stops waiting for them.
+fn spawn_signal_handler() -> (CancellationToken, CancellationToken) {
+    let (shutdown, abort) = (CancellationToken::new(), CancellationToken::new());
+    let (s, a) = (shutdown.clone(), abort.clone());
+    tokio::spawn(async move {
+        wait_for_signal().await;
+        s.cancel();
+        tracing::warn!(
+            "Shutdown signal received -- no further jobs are submitted; waiting for the jobs \
+             already running to finish (signal again to stop now)"
+        );
+        wait_for_signal().await;
+        a.cancel();
+        tracing::warn!("Second shutdown signal -- no longer waiting for running jobs");
+    });
+    (shutdown, abort)
+}
+
+/// Returns on Ctrl-C or SIGTERM.
+async fn wait_for_signal() {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        () = wait_for_sigterm() => {},
+    }
 }
 
 /// Returns when SIGTERM is received (Unix only).  On non-Unix targets this

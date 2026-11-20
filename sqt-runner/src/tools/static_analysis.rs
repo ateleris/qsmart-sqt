@@ -17,7 +17,9 @@ use crate::docker::{self, DockerRun};
 ///
 /// Returns an error, so the metric is reported as `null` instead of `0`
 /// (backlog F-M1, SRS-REL-002), when cppcheck did not analyse anything: the
-/// container failed, cppcheck exited non-zero, or it found no source file.
+/// container failed, cppcheck exited non-zero, or the directory holds no
+/// source file cppcheck checks. The source files are counted in the container
+/// before cppcheck runs, so the check does not depend on cppcheck's wording.
 pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -> Result<i64> {
     let binary_path = Path::new(binary);
     let binary_dir = binary_path.parent().unwrap_or(Path::new("/"));
@@ -27,8 +29,15 @@ pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -
         command: vec![
             "sh".to_string(),
             "-c".to_string(),
-            // cppcheck writes results to stderr; we redirect to stdout for capture
-            format!("cppcheck --enable=warning --quiet {} 2>&1", binary_dir.display()),
+            // Count the files cppcheck checks (it skips headers unless they
+            // are included), then run it; it writes results to stderr, which
+            // is redirected to stdout for capture.
+            format!(
+                "n=$(find {dir} -type f \\( {patterns} \\) | wc -l); echo {MARKER}$n; \
+                 cppcheck --enable=warning --quiet {dir} 2>&1",
+                dir = docker::shell_quote(&binary_dir.display().to_string()),
+                patterns = source_patterns(),
+            ),
         ],
         volumes: vec![docker::identity_mount(binary_dir), docker::identity_mount(workspace)],
         working_dir: Some(binary_dir.display().to_string()),
@@ -43,21 +52,43 @@ pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -
     warnings_of_completed_check(output.exit_code, &format!("{text}\n{stderr_text}"))
 }
 
+/// Prefix of the line in which the container reports how many source files
+/// cppcheck is given.
+const MARKER: &str = "SQT_SOURCE_FILES=";
+
+/// Extensions of the files cppcheck checks when given a directory: the list
+/// in the cppcheck manual ("Checking files", `.cpp .cxx .cc .c++ .c .ipp .ixx
+/// .tpp .txx`) plus `.cl` (`OpenCL` C), which newer releases also check. Headers
+/// are checked only through the files that include them.
+const SOURCE_EXTENSIONS: [&str; 10] =
+    ["c", "cl", "cpp", "cxx", "cc", "c++", "ipp", "ixx", "tpp", "txx"];
+
+/// `find` patterns matching [`SOURCE_EXTENSIONS`] in any letter case, so
+/// `main.C` or `foo.CPP` count as well.
+fn source_patterns() -> String {
+    SOURCE_EXTENSIONS.iter().map(|e| format!("-iname '*.{e}'")).collect::<Vec<_>>().join(" -o ")
+}
+
 /// The warning count of a cppcheck run that actually checked source code.
 /// cppcheck exits 0 whether or not it finds issues, so a non-zero exit code
-/// means it could not check; and without source files it checks nothing.
-/// Either way there is no measurement, which must not read as zero warnings.
+/// means it could not check; and with no source file it checks nothing. Either
+/// way there is no measurement, which must not read as zero warnings. The
+/// number of source files comes from the container's marker line, not from
+/// cppcheck's messages.
 fn warnings_of_completed_check(exit_code: i32, text: &str) -> Result<i64> {
     if exit_code != 0 {
         bail!("static_analysis: cppcheck exited with code {exit_code}: {}", text.trim());
     }
-    let lower = text.to_lowercase();
-    if lower.contains("no c or c++ source files found")
-        || lower.contains("could not find or open any of the paths")
-    {
-        bail!("static_analysis: cppcheck found no source files to check");
+    let files = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(MARKER))
+        .and_then(|n| n.trim().parse::<u64>().ok())
+        .context("static_analysis: the container did not report its source file count")?;
+    if files == 0 {
+        bail!("static_analysis: no source file to check");
     }
-    Ok(count_warnings(text))
+    let report: Vec<&str> = text.lines().filter(|l| !l.trim().starts_with(MARKER)).collect();
+    Ok(count_warnings(&report.join("\n")))
 }
 
 /// Count lines containing "warning" (case-insensitive) in the tool output.
@@ -75,6 +106,17 @@ fn count_warnings(text: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies: SRS-REL-002, SRS-INST-001
+    #[test]
+    fn source_count_matches_every_cppcheck_extension_in_any_case() {
+        let patterns = source_patterns();
+        for ext in SOURCE_EXTENSIONS {
+            assert!(patterns.contains(&format!("-iname '*.{ext}'")), "{ext} missing: {patterns}");
+        }
+        assert!(!patterns.contains("-name "), "every pattern ignores case: {patterns}");
+        assert_eq!(patterns.matches(" -o ").count(), SOURCE_EXTENSIONS.len() - 1);
+    }
 
     /// Verifies: SRS-INST-001
     #[test]
@@ -94,9 +136,9 @@ mod tests {
     /// Verifies: SRS-REL-002, SRS-INST-001
     #[test]
     fn completed_check_counts_its_warnings() {
-        let text = "src/a.c:3: warning: x\n";
+        let text = "SQT_SOURCE_FILES=2\nsrc/a.c:3: warning: x\n";
         assert_eq!(warnings_of_completed_check(0, text).unwrap(), 1);
-        assert_eq!(warnings_of_completed_check(0, "").unwrap(), 0);
+        assert_eq!(warnings_of_completed_check(0, "SQT_SOURCE_FILES=1\n").unwrap(), 0);
     }
 
     /// Verifies: SRS-REL-002
@@ -104,13 +146,13 @@ mod tests {
     fn a_check_that_did_not_run_is_an_error_not_zero() {
         assert!(warnings_of_completed_check(127, "sh: cppcheck: not found").is_err());
         assert!(warnings_of_completed_check(1, "cppcheck: error: unrecognized").is_err());
+        // No source file, whatever cppcheck says about it, in any language.
+        assert!(warnings_of_completed_check(0, "SQT_SOURCE_FILES=0\n").is_err());
         assert!(
-            warnings_of_completed_check(
-                0,
-                "cppcheck: error: could not find or open any of the paths given."
-            )
-            .is_err()
+            warnings_of_completed_check(0, "SQT_SOURCE_FILES=0\nKeine Quelldateien gefunden.")
+                .is_err()
         );
-        assert!(warnings_of_completed_check(0, "No C or C++ source files found.").is_err());
+        // Without the marker the file count is unknown.
+        assert!(warnings_of_completed_check(0, "src/a.c:3: warning: x").is_err());
     }
 }

@@ -59,12 +59,11 @@ pub fn collect(
         env,
     };
 
-    let output = docker::run_container(&spec).context("valgrind: docker execution failed")?;
-    // Valgrind passes on the exit code of the binary, which may be anything.
-    // 125 to 127 come from Docker or the shell: valgrind itself did not start.
-    if (125..=127).contains(&output.exit_code) {
-        bail!("valgrind: the container could not run valgrind (exit code {})", output.exit_code);
-    }
+    // Valgrind passes on the exit code of the binary under test, which may be
+    // any value, 125 to 127 included, so the exit code says nothing about
+    // whether valgrind ran. The report does: a missing report, or one without
+    // a finished run, is an error below.
+    docker::run_container(&spec).context("valgrind: docker execution failed")?;
 
     let xml = std::fs::read_to_string(&xml_path).context("valgrind: failed to read XML output")?;
     leaked_bytes_of_finished_run(&xml)
