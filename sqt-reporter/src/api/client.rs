@@ -111,28 +111,70 @@ impl From<&crate::config::RunnerConfig> for ClientOptions {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Check that `url` may carry the bearer token (SRS-IF-010): over HTTPS, or
-/// over plain HTTP only to the local host (`localhost`, `127.0.0.0/8`, `::1`).
+/// over plain HTTP only to the local host (`localhost`, `127.0.0.0/8`, `::1`,
+/// and the IPv4-mapped `::ffff:127.0.0.0/104`).
 ///
 /// The server certificate of an HTTPS Runner is always verified; the client
-/// offers no way to turn that off.
+/// offers no way to turn that off. A plain-HTTP URL also never goes through a
+/// proxy from the environment ([`env_proxy_allowed`]), so the token stays on
+/// the local machine.
 ///
 /// # Errors
 ///
 /// Returns an error if `url` is not a valid URL, or if it is a plain-HTTP URL
-/// to any other host.
+/// to any other host. The message shows the URL without user name, password,
+/// query or fragment, which may carry credentials (SRS-OPS-005).
 pub fn check_token_transport(url: &str) -> Result<()> {
-    let parsed = reqwest::Url::parse(url).with_context(|| format!("invalid Runner URL {url}"))?;
-    // host_str() gives an IPv6 address in brackets, e.g. "[::1]".
-    let host = parsed.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']');
-    let local = host.eq_ignore_ascii_case("localhost")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    if parsed.scheme() == "http" && !local {
+    let parsed = reqwest::Url::parse(url)
+        .context("the Runner URL is not a valid URL (not shown, it may contain credentials)")?;
+    if parsed.scheme() == "http" && !is_local_host(&parsed) {
         bail!(
-            "the Runner URL {url} uses plain http:// to a host other than the local machine; \
-             the bearer token is sent only over https:// or to localhost (SRS-IF-010)"
+            "the Runner URL {} uses plain http:// to a host other than the local machine; \
+             the bearer token is sent only over https:// or to localhost (SRS-IF-010)",
+            display_url(&parsed)
         );
     }
     Ok(())
+}
+
+/// Whether the client may use a proxy configured in the environment
+/// (`HTTP_PROXY`, `ALL_PROXY`, ...) for `url`. Not for plain HTTP: such a URL
+/// is only allowed to the local host, and a proxy would carry the bearer token
+/// unencrypted to another machine (SRS-IF-010). An HTTPS request through a
+/// proxy stays encrypted end to end, so proxies remain allowed there.
+///
+/// This decision is a function of its own because the proxy itself is read
+/// from environment variables, which a test cannot set safely.
+pub fn env_proxy_allowed(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| u.scheme() != "http")
+}
+
+/// Whether the URL's host is the local machine: `localhost` (also with a
+/// trailing dot) or a loopback address, IPv4-mapped IPv6 included.
+fn is_local_host(url: &reqwest::Url) -> bool {
+    // host_str() gives an IPv6 address in brackets, e.g. "[::1]".
+    let host = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']');
+    if host.strip_suffix('.').unwrap_or(host).eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+        Err(_) => false,
+    }
+}
+
+/// `url` for a message: without user name, password, query and fragment.
+fn display_url(url: &reqwest::Url) -> String {
+    let mut shown = url.clone();
+    // Both fail only for URLs that cannot have credentials; nothing to strip then.
+    let _ = shown.set_username("");
+    let _ = shown.set_password(None);
+    shown.set_query(None);
+    shown.set_fragment(None);
+    shown.to_string()
 }
 
 /// Whether a request may be sent again after a failure (SRS-FUNC-020).
@@ -212,12 +254,15 @@ impl ApiClient {
         }
         // The SQT contacts only the configured Runner endpoint (SRS-RES-002):
         // a redirect to another location is not followed but fails the request.
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(Duration::from_secs(options.request_timeout_secs.max(1)))
-            .build()
-            .context("Failed to build HTTP client")?;
+            .timeout(Duration::from_secs(options.request_timeout_secs.max(1)));
+        if !env_proxy_allowed(base_url) {
+            // Plain HTTP goes straight to the local Runner (SRS-IF-010).
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().context("Failed to build HTTP client")?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_owned(),
@@ -627,6 +672,8 @@ mod tests {
             "http://127.0.0.1:3000",
             "http://127.1.2.3",
             "http://[::1]:3000",
+            "http://localhost.:3000",
+            "http://[::ffff:127.0.0.1]:3000",
         ] {
             assert!(check_token_transport(ok).is_ok(), "{ok} must be allowed");
         }
@@ -639,6 +686,29 @@ mod tests {
         ] {
             assert!(check_token_transport(refused).is_err(), "{refused} must be refused");
         }
+    }
+
+    /// Verifies: SRS-IF-010
+    #[test]
+    fn plain_http_never_uses_an_environment_proxy() {
+        assert!(!env_proxy_allowed("http://localhost:3000"));
+        assert!(!env_proxy_allowed("http://127.0.0.1:3000"));
+        assert!(!env_proxy_allowed("not a url"));
+        assert!(env_proxy_allowed("https://runner.example"));
+    }
+
+    /// Verifies: SRS-IF-010, SRS-OPS-005
+    #[test]
+    fn refusal_does_not_show_credentials_from_the_url() {
+        let err = check_token_transport("http://svc:s3cret@runner.example:3000/api?key=t0ken#f")
+            .expect_err("plain http to a remote host must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("runner.example:3000"), "the host should be named: {msg}");
+        for secret in ["s3cret", "svc", "t0ken"] {
+            assert!(!msg.contains(secret), "{secret} leaked into: {msg}");
+        }
+        let err = check_token_transport("http//svc:s3cret@no-scheme").expect_err("invalid URL");
+        assert!(!format!("{err:#}").contains("s3cret"), "{err:#}");
     }
 
     /// Verifies: SRS-IF-010
