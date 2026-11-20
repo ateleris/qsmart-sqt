@@ -190,8 +190,9 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   100%), not normalised as the field name and AD-015 promise
   (`run_binary.rs:90` → `executor/docker.rs:358`). **Fixed** in the
   runner-robustness PR: divided by the core count and clamped to 0..100, as
-  the contract defines it. Since C-5 the count is the CPUs of the measuring
-  host, not the configured `hardware.cores`.
+  the contract defines it. Since C-5 the count is the configured
+  `hardware.cores` if set (the count the Runner reports), else the CPUs of the
+  Docker host that measured, else the Runner's own.
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
   parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
@@ -453,8 +454,10 @@ none caused by the recent changes:
   containers keep running as root), and a missing directory counts as
   removed; the removal runs on a blocking thread after the job's result is
   stored and its permit released; `max_finished_jobs: 0` is rejected at load;
-  the CPU figure is divided by the CPUs of the measuring host, and a figure
-  above what they can produce is logged before it is capped at 100; the
+  the CPU figure is divided by the configured `hardware.cores` if set (the
+  count the Runner also reports), else by the CPU count of the Docker host
+  that measured (`docker info`), else by the Runner's own, and a figure above
+  what they can produce is logged before it is capped at 100; the
   valgrind collector relies on its XML report, not the exit code; the
   container counts the source files before cppcheck runs, so "nothing
   checked" no longer depends on cppcheck's wording; the queue order is

@@ -204,15 +204,38 @@ pub fn check_api_version(version: &VersionResponse) -> Result<()> {
 /// could be evaluated (see [`blocked_run`]).
 pub const RUN_ABORTED: &str = "RUN_ABORTED";
 
+/// Why a run stopped before any specification was evaluated, with what was
+/// already known at that point.
+#[derive(Debug)]
+pub struct RunStopped {
+    /// The cause, e.g. an incompatible contract version or a failed discovery.
+    pub error: anyhow::Error,
+    /// The Runner's version reply, if `/version` answered before the stop;
+    /// the provenance of the blocked run is built from it (SRS-DATA-003).
+    pub version: Option<VersionResponse>,
+    /// `true` if a termination signal had arrived by then (SRS-OPS-008).
+    pub interrupted: bool,
+}
+
+impl std::fmt::Display for RunStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
 /// The result of a run that stopped before any specification was evaluated,
 /// for example on an incompatible contract version or a failed requirement
 /// discovery: every specification is blocked, with one outcome per declared
 /// constraint, so the report and the end-of-run summary still list each one
-/// with the counts (SRS-OPS-003, SRS-FUNC-009).
+/// with the counts (SRS-OPS-003, SRS-FUNC-009). The provenance carries the
+/// Runner's `version` reply when there was one, and `interrupted` marks a run
+/// a termination signal stopped, so it exits like an interrupted run.
 pub fn blocked_run(
     specs: &[TestSpec],
     config: &SqtConfig,
     reason: &str,
+    version: Option<&VersionResponse>,
+    interrupted: bool,
 ) -> (RunResult, RunProvenance) {
     let results = specs
         .iter()
@@ -252,11 +275,11 @@ pub fn blocked_run(
             results,
             timestamp: now_iso8601(),
             config_version: config.project.version.clone(),
-            interrupted: false,
+            interrupted,
             requirement_set: None,
             discovery: None,
         },
-        build_provenance(&unknown, config),
+        build_provenance(version.unwrap_or(&unknown), config),
     )
 }
 
@@ -350,7 +373,9 @@ pub async fn run(
     shutdown: CancellationToken,
     evidence_store: &mut EvidenceStore,
 ) -> Result<(RunResult, RunProvenance)> {
-    run_with_abort(specs, client, config, shutdown, CancellationToken::new(), evidence_store).await
+    run_with_abort(specs, client, config, shutdown, CancellationToken::new(), evidence_store)
+        .await
+        .map_err(|stopped| stopped.error)
 }
 
 /// [`run`] with a second token: cancelling `abort` (a second termination
@@ -359,11 +384,8 @@ pub async fn run(
 ///
 /// # Errors
 ///
-/// As [`run`].
-#[expect(
-    clippy::too_many_lines,
-    reason = "the session protocol (version, discovery, submit, evaluate) reads top to bottom as specified"
-)]
+/// As [`run`], as a [`RunStopped`] that also carries the Runner's version
+/// reply, if one arrived, and whether a termination signal had been received.
 pub async fn run_with_abort(
     specs: &[TestSpec],
     client: &ApiClient,
@@ -371,6 +393,32 @@ pub async fn run_with_abort(
     shutdown: CancellationToken,
     abort: CancellationToken,
     evidence_store: &mut EvidenceStore,
+) -> std::result::Result<(RunResult, RunProvenance), RunStopped> {
+    let mut fetched = None;
+    let signalled = (shutdown.clone(), abort.clone());
+    session(specs, client, config, shutdown, abort, evidence_store, &mut fetched).await.map_err(
+        |error| RunStopped {
+            error,
+            version: fetched,
+            interrupted: signalled.0.is_cancelled() || signalled.1.is_cancelled(),
+        },
+    )
+}
+
+/// The session protocol of [`run_with_abort`]; stores the Runner's version
+/// reply in `fetched` as soon as it arrives.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the session protocol (version, discovery, submit, evaluate) reads top to bottom as specified"
+)]
+async fn session(
+    specs: &[TestSpec],
+    client: &ApiClient,
+    config: &SqtConfig,
+    shutdown: CancellationToken,
+    abort: CancellationToken,
+    evidence_store: &mut EvidenceStore,
+    fetched: &mut Option<VersionResponse>,
 ) -> Result<(RunResult, RunProvenance)> {
     // -----------------------------------------------------------------------
     // Session start: version check (SRS-IF-008)
@@ -384,6 +432,7 @@ pub async fn run_with_abort(
     );
 
     let version = client.get_version().await?;
+    *fetched = Some(version.clone());
     tracing::info!(
         runner_version = %version.runner_version,
         api_version = %version.api_version,

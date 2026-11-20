@@ -191,7 +191,7 @@ async fn a_run_that_stops_before_evaluation_still_reports_every_spec() {
         .await
         .expect_err("an incompatible contract version stops the run");
     let reason = format!("{err:#}");
-    let (mut result, provenance) = orchestrator::blocked_run(&specs, &cfg, &reason);
+    let (mut result, provenance) = orchestrator::blocked_run(&specs, &cfg, &reason, None, false);
     let (rep, written) =
         outputs::write_run_outputs(&mut result, provenance, &mut store, None).unwrap();
     let text = report::render_terminal(&rep, &written.run_dir);
@@ -210,6 +210,48 @@ async fn a_run_that_stops_before_evaluation_still_reports_every_spec() {
     );
     assert!(text.contains(&written.run_dir.display().to_string()), "evidence location: {text}");
     assert!(text.contains("incompatible"), "the reason is shown: {text}");
+}
+
+/// Verifies: SRS-OPS-003, SRS-DATA-003, SRS-OPS-008
+#[tokio::test]
+async fn a_stopped_run_keeps_the_runner_version_and_the_signal() {
+    let m = mock("2.0", 0);
+    let url = spawn(m.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(&url, dir.path(), &["regression"]);
+    let specs = load(&cfg);
+    let client = client_for(&cfg);
+    let mut store =
+        evidence::EvidenceStore::new(evidence::RunDir::create(&cfg.report.output_dir).unwrap())
+            .unwrap();
+    // A termination signal arrived before the version check stops the run.
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+
+    let stopped = orchestrator::run_with_abort(
+        &specs,
+        &client,
+        &cfg,
+        shutdown,
+        CancellationToken::new(),
+        &mut store,
+    )
+    .await
+    .expect_err("an incompatible contract version stops the run");
+    assert!(stopped.interrupted, "the signal is reported with the stop");
+    let version = stopped.version.as_ref().expect("/version answered before the stop");
+    assert_eq!(version.api_version, "2.0");
+
+    let (result, provenance) = orchestrator::blocked_run(
+        &specs,
+        &cfg,
+        &stopped.to_string(),
+        stopped.version.as_ref(),
+        stopped.interrupted,
+    );
+    assert!(result.interrupted, "a signalled stop exits as interrupted");
+    assert_eq!(provenance.runner_version, "0.1.0-test", "the Runner that refused is named");
+    assert_eq!(provenance.runner_target_id, "test-x86");
 }
 
 /// Wait until the mock has accepted `n` submissions, then cancel `token`.

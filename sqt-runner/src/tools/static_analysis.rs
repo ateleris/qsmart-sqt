@@ -33,9 +33,10 @@ pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -
             // are included), then run it; it writes results to stderr, which
             // is redirected to stdout for capture.
             format!(
-                "n=$(find {dir} -type f \\( {SOURCE_PATTERNS} \\) | wc -l); echo {MARKER}$n; \
+                "n=$(find {dir} -type f \\( {patterns} \\) | wc -l); echo {MARKER}$n; \
                  cppcheck --enable=warning --quiet {dir} 2>&1",
                 dir = docker::shell_quote(&binary_dir.display().to_string()),
+                patterns = source_patterns(),
             ),
         ],
         volumes: vec![docker::identity_mount(binary_dir), docker::identity_mount(workspace)],
@@ -55,9 +56,18 @@ pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -
 /// cppcheck is given.
 const MARKER: &str = "SQT_SOURCE_FILES=";
 
-/// `find` name patterns of the files cppcheck checks on its own.
-const SOURCE_PATTERNS: &str = "-name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \
-     -o -name '*.c++' -o -name '*.tpp' -o -name '*.txx'";
+/// Extensions of the files cppcheck checks when given a directory: the list
+/// in the cppcheck manual ("Checking files", `.cpp .cxx .cc .c++ .c .ipp .ixx
+/// .tpp .txx`) plus `.cl` (`OpenCL` C), which newer releases also check. Headers
+/// are checked only through the files that include them.
+const SOURCE_EXTENSIONS: [&str; 10] =
+    ["c", "cl", "cpp", "cxx", "cc", "c++", "ipp", "ixx", "tpp", "txx"];
+
+/// `find` patterns matching [`SOURCE_EXTENSIONS`] in any letter case, so
+/// `main.C` or `foo.CPP` count as well.
+fn source_patterns() -> String {
+    SOURCE_EXTENSIONS.iter().map(|e| format!("-iname '*.{e}'")).collect::<Vec<_>>().join(" -o ")
+}
 
 /// The warning count of a cppcheck run that actually checked source code.
 /// cppcheck exits 0 whether or not it finds issues, so a non-zero exit code
@@ -96,6 +106,17 @@ fn count_warnings(text: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies: SRS-REL-002, SRS-INST-001
+    #[test]
+    fn source_count_matches_every_cppcheck_extension_in_any_case() {
+        let patterns = source_patterns();
+        for ext in SOURCE_EXTENSIONS {
+            assert!(patterns.contains(&format!("-iname '*.{ext}'")), "{ext} missing: {patterns}");
+        }
+        assert!(!patterns.contains("-name "), "every pattern ignores case: {patterns}");
+        assert_eq!(patterns.matches(" -o ").count(), SOURCE_EXTENSIONS.len() - 1);
+    }
 
     /// Verifies: SRS-INST-001
     #[test]

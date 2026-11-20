@@ -416,7 +416,10 @@ pub fn render_terminal(report: &Report, run_dir: &Path) -> String {
     let mut out = String::new();
     for spec in &report.results {
         // A specification the run never got to evaluate is blocked (SRS-OPS-003).
+        // A specification without outcomes is an infrastructure error, not
+        // blocked: `all` alone would hold for an empty list.
         let blocked = spec.outcome_kind == OutcomeKind::InfraError
+            && !spec.outcomes.is_empty()
             && spec.outcomes.iter().all(|o| {
                 o.evidence.get("error_code").is_some_and(|c| c == crate::orchestrator::RUN_ABORTED)
             });
@@ -1136,6 +1139,22 @@ mod tests {
         assert_eq!(parsed["results"][1]["outcome_kind"], "FAIL");
         assert_eq!(parsed["results"][0]["outcomes"][0]["outcome_kind"], "PASS");
         assert_eq!(parsed["results"][1]["outcomes"][0]["outcome_kind"], "FAIL");
+    }
+
+    /// Verifies: SRS-OPS-003
+    #[test]
+    fn an_infra_error_without_outcomes_is_not_shown_as_blocked() {
+        let infra = SpecResult {
+            spec: make_spec("REQ-EMPTY", "build/e"),
+            outcomes: vec![],
+            outcome: crate::specs::OutcomeKind::InfraError,
+            passed: false,
+            evidence: Vec::new(),
+        };
+        let report = Report::from_run_result(&make_run_result(vec![infra]), make_provenance());
+        let text = render_terminal(&report, Path::new("/out"));
+        let line = text.lines().find(|l| l.starts_with("REQ-EMPTY")).unwrap();
+        assert!(line.ends_with("[INFRA]"), "{line}");
     }
 
     /// Verifies: SRS-OPS-003

@@ -401,7 +401,10 @@ impl LifecycleBackend for DockerExecutor {
             time_throughput_fps: raw.primary.throughput_fps,
             memory_peak_rss_kb: raw.primary.memory_peak_rss_kb,
             memory_avg_rss_kb: raw.primary.memory_avg_rss_kb,
-            cpu_avg_normalized_pct: normalize_cpu_pct(raw.primary.cpu_pct, host_cpu_count()),
+            cpu_avg_normalized_pct: normalize_cpu_pct(
+                raw.primary.cpu_pct,
+                cpu_count(self.hardware.cores, docker::daemon_cpu_count(), local_cpu_count()),
+            ),
             memory_leaks_bytes: raw.leaks_bytes,
             coverage_line_pct: raw.coverage_line_pct,
             binary_size_kb: raw.binary_size_kb,
@@ -505,12 +508,24 @@ fn run_repeated(
     Ok(repetition::combine(&runs, &request.mode, items, outputs_identical))
 }
 
-/// The number of CPUs `cpu.avg_normalized_pct` is normalised by: those
-/// available on the host that measured. GNU time's figure is measured in the
-/// tool container, which runs on the Runner's Docker host without a CPU limit,
-/// so it sees the same CPUs as this process. The configured `hardware.cores`
-/// describes the target and is not used: the measuring host may differ from it.
-fn host_cpu_count() -> u32 {
+/// The number of CPUs `cpu.avg_normalized_pct` is normalised by, in this
+/// order:
+///
+/// 1. the configured `hardware.cores`, which the Runner also reports to the
+///    client in `hardware.cores`, so the divisor and the reported count agree;
+/// 2. else the CPU count of the Docker daemon's host, where the tool
+///    container that measured ran (`docker info`);
+/// 3. else the CPUs available to the Runner process.
+///
+/// The Runner's own count comes last because the Runner may itself run in a
+/// CPU-limited container (as in CI) while the tool containers it starts on the
+/// same daemon are not limited.
+fn cpu_count(configured: Option<u32>, daemon: Option<u32>, local: u32) -> u32 {
+    configured.filter(|&c| c > 0).or(daemon.filter(|&c| c > 0)).unwrap_or(local).max(1)
+}
+
+/// The CPUs available to the Runner process; the last fallback of [`cpu_count`].
+fn local_cpu_count() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
@@ -697,9 +712,12 @@ mod tests {
 
     /// Verifies: SRS-FUNC-005
     #[test]
-    fn cpu_count_is_the_measuring_hosts() {
-        let host = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-        assert_eq!(host_cpu_count() as usize, host);
-        assert!(host_cpu_count() >= 1);
+    fn cpu_count_prefers_configured_then_docker_host_then_local() {
+        assert_eq!(cpu_count(Some(4), Some(16), 2), 4, "the configured count is reported too");
+        assert_eq!(cpu_count(None, Some(16), 2), 16, "the Docker host measured");
+        assert_eq!(cpu_count(Some(0), Some(16), 2), 16, "a zero configuration is ignored");
+        assert_eq!(cpu_count(None, None, 2), 2);
+        assert_eq!(cpu_count(None, Some(0), 0), 1);
+        assert!(local_cpu_count() >= 1);
     }
 }

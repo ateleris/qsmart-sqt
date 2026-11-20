@@ -108,7 +108,7 @@ impl RunnerConfig {
     /// # Errors
     ///
     /// Returns an error naming `runner.ca_cert` if the file cannot be read or
-    /// holds no PEM certificate.
+    /// holds no certificate the TLS client accepts as a trust anchor.
     pub fn ca_cert_pem(&self) -> Result<Option<Vec<u8>>> {
         let Some(path) = &self.ca_cert else { return Ok(None) };
         let pem = std::fs::read(path)
@@ -217,6 +217,12 @@ impl SqtConfig {
         {
             *path = config_dir.join(&*path);
         }
+        if self.runner.ca_cert.is_some() && !url_lower.starts_with("https://") {
+            bail!(
+                "runner.ca_cert is set, but runner.url is not https://: the CA certificate only \
+                 verifies an HTTPS Runner, so it would have no effect"
+            );
+        }
         self.runner.ca_cert_pem()?;
         Ok(())
     }
@@ -240,7 +246,9 @@ impl SqtConfig {
 }
 
 /// Check that `pem` holds at least one PEM certificate block whose body is
-/// valid base64, so a wrong file is reported when the configuration is loaded.
+/// valid base64 and a certificate the TLS client accepts as a trust anchor
+/// (its DER is parsed), so a wrong file is reported when the configuration is
+/// loaded rather than at the first request.
 fn check_pem_certificate(pem: &[u8]) -> Result<()> {
     use base64::Engine as _;
     let text = std::str::from_utf8(pem).context("not UTF-8 text")?;
@@ -260,6 +268,13 @@ fn check_pem_certificate(pem: &[u8]) -> Result<()> {
     if !found {
         bail!("no -----BEGIN CERTIFICATE----- block");
     }
+    // Parse every certificate as the HTTPS client will: building a client
+    // with them as roots fails on one that is not a valid X.509 certificate.
+    let mut builder = reqwest::Client::builder();
+    for cert in reqwest::Certificate::from_pem_bundle(pem).context("not a PEM certificate")? {
+        builder = builder.add_root_certificate(cert);
+    }
+    builder.build().context("not a valid X.509 certificate")?;
     Ok(())
 }
 
@@ -714,6 +729,32 @@ report:
     fn ca_cert_that_cannot_be_read_rejected() {
         let msg = format!("{:#}", load(&with_ca_cert("/nonexistent/ca.pem")).unwrap_err());
         assert!(msg.contains("runner.ca_cert"), "error should name the field: {msg}");
+    }
+
+    /// Verifies: SRS-IF-010, SRS-FUNC-002
+    #[test]
+    fn ca_cert_that_is_base64_but_no_certificate_rejected() {
+        // Valid base64 (the DER of nothing useful), so only parsing it as a
+        // certificate can tell.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("junk.pem");
+        std::fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\nTm90IGEgY2VydGlmaWNhdGUgYXQgYWxs\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let msg = format!("{:#}", load(&with_ca_cert(&path.display().to_string())).unwrap_err());
+        assert!(msg.contains("runner.ca_cert"), "{msg}");
+    }
+
+    /// Verifies: SRS-IF-010, SRS-FUNC-002
+    #[test]
+    fn ca_cert_with_a_plain_http_runner_rejected() {
+        let yaml =
+            with_ca_cert("ca.pem").replace("https://runner.example", "http://localhost:3000");
+        let msg = format!("{:#}", load(&yaml).unwrap_err());
+        assert!(msg.contains("runner.ca_cert"), "error should name the field: {msg}");
+        assert!(msg.contains("https://"), "{msg}");
     }
 
     /// Verifies: SRS-IF-010, SRS-FUNC-002

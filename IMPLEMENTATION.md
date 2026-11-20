@@ -51,7 +51,8 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   Runner URL to any host but the local one (SRS-IF-010). Optional
   `runner.ca_cert`: a PEM CA certificate trusted, in addition to the public
   roots, for an `https://` Runner whose certificate comes from a private CA;
-  checked at load. Unknown keys ignored.
+  parsed as an X.509 certificate at load, and refused with an `http://` URL.
+  Unknown keys ignored.
 - **Spec loading** (`specs/loader.rs`): refuses unknown keys, so a misspelt
   `use_case` is an error rather than a fan-out; reads only the files in
   `test_specs.files` — no directory scan (SRS-MAINT-002). Parses `use_case`,
@@ -89,7 +90,9 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   signal stops waiting; the partial run is persisted and the exit status is 2
   (SRS-OPS-008). A run that stops before evaluation (incompatible contract
   version, failed discovery) still writes its report and prints the summary
-  with every specification BLOCKED (SRS-OPS-003); per-step progress logging (a start on SRS-FUNC-012, operator guidance).
+  with every specification BLOCKED (SRS-OPS-003); its provenance names the
+  Runner when `/version` answered, and if a termination signal had arrived it
+  exits 2 like any interrupted run; per-step progress logging (a start on SRS-FUNC-012, operator guidance).
 - **Accuracy/precision** (`accuracy/`): client-side accuracy metrics and
   element-wise precision comparison against spec-declared references (SRS-FUNC-016,
   SRS-FUNC-017), fed by the output the runner now returns.
@@ -143,8 +146,10 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   skipped and their metrics reported `null`. A tool that did not complete
   (non-zero exit, no finished valgrind run, no source for cppcheck) also
   reports `null`, never `0`. `cpu.avg_normalized_pct` is GNU time's figure
-  divided by the CPU count of the measuring host, so 100 means every CPU was
-  busy. A finished job's working directory is removed on a blocking thread;
+  divided by the configured `hardware.cores` (the count the Runner reports),
+  else the CPU count of the Docker host that measured, else the Runner's own,
+  so 100 means every CPU was busy. The cppcheck source count matches its file
+  extensions in any letter case. A finished job's working directory is removed on a blocking thread;
   root-owned tool output is deleted through a short-lived container of the run
   image.
 - **TLS** (`tls.rs`): with a `tls:` section the Runner serves HTTPS only

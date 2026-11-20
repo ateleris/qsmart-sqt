@@ -190,6 +190,21 @@ pub fn identity_mount(path: &Path) -> (PathBuf, String) {
     (path.to_path_buf(), path.display().to_string())
 }
 
+/// The number of CPUs of the Docker daemon's host (`docker info` `NCPU`),
+/// asked once and remembered. `None` if Docker does not answer or the answer
+/// is not a positive number.
+pub fn daemon_cpu_count() -> Option<u32> {
+    static NCPU: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *NCPU.get_or_init(|| {
+        let output =
+            Command::new("docker").args(["info", "--format", "{{.NCPU}}"]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout).trim().parse::<u32>().ok().filter(|&n| n > 0)
+    })
+}
+
 /// Check that Docker is available and responding.
 pub fn check_docker() -> Result<()> {
     let output = Command::new("docker")

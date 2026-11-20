@@ -78,12 +78,18 @@ async fn main() -> Result<()> {
                     .await;
             let (mut result, provenance, stopped) = match run {
                 Ok((result, provenance)) => (result, provenance, None),
-                Err(e) => {
+                Err(stopped) => {
                     // The run stopped before any specification was evaluated.
                     // The report and the summary still list every specification,
                     // as blocked (SRS-OPS-003, SRS-FUNC-009).
-                    let reason = format!("{e:#}");
-                    let (result, provenance) = orchestrator::blocked_run(&specs, &cfg, &reason);
+                    let reason = stopped.to_string();
+                    let (result, provenance) = orchestrator::blocked_run(
+                        &specs,
+                        &cfg,
+                        &reason,
+                        stopped.version.as_ref(),
+                        stopped.interrupted,
+                    );
                     (result, provenance, Some(reason))
                 }
             };
@@ -98,7 +104,9 @@ async fn main() -> Result<()> {
             report::print_terminal(&rep, &written.run_dir);
             if let Some(reason) = &stopped {
                 println!("Run stopped before evaluation: {reason}");
-                std::process::exit(1);
+                // A run a termination signal stopped exits like any interrupted
+                // run (SRS-OPS-008).
+                std::process::exit(if result.interrupted { 2 } else { 1 });
             }
             tracing::info!("Report: {}", written.report_json.display());
             if let Some(ref path) = output {
