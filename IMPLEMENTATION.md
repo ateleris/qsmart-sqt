@@ -48,7 +48,10 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   `report`); validates before any network call; resolves relative paths; rejects
   empty required fields, bad URL scheme, empty spec list, and a set-but-empty
   `token_env` (SRS-FUNC-002, SRS-IF-006), and a token with a plain `http://`
-  Runner URL to any host but the local one (SRS-IF-010). Unknown keys ignored.
+  Runner URL to any host but the local one (SRS-IF-010). Optional
+  `runner.ca_cert`: a PEM CA certificate trusted, in addition to the public
+  roots, for an `https://` Runner whose certificate comes from a private CA;
+  checked at load. Unknown keys ignored.
 - **Spec loading** (`specs/loader.rs`): refuses unknown keys, so a misspelt
   `use_case` is an error rather than a fan-out; reads only the files in
   `test_specs.files` — no directory scan (SRS-MAINT-002). Parses `use_case`,
@@ -81,9 +84,12 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   settings) into jobs; submits and polls the
   jobs concurrently, holding a `max_concurrent_jobs` permit from submit to
   completion (SRS-PERF-001/002), then evaluates; INFRA_ERROR outcome category,
-  including a failed submit, that does not abort the run (SRS-OPS-006); a SIGTERM/Ctrl-C handler that stops
-  submitting, stops polling (the in-flight jobs are recorded as interrupted, see
-  C-3), persists the partial run and exits 2 (SRS-OPS-008); per-step progress logging (a start on SRS-FUNC-012, operator guidance).
+  including a failed submit, that does not abort the run (SRS-OPS-006); on a first SIGTERM/Ctrl-C it stops
+  submitting and awaits the jobs already running, which are evaluated; a second
+  signal stops waiting; the partial run is persisted and the exit status is 2
+  (SRS-OPS-008). A run that stops before evaluation (incompatible contract
+  version, failed discovery) still writes its report and prints the summary
+  with every specification BLOCKED (SRS-OPS-003); per-step progress logging (a start on SRS-FUNC-012, operator guidance).
 - **Accuracy/precision** (`accuracy/`): client-side accuracy metrics and
   element-wise precision comparison against spec-declared references (SRS-FUNC-016,
   SRS-FUNC-017), fed by the output the runner now returns.
@@ -160,11 +166,6 @@ and the ADD in the documentation repository are authoritative. Summary of what
 is *not* yet aligned with them:
 
 **Deviations from the SRS and the ADD:**
-- Pre-flight does not apply the contract major-version check (C-1, ADD LLR-017).
-- A run that stops before evaluation prints no end-of-run summary (C-2,
-  SRS-OPS-003, ADD LLR-031).
-- A termination signal stops polling the in-flight jobs instead of awaiting
-  them; the Runner keeps running them (C-3, SRS-OPS-008).
 - The reference Runner serves plain HTTP; SRS-IF-010 wants the contract over
   TLS (C-4).
 - Open review findings of the reference Runner's clean-up, CPU normalisation

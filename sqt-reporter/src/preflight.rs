@@ -15,7 +15,8 @@ use crate::specs::loader::load_specs;
 /// Run all pre-flight checks.
 ///
 /// Checks performed (in order):
-/// 1. `GET /api/v1/version` — Runner connectivity and auth
+/// 1. `GET /api/v1/version` — Runner connectivity and auth, and the contract
+///    major version (SRS-IF-008, ADD LLR-017)
 /// 2. `GET /api/v1/docs`   — Document discovery (warns if empty)
 /// 3. Load spec files from `config.test_specs.files`
 ///
@@ -34,12 +35,16 @@ pub async fn preflight(config: &SqtConfig, client: &ApiClient) -> anyhow::Result
     // Step 1: GET /api/v1/version
     // ------------------------------------------------------------------
     match client.get_version().await {
-        Ok(v) => {
-            println!(
+        Ok(v) => match crate::orchestrator::check_api_version(&v) {
+            Ok(()) => println!(
                 "  [OK]   Runner version: {} (api_version: {}, target_id: {})",
                 v.runner_version, v.api_version, v.target_id
-            );
-        }
+            ),
+            Err(e) => {
+                println!("  [FAIL] incompatible contract version: {e:#}");
+                failed = true;
+            }
+        },
         Err(e) => {
             println!("  [FAIL] Runner version check failed: {e:#}");
             failed = true;

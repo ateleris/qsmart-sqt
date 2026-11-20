@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// The whole configuration of a qualification run (SRS-FUNC-001).
@@ -65,6 +65,12 @@ pub struct RunnerConfig {
     /// Upper bound on one HTTP request to the Runner, body included.
     #[serde(default = "default_request_timeout_secs")]
     pub request_timeout_secs: u64,
+    /// PEM file with the CA certificate(s) to trust, in addition to the
+    /// public roots, when verifying an `https://` Runner's certificate: for a
+    /// Runner whose certificate comes from a private CA (SRS-IF-010). Relative
+    /// to the configuration file. Certificates are always verified.
+    #[serde(default)]
+    pub ca_cert: Option<PathBuf>,
 }
 
 fn default_max_concurrent_jobs() -> u32 {
@@ -97,6 +103,22 @@ const RETRY_BACKOFF_INITIAL_LIMIT_SECS: u64 = 60;
 const REQUEST_TIMEOUT_LIMIT_SECS: u64 = 600;
 
 impl RunnerConfig {
+    /// The PEM bytes of `ca_cert`, if one is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming `runner.ca_cert` if the file cannot be read or
+    /// holds no PEM certificate.
+    pub fn ca_cert_pem(&self) -> Result<Option<Vec<u8>>> {
+        let Some(path) = &self.ca_cert else { return Ok(None) };
+        let pem = std::fs::read(path)
+            .with_context(|| format!("runner.ca_cert: cannot read {}", path.display()))?;
+        check_pem_certificate(&pem).with_context(|| {
+            format!("runner.ca_cert: {} is not a PEM certificate", path.display())
+        })?;
+        Ok(Some(pem))
+    }
+
     fn validate_ranges(&self) -> Result<()> {
         if self.max_concurrent_jobs == 0 {
             bail!("runner.max_concurrent_jobs must be at least 1");
@@ -190,6 +212,12 @@ impl SqtConfig {
         if self.report.output_dir.is_relative() {
             self.report.output_dir = config_dir.join(&self.report.output_dir);
         }
+        if let Some(path) = &mut self.runner.ca_cert
+            && path.is_relative()
+        {
+            *path = config_dir.join(&*path);
+        }
+        self.runner.ca_cert_pem()?;
         Ok(())
     }
 
@@ -209,6 +237,30 @@ impl SqtConfig {
         );
         tracing::info!("Report output dir: {}", self.report.output_dir.display());
     }
+}
+
+/// Check that `pem` holds at least one PEM certificate block whose body is
+/// valid base64, so a wrong file is reported when the configuration is loaded.
+fn check_pem_certificate(pem: &[u8]) -> Result<()> {
+    use base64::Engine as _;
+    let text = std::str::from_utf8(pem).context("not UTF-8 text")?;
+    let mut found = false;
+    let mut rest = text;
+    while let Some(start) = rest.find("-----BEGIN CERTIFICATE-----") {
+        let after = &rest[start + "-----BEGIN CERTIFICATE-----".len()..];
+        let end =
+            after.find("-----END CERTIFICATE-----").context("unterminated certificate block")?;
+        let body: String = after[..end].chars().filter(|c| !c.is_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(body.as_bytes())
+            .context("certificate block is not valid base64")?;
+        found = true;
+        rest = &after[end..];
+    }
+    if !found {
+        bail!("no -----BEGIN CERTIFICATE----- block");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -637,5 +689,57 @@ report:
         let msg = format!("{:#}", load(yaml).unwrap_err());
         assert!(msg.contains("runner.url"), "error should name the field: {msg}");
         assert!(msg.contains("https://"), "error should say what to use: {msg}");
+    }
+
+    fn with_ca_cert(ca_cert: &str) -> String {
+        format!(
+            r#"
+project:
+  name: "Test"
+  version: "1.0.0"
+test_specs:
+  files:
+    - "./specs/example.yaml"
+runner:
+  url: "https://runner.example"
+  ca_cert: "{ca_cert}"
+report:
+  output_dir: "./reports"
+"#
+        )
+    }
+
+    /// Verifies: SRS-IF-010, SRS-FUNC-002
+    #[test]
+    fn ca_cert_that_cannot_be_read_rejected() {
+        let msg = format!("{:#}", load(&with_ca_cert("/nonexistent/ca.pem")).unwrap_err());
+        assert!(msg.contains("runner.ca_cert"), "error should name the field: {msg}");
+    }
+
+    /// Verifies: SRS-IF-010, SRS-FUNC-002
+    #[test]
+    fn ca_cert_that_is_not_a_certificate_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("empty.pem", ""),
+            ("key.pem", "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"),
+            ("bad.pem", "-----BEGIN CERTIFICATE-----\n!!not base64!!\n-----END CERTIFICATE-----\n"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            let msg =
+                format!("{:#}", load(&with_ca_cert(&path.display().to_string())).unwrap_err());
+            assert!(msg.contains("runner.ca_cert"), "{name}: {msg}");
+        }
+    }
+
+    /// Verifies: SRS-IF-010
+    #[test]
+    fn ca_cert_that_is_a_pem_certificate_accepted() {
+        let ca = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/ca.pem");
+        let cfg =
+            load(&with_ca_cert(&ca.display().to_string())).expect("a PEM CA certificate loads");
+        assert_eq!(cfg.runner.ca_cert.as_deref(), Some(ca.as_path()));
+        assert!(cfg.runner.ca_cert_pem().unwrap().is_some());
     }
 }

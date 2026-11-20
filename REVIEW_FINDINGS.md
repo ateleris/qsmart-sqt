@@ -401,13 +401,17 @@ none caused by the recent changes:
   fetches the Runner-declared requirements and confirms endpoint reachability
   and authentication". `preflight::preflight` fetches `/version` but does not
   apply the major-version check (SRS-IF-008) that a full run applies. Fix: run
-  the same check in pre-flight.
+  the same check in pre-flight. **Fixed** in #48: pre-flight reports
+  "[FAIL] incompatible contract version" and fails.
 - **C-2, no summary after an aborted run.** SRS-OPS-003 and ADD LLR-031: a
   summary of each specification's pass, fail or blocked state, the counts and
   the evidence location "at the conclusion of every run regardless of
   outcome". A run that stops before evaluation (contract version mismatch,
   failed requirement discovery) prints only "Run failed; evidence in …". Fix:
-  print the summary with every specification as blocked.
+  print the summary with every specification as blocked. **Fixed** in #48: such
+  a run writes its report and prints the summary with every specification
+  BLOCKED, one outcome per declared constraint, the counts, the evidence
+  location and the reason; the exit status stays 1.
 - **C-3, a termination signal abandons the running jobs.** SRS-OPS-008 and the
   ADD (C-ORC-04): stop submitting, then "await completion or acknowledged
   cancellation of in-flight jobs". On a signal the Orchestrator stops polling
@@ -415,7 +419,9 @@ none caused by the recent changes:
   running them, which is neither. Fix: on the first signal stop submitting
   and keep polling the in-flight jobs to completion (each bounded by its job
   timeout, SRS-PERF-004); a second signal stops at once. This needs no contract
-  change; a cancel operation stays optional.
+  change; a cancel operation stays optional. **Fixed** in #48: the first signal
+  stops submissions and awaits the running jobs, which are evaluated; a second
+  signal stops waiting; the run exits 2.
 - **C-4, the reference Runner serves plain HTTP.** SRS-IF-010 (allocation
   Generic) and the ADD: the Runner API contract "shall be carried over TLS".
   The Orchestrator verifies certificates and keeps the token to HTTPS or the
@@ -423,7 +429,9 @@ none caused by the recent changes:
   reference Runner can only be reached securely through a TLS-terminating
   proxy. Fix: a TLS listener in `sqt-runner` (certificate and key from its
   configuration), or document the proxy as the supported deployment. Goes
-  with assigning IF-010 to a release (R-10).
+  with assigning IF-010 to a release (R-10). Orchestrator side, in #48: the
+  optional `runner.ca_cert` lets it verify a Runner certificate issued by a
+  private CA.
 - **C-5, open review findings of #44** (reference Runner): job workspaces
   written by root-owned tool containers cannot be removed by the Runner, so
   F-M5's cleanup fails in a real Docker set-up (important); CPU normalisation

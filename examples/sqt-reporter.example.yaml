@@ -17,6 +17,7 @@ test_specs:
 runner:
   url: http://localhost:3000        # sqt-runner base URL (http:// or https://)
   # token_env: SQT_API_TOKEN        # optional: name of env var holding the bearer token
+  # ca_cert: certs/runner-ca.pem    # optional: PEM CA certificate of an https:// Runner from a private CA
 
   # Optional tuning (values shown are the defaults; allowed range after #):
   # max_concurrent_jobs: 8          # >= 1

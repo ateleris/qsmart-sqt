@@ -415,7 +415,13 @@ pub fn render_terminal(report: &Report, run_dir: &Path) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     for spec in &report.results {
+        // A specification the run never got to evaluate is blocked (SRS-OPS-003).
+        let blocked = spec.outcome_kind == OutcomeKind::InfraError
+            && spec.outcomes.iter().all(|o| {
+                o.evidence.get("error_code").is_some_and(|c| c == crate::orchestrator::RUN_ABORTED)
+            });
         let status = match spec.outcome_kind {
+            _ if blocked => "BLOCKED",
             OutcomeKind::Pass => "PASS",
             OutcomeKind::Fail => "FAIL",
             OutcomeKind::InfraError => "[INFRA]",

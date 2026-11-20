@@ -182,10 +182,92 @@ struct JobOutcome {
     result: Result<sqt_types::JobStatusResponse>,
 }
 
+/// Refuse a Runner whose contract major version this Orchestrator does not
+/// support (SRS-IF-008). Used at the start of a run and by pre-flight.
+///
+/// # Errors
+///
+/// Returns an error naming both versions when the majors differ.
+pub fn check_api_version(version: &VersionResponse) -> Result<()> {
+    let runner_major = version.api_version.split('.').next().unwrap_or("0");
+    if runner_major != SUPPORTED_API_MAJOR {
+        anyhow::bail!(
+            "Runner API version {} incompatible with supported {}.x",
+            version.api_version,
+            SUPPORTED_API_MAJOR,
+        );
+    }
+    Ok(())
+}
+
+/// Error code of a specification blocked because the run stopped before it
+/// could be evaluated (see [`blocked_run`]).
+pub const RUN_ABORTED: &str = "RUN_ABORTED";
+
+/// The result of a run that stopped before any specification was evaluated,
+/// for example on an incompatible contract version or a failed requirement
+/// discovery: every specification is blocked, with one outcome per declared
+/// constraint, so the report and the end-of-run summary still list each one
+/// with the counts (SRS-OPS-003, SRS-FUNC-009).
+pub fn blocked_run(
+    specs: &[TestSpec],
+    config: &SqtConfig,
+    reason: &str,
+) -> (RunResult, RunProvenance) {
+    let results = specs
+        .iter()
+        .map(|spec| {
+            let mut evidence = HashMap::new();
+            evidence.insert("error_code".to_string(), RUN_ABORTED.to_string());
+            evidence.insert("error_message".to_string(), reason.to_string());
+            let message = format!("blocked: the run stopped before evaluation: {reason}");
+            let n = (spec.constraints.len() + spec.unreconcilable.len()).max(1);
+            let outcomes = (0..n)
+                .map(|_| ConstraintOutcome {
+                    passed: false,
+                    actual: f64::NAN,
+                    expected: f64::NAN,
+                    message: message.clone(),
+                    evidence: evidence.clone(),
+                })
+                .collect();
+            SpecResult {
+                spec: spec.clone(),
+                outcomes,
+                outcome: crate::specs::OutcomeKind::InfraError,
+                passed: false,
+                evidence: Vec::new(),
+            }
+        })
+        .collect();
+    let unknown = VersionResponse {
+        api_version: "unknown".to_string(),
+        runner_version: "unknown".to_string(),
+        target_id: "unknown".to_string(),
+        os: "unknown".to_string(),
+        toolchain_versions: HashMap::new(),
+    };
+    (
+        RunResult {
+            results,
+            timestamp: now_iso8601(),
+            config_version: config.project.version.clone(),
+            interrupted: false,
+            requirement_set: None,
+            discovery: None,
+        },
+        build_provenance(&unknown, config),
+    )
+}
+
 /// Submit every grouped job and poll each to completion **concurrently**, each
 /// job holding a semaphore permit for its whole lifetime (submit → complete)
 /// so at most `max_concurrent_jobs` are in flight at once (SRS-PERF-001/002).
-/// The shutdown token short-circuits both submit and poll (SRS-OPS-008).
+///
+/// On a termination signal (SRS-OPS-008) `shutdown` stops further submissions,
+/// while jobs already submitted are still polled to completion, each bounded
+/// by its job timeout (SRS-PERF-004). `abort` (a second signal) also stops the
+/// polling at once.
 ///
 /// Returns one [`JobOutcome`] per group; individual submit/poll failures are
 /// carried in `result` rather than aborting the whole session.
@@ -193,6 +275,7 @@ async fn submit_and_poll_all(
     client: &ApiClient,
     semaphore: &Arc<Semaphore>,
     shutdown: &CancellationToken,
+    abort: &CancellationToken,
     group_items: &[(GroupKey, JobRequest, u64)],
 ) -> Vec<JobOutcome> {
     let tasks = group_items.iter().map(|(key, request, timeout_secs)| {
@@ -232,8 +315,8 @@ async fn submit_and_poll_all(
             let poll_timeout = Duration::from_secs(timeout_secs + 60);
             let result = tokio::select! {
                 res = client.wait_for_job(&job_id, poll_timeout) => res,
-                () = shutdown.cancelled() =>
-                    Err(anyhow::anyhow!("shutdown received while waiting for job {job_id}")),
+                () = abort.cancelled() =>
+                    Err(anyhow::anyhow!("second shutdown signal received while waiting for job {job_id}")),
             };
             JobOutcome { key: key.clone(), job_id: Some(job_id), timeout_secs, result }
         }
@@ -246,9 +329,11 @@ async fn submit_and_poll_all(
 /// Groups specs by (`workload_type`, input), submits one job per group,
 /// waits for all results, then evaluates each spec's constraints.
 ///
-/// On SIGTERM / Ctrl-C the `shutdown` token is cancelled.  In-flight polls
-/// finish (or time out), partial results are collected, and the returned
-/// `RunResult` will have `interrupted: true`.
+/// On SIGTERM / Ctrl-C the `shutdown` token is cancelled: no further job is
+/// submitted, the jobs already submitted are awaited to completion and
+/// evaluated, and the returned `RunResult` has `interrupted: true`
+/// (SRS-OPS-008). Polling cannot be stopped early here; use
+/// [`run_with_abort`] for a second signal that does.
 ///
 /// Returns `(RunResult, RunProvenance)` so the caller can build a report
 /// with full provenance information.
@@ -258,15 +343,33 @@ async fn submit_and_poll_all(
 /// Returns an error only for unrecoverable setup failures (version check,
 /// job submission I/O).  Individual job failures are recorded as
 /// `OutcomeKind::InfraError` in the spec results rather than propagated.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the session protocol (version, discovery, submit, evaluate) reads top to bottom as specified"
-)]
 pub async fn run(
     specs: &[TestSpec],
     client: &ApiClient,
     config: &SqtConfig,
     shutdown: CancellationToken,
+    evidence_store: &mut EvidenceStore,
+) -> Result<(RunResult, RunProvenance)> {
+    run_with_abort(specs, client, config, shutdown, CancellationToken::new(), evidence_store).await
+}
+
+/// [`run`] with a second token: cancelling `abort` (a second termination
+/// signal) also stops polling the jobs already submitted; they are recorded
+/// as interrupted.
+///
+/// # Errors
+///
+/// As [`run`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "the session protocol (version, discovery, submit, evaluate) reads top to bottom as specified"
+)]
+pub async fn run_with_abort(
+    specs: &[TestSpec],
+    client: &ApiClient,
+    config: &SqtConfig,
+    shutdown: CancellationToken,
+    abort: CancellationToken,
     evidence_store: &mut EvidenceStore,
 ) -> Result<(RunResult, RunProvenance)> {
     // -----------------------------------------------------------------------
@@ -288,14 +391,7 @@ pub async fn run(
         "Runner connected",
     );
 
-    let runner_major = version.api_version.split('.').next().unwrap_or("0");
-    if runner_major != SUPPORTED_API_MAJOR {
-        anyhow::bail!(
-            "Runner API version {} incompatible with supported {}.x",
-            version.api_version,
-            SUPPORTED_API_MAJOR,
-        );
-    }
+    check_api_version(&version)?;
 
     tracing::info!(
         "SQT Reporter {} -- Runner {} at {}",
@@ -402,7 +498,7 @@ pub async fn run(
     );
 
     let started = Instant::now();
-    let outcomes = submit_and_poll_all(client, &semaphore, &shutdown, &group_items).await;
+    let outcomes = submit_and_poll_all(client, &semaphore, &shutdown, &abort, &group_items).await;
     let interrupted = shutdown.is_cancelled();
     tracing::info!(
         elapsed_secs = started.elapsed().as_secs_f64(),
@@ -959,7 +1055,7 @@ mod tests {
             .collect();
 
         let start = std::time::Instant::now();
-        let outcomes = submit_and_poll_all(&client, &semaphore, &shutdown, &items).await;
+        let outcomes = submit_and_poll_all(&client, &semaphore, &shutdown, &shutdown, &items).await;
         let elapsed = start.elapsed();
 
         assert_eq!(outcomes.len(), njobs);
