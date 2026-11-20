@@ -260,7 +260,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     if let Some(tls_config) = tls_config {
         tracing::info!("sqt-runner listening on https://{addr}");
-        tls::serve(listener, app, tls_config).await.unwrap();
+        tls::serve(listener, app, tls_config).await;
     } else {
         warn_if_plain_http_is_exposed(addr);
         tracing::info!("sqt-runner listening on http://{addr}");
