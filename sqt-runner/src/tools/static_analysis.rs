@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! `static.warnings`: warnings from cppcheck.
+
 use std::path::Path;
 use std::time::Duration;
 

@@ -40,6 +40,7 @@ pub struct RunDir {
     /// Sortable UTC timestamp, e.g. `20261022T101530123Z`: lexical order is
     /// chronological order (SRS-OPS-004).
     pub id: String,
+    /// Absolute path of the run directory.
     pub path: PathBuf,
 }
 
@@ -84,10 +85,14 @@ pub struct EvidenceEntry {
     pub id: String,
     /// `runner_response` or `constraint_outcomes`.
     pub kind: String,
+    /// SHA-256 of the file content, hex.
     pub sha256: String,
+    /// File size in bytes.
     pub size_bytes: u64,
+    /// The job the artefact belongs to, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// The requirement the artefact belongs to, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requirement_uid: Option<String>,
     /// Further facts about the artefact, e.g. the HTTP status of a response.
@@ -98,9 +103,13 @@ pub struct EvidenceEntry {
 /// What an artefact is and what it belongs to.
 #[derive(Debug, Clone, Default)]
 pub struct EvidenceMeta {
+    /// Kind of artefact, as listed in the manifest.
     pub kind: &'static str,
+    /// The job the artefact belongs to, if any.
     pub job_id: Option<String>,
+    /// The requirement the artefact belongs to, if any.
     pub requirement_uid: Option<String>,
+    /// Further facts about the artefact.
     pub details: BTreeMap<String, String>,
 }
 
@@ -110,6 +119,8 @@ struct Manifest<'a> {
     entries: &'a [EvidenceEntry],
 }
 
+/// Writes the evidence of one run under `<run>/evidence/` and keeps the list
+/// of what was written, for the manifest (SRS-FUNC-008).
 pub struct EvidenceStore {
     run: RunDir,
     entries: Vec<EvidenceEntry>,
@@ -128,6 +139,7 @@ impl EvidenceStore {
         Ok(Self { run, entries: Vec::new() })
     }
 
+    /// The run directory this store writes into.
     pub fn run(&self) -> &RunDir {
         &self.run
     }

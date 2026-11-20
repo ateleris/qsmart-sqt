@@ -8,18 +8,30 @@
 
 use std::{path::PathBuf, time::Duration};
 
+/// Where a target is executed. Only `Local` is used; execution happens on
+/// the Runner either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Platform {
+    /// The default.
     Local,
+    /// A named remote platform. Not used by the Orchestrator.
     Remote(String),
 }
 
+/// What a specification runs and with which limits.
 #[derive(Debug, Clone)]
 pub struct Target {
+    /// Path of the binary under test. The Runner configures the binary, so the
+    /// Orchestrator leaves this empty; the report shows it as given.
     pub binary: PathBuf,
+    /// Execution platform; always [`Platform::Local`].
     pub platform: Platform,
+    /// Input file of the specification, sent with the job.
     pub input: Option<PathBuf>,
+    /// Working directory; not used by the Orchestrator.
     pub working_dir: PathBuf,
+    /// Upper bound for the job, from the specification or the configured
+    /// default.
     pub timeout: Duration,
 }
 

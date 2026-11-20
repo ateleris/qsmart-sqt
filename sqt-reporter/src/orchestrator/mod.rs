@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! A qualification session: checks the Runner's contract version
+//! (SRS-IF-008), discovers its declared requirements (SRS-FUNC-018), groups
+//! the specifications into jobs, submits and polls them concurrently within
+//! the configured limit (SRS-PERF-001, SRS-PERF-002), and evaluates each
+//! specification's constraints against the returned metrics (SRS-FUNC-007).
+
 use std::{
     collections::HashMap,
     sync::Arc,

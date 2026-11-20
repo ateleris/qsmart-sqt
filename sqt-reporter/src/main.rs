@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The `sqt` command: runs a qualification session or its pre-flight check
+//! against a Runner. See `sqt --help` and [`sqt_reporter::cli`].
+
 use anyhow::Result;
 use clap::Parser;
 use sqt_reporter::cli::{Cli, Commands};

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Execution backends: how the Runner runs one job and describes its target.
+
 use std::{collections::HashMap, path::Path, time::Duration};
 
 use anyhow::Result;
@@ -11,7 +13,9 @@ pub mod docker;
 /// Result of executing one job: the collected metrics plus the binary's
 /// captured inference output (if any).
 pub struct ExecutionOutcome {
+    /// Metrics collected for the job.
     pub metrics: JobMetrics,
+    /// The binary's inference output, if it produced any.
     pub output: Option<JobOutput>,
 }
 

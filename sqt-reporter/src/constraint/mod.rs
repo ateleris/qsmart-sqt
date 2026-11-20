@@ -1,18 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Constraints of a test specification: a metric, a comparison operator and a
+//! threshold, with units reconciled at load time (SRS-FUNC-004).
+
 use std::fmt;
 
 pub use evaluator::ConstraintOutcome;
 pub(crate) mod evaluator;
 
+/// Comparison operator of a constraint: the measured value is compared with
+/// the threshold as `measured <op> threshold`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    /// `<=`
     Lte,
+    /// `>=`
     Gte,
+    /// `<`
     Lt,
+    /// `>`
     Gt,
+    /// `==`
     Eq,
+    /// `!=`
     Ne,
 }
 
@@ -38,121 +49,192 @@ impl fmt::Display for Op {
 #[derive(Debug, Clone)]
 pub enum Constraint {
     // -- Execution ------------------------------------------------------------
+    /// Exit code of the binary under test. Wire name: `return_code`.
     ReturnCode {
+        /// Comparison operator.
         op: Op,
+        /// Expected exit code.
         value: i64,
     },
     /// Wall-clock execution time (wire name: `time.avg_ms`).
     ExecutionTime {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in milliseconds.
         ms: f64,
     },
+    /// Median (50th percentile) inference latency. Wire name: `time.latency_p50_ms`.
     TimeLatencyP50Ms {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in milliseconds.
         ms: f64,
     },
+    /// 95th-percentile inference latency. Wire name: `time.latency_p95_ms`.
     TimeLatencyP95Ms {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in milliseconds.
         ms: f64,
     },
+    /// 99th-percentile inference latency. Wire name: `time.latency_p99_ms`.
     TimeLatencyP99Ms {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in milliseconds.
         ms: f64,
     },
+    /// Inference throughput. Wire name: `time.throughput_fps`.
     TimeThroughputFps {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in inferences (frames) per second.
         fps: f64,
     },
 
     // -- Memory ---------------------------------------------------------------
+    /// Peak resident set size. Wire name: `memory.peak_rss_kb`.
     MemoryPeakRss {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in kilobytes.
         kb: f64,
     },
+    /// Average resident set size. Wire name: `memory.avg_rss_kb`.
     MemoryAvgRss {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in kilobytes.
         kb: f64,
     },
     /// Valgrind / `ASan` leak bytes (wire name: `memory.leaks_bytes`).
     MemoryLeaks {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in bytes.
         bytes: f64,
     },
+    /// Peak stack usage. Wire name: `memory.stack_kb`.
     MemoryStackKb {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in kilobytes.
         kb: f64,
     },
+    /// Number of heap allocations. Wire name: `memory.heap_allocations`.
     MemoryHeapAllocations {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a count.
         count: i64,
     },
 
     // -- CPU ------------------------------------------------------------------
     /// Normalised CPU utilisation 0–100 % (wire name: `cpu.avg_normalized_pct`).
     CpuAvgNormalizedPct {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in percent.
         pct: f64,
     },
 
     // -- Coverage -------------------------------------------------------------
+    /// Line coverage of the binary under test. Wire name: `coverage.line_pct`.
     CoverageLinePct {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in percent.
         pct: f64,
     },
+    /// Branch coverage of the binary under test. Wire name: `coverage.branch_pct`.
     CoverageBranchPct {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in percent.
         pct: f64,
     },
+    /// Function coverage of the binary under test. Wire name: `coverage.function_pct`.
     CoverageFunctionPct {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in percent.
         pct: f64,
     },
 
     // -- Static analysis / binary ---------------------------------------------
+    /// Static-analysis warnings. Wire name: `static.warnings`.
     StaticWarnings {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a count.
         value: i64,
     },
+    /// Critical static-analysis issues. Wire name: `static.critical_issues`.
     StaticCriticalIssues {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a count.
         value: i64,
     },
+    /// Major static-analysis issues. Wire name: `static.major_issues`.
     StaticMajorIssues {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a count.
         value: i64,
     },
+    /// Size of the binary under test. Wire name: `binary.size_kb`.
     BinarySizeKb {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in kilobytes.
         kb: f64,
     },
 
     // -- Harness diagnostics --------------------------------------------------
     /// Harness/Docker overhead in ms (wire name: `harness.docker_overhead_ms`).
     HarnessDockerOverheadMs {
+        /// Comparison operator.
         op: Op,
+        /// Threshold in milliseconds.
         ms: f64,
     },
 
     // -- ML accuracy (computed client-side, T-054) ----------------------------
+    /// Classification accuracy, computed client-side from the job output (SRS-FUNC-017). Wire name: `ml.accuracy`.
     MlAccuracy {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a fraction (0 to 1).
         value: f64,
     },
+    /// F1 score, computed client-side from the job output (SRS-FUNC-017). Wire name: `ml.f1_score`.
     MlF1Score {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a fraction (0 to 1).
         value: f64,
     },
+    /// Recall, computed client-side from the job output (SRS-FUNC-017). Wire name: `ml.recall`.
     MlRecall {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a fraction (0 to 1).
         value: f64,
     },
+    /// Precision, computed client-side from the job output (SRS-FUNC-017). Wire name: `ml.precision`.
     MlPrecision {
+        /// Comparison operator.
         op: Op,
+        /// Threshold as a fraction (0 to 1).
         value: f64,
     },
     /// Numerical precision comparison within tolerance (SRS-FUNC-016).
     MlOutputWithinTolerance {
+        /// Comparison operator.
         op: Op,
+        /// Threshold; the measured value is 1 when every output is within
+        /// tolerance of the reference and 0 otherwise.
         value: f64,
     },
 }
@@ -160,78 +242,103 @@ pub enum Constraint {
 // -- Named constructors -------------------------------------------------------
 
 impl Constraint {
+    /// A [`Constraint::ReturnCode`].
     pub fn return_code(op: Op, value: i64) -> Self {
         Self::ReturnCode { op, value }
     }
+    /// A [`Constraint::ExecutionTime`].
     pub fn execution_time(op: Op, ms: f64) -> Self {
         Self::ExecutionTime { op, ms }
     }
+    /// A [`Constraint::TimeLatencyP50Ms`].
     pub fn time_latency_p50_ms(op: Op, ms: f64) -> Self {
         Self::TimeLatencyP50Ms { op, ms }
     }
+    /// A [`Constraint::TimeLatencyP95Ms`].
     pub fn time_latency_p95_ms(op: Op, ms: f64) -> Self {
         Self::TimeLatencyP95Ms { op, ms }
     }
+    /// A [`Constraint::TimeLatencyP99Ms`].
     pub fn time_latency_p99_ms(op: Op, ms: f64) -> Self {
         Self::TimeLatencyP99Ms { op, ms }
     }
+    /// A [`Constraint::TimeThroughputFps`].
     pub fn time_throughput_fps(op: Op, fps: f64) -> Self {
         Self::TimeThroughputFps { op, fps }
     }
+    /// A [`Constraint::MemoryPeakRss`].
     pub fn memory_peak_rss(op: Op, kb: f64) -> Self {
         Self::MemoryPeakRss { op, kb }
     }
+    /// A [`Constraint::MemoryAvgRss`].
     pub fn memory_avg_rss(op: Op, kb: f64) -> Self {
         Self::MemoryAvgRss { op, kb }
     }
+    /// A [`Constraint::MemoryLeaks`].
     pub fn memory_leaks(op: Op, bytes: f64) -> Self {
         Self::MemoryLeaks { op, bytes }
     }
+    /// A [`Constraint::MemoryStackKb`].
     pub fn memory_stack_kb(op: Op, kb: f64) -> Self {
         Self::MemoryStackKb { op, kb }
     }
+    /// A [`Constraint::MemoryHeapAllocations`].
     pub fn memory_heap_allocations(op: Op, count: i64) -> Self {
         Self::MemoryHeapAllocations { op, count }
     }
+    /// A [`Constraint::CpuAvgNormalizedPct`].
     pub fn cpu_avg_normalized_pct(op: Op, pct: f64) -> Self {
         Self::CpuAvgNormalizedPct { op, pct }
     }
+    /// A [`Constraint::CoverageLinePct`].
     pub fn coverage_line_pct(op: Op, pct: f64) -> Self {
         Self::CoverageLinePct { op, pct }
     }
+    /// A [`Constraint::CoverageBranchPct`].
     pub fn coverage_branch_pct(op: Op, pct: f64) -> Self {
         Self::CoverageBranchPct { op, pct }
     }
+    /// A [`Constraint::CoverageFunctionPct`].
     pub fn coverage_function_pct(op: Op, pct: f64) -> Self {
         Self::CoverageFunctionPct { op, pct }
     }
+    /// A [`Constraint::StaticWarnings`].
     pub fn static_warnings(op: Op, value: i64) -> Self {
         Self::StaticWarnings { op, value }
     }
+    /// A [`Constraint::StaticCriticalIssues`].
     pub fn static_critical_issues(op: Op, value: i64) -> Self {
         Self::StaticCriticalIssues { op, value }
     }
+    /// A [`Constraint::StaticMajorIssues`].
     pub fn static_major_issues(op: Op, value: i64) -> Self {
         Self::StaticMajorIssues { op, value }
     }
+    /// A [`Constraint::BinarySizeKb`].
     pub fn binary_size_kb(op: Op, kb: f64) -> Self {
         Self::BinarySizeKb { op, kb }
     }
+    /// A [`Constraint::HarnessDockerOverheadMs`].
     pub fn harness_docker_overhead_ms(op: Op, ms: f64) -> Self {
         Self::HarnessDockerOverheadMs { op, ms }
     }
+    /// A [`Constraint::MlAccuracy`].
     pub fn ml_accuracy(op: Op, value: f64) -> Self {
         Self::MlAccuracy { op, value }
     }
+    /// A [`Constraint::MlF1Score`].
     pub fn ml_f1_score(op: Op, value: f64) -> Self {
         Self::MlF1Score { op, value }
     }
+    /// A [`Constraint::MlRecall`].
     pub fn ml_recall(op: Op, value: f64) -> Self {
         Self::MlRecall { op, value }
     }
+    /// A [`Constraint::MlPrecision`].
     pub fn ml_precision(op: Op, value: f64) -> Self {
         Self::MlPrecision { op, value }
     }
+    /// A [`Constraint::MlOutputWithinTolerance`].
     pub fn ml_output_within_tolerance(op: Op, value: f64) -> Self {
         Self::MlOutputWithinTolerance { op, value }
     }

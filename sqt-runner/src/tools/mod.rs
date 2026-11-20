@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Measurement tools; each collects one group of `JobMetrics`.
+
 pub mod binary_size;
 pub mod coverage;
 pub mod output_capture;

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The Runner's configuration file (`sqt-runner.yaml`).
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -84,21 +86,29 @@ pub struct ToolsConfig {
     pub static_analysis: Option<StaticAnalysisToolConfig>,
 }
 
+/// Container image for running the binary under test.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunToolConfig {
+    /// Image name, with tag or digest.
     pub image: String,
 }
 
+/// Container image for Valgrind memcheck (`memory.leaks_bytes`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ValgrindToolConfig {
+    /// Image name, with tag or digest.
     pub image: String,
 }
 
+/// Container image for coverage collection (`coverage.line_pct`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CoverageToolConfig {
+    /// Image name, with tag or digest.
     pub image: String,
 }
 
+/// Connection to a `SonarQube` server (`static.critical_issues`,
+/// `static.major_issues`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SonarQubeToolConfig {
     /// `SonarQube` server URL.
@@ -113,8 +123,10 @@ fn default_sonar_token_env() -> String {
     "SONAR_TOKEN".into()
 }
 
+/// Container image for static analysis (`static.warnings`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct StaticAnalysisToolConfig {
+    /// Image name, with tag or digest.
     pub image: String,
 }
 
@@ -336,15 +348,24 @@ impl ServerConfig {
 /// that `run_job` and `analysis_job` consume.
 #[derive(Clone)]
 pub struct ToolConfig {
+    /// Image for running the binary; `None` if not configured.
     pub run_image: Option<String>,
+    /// Valgrind image; `None` disables leak measurement.
     pub valgrind_image: Option<String>,
+    /// Coverage image; `None` disables coverage measurement.
     pub coverage_image: Option<String>,
+    /// `SonarQube` URL; `None` disables the issue query.
     pub sonar_url: Option<String>,
+    /// `SonarQube` token, read from the configured environment variable at
+    /// startup.
     pub sonar_token: Option<String>,
+    /// Static-analysis image; `None` disables static analysis.
     pub static_image: Option<String>,
 }
 
 impl ToolConfig {
+    /// Flatten the `tools:` section, reading the `SonarQube` token from its
+    /// environment variable.
     pub fn from_tools(tools: &ToolsConfig) -> Self {
         let sonar_token = tools.sonarqube.as_ref().and_then(|s| std::env::var(&s.token_env).ok());
 

@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Data types of the Runner API contract (`job-api.openapi.yaml`), shared by
+//! the Orchestrator (`sqt-reporter`) and the reference Runner (`sqt-runner`).
+//!
+//! Field names and wire names follow the contract exactly. Response types
+//! reject unknown fields (`deny_unknown_fields`), so a Runner response that
+//! does not conform to the contract fails to deserialise (SRS-IF-007).
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -9,46 +16,71 @@ use serde::{Deserialize, Serialize};
 // Enumerations
 // ---------------------------------------------------------------------------
 
+/// The kind of ML workload a job runs. It tells the Runner how to interpret
+/// the job input and what output to produce (SRS-FUNC-019).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkloadType {
+    /// Images in, bounding boxes and class labels out.
     ObjectDetection,
+    /// Images in, a class label and confidence out.
     #[default]
     ImageClassification,
+    /// Images in, a per-pixel mask out.
     PixelSegmentation,
+    /// Feature vectors in, a class label out.
     Classification,
+    /// Feature vectors in, a scalar value out.
     Regression,
+    /// A time series in, a forecast sequence out.
     TimeSeriesForecasting,
 }
 
+/// Instrumentation the Runner attaches to the binary under test; one per job.
+/// Instrumented runs are slower, so their timing is not comparable with
+/// uninstrumented runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Instrumentation {
+    /// No instrumentation (default).
     #[default]
     None,
+    /// `AddressSanitizer`: memory errors such as overflows and use-after-free.
     Asan,
+    /// Valgrind memcheck: reports `memory.leaks_bytes`.
     Valgrind,
+    /// GNU gprof call-graph profile; no effect on memory metrics.
     Gprof,
 }
 
+/// How the Runner schedules repetitions and which timing metrics it fills.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeasurementMode {
+    /// Each inference call is timed on its own: `time.avg_ms` and the latency
+    /// percentiles (default).
     #[default]
     Latency,
+    /// The Runner maximises pipeline utilisation and reports `time.throughput_fps`.
     Throughput,
 }
 
+/// State of a job on the Runner. `Complete` and `Failed` are terminal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
+    /// Queued behind the job that is running.
     Accepted,
+    /// Executing its repetitions.
     Running,
+    /// All repetitions finished; metrics and outputs are final.
     Complete,
+    /// Infrastructure failure: the job could not run. `error` says why.
     Failed,
 }
 
 impl JobStatus {
+    /// Whether the job has reached a final state, so polling can stop (SRS-IF-003).
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Complete | Self::Failed)
     }
@@ -61,21 +93,30 @@ impl JobStatus {
 /// Body for `POST /api/v1/jobs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRequest {
+    /// Workload type of the job.
     pub use_case: WorkloadType,
     /// Workload-specific input data (images, tabular rows, time series, or
     /// dataset reference). `None` when the server has a default dataset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<serde_json::Value>,
+    /// How often the binary is run on the same input; metrics are aggregated
+    /// over all repetitions. Defaults to 1.
     #[serde(default = "default_repetitions")]
     pub repetitions: u32,
+    /// Instrumentation to attach (default: none).
     #[serde(default)]
     pub instrumentation: Instrumentation,
+    /// Measurement mode (default: latency).
     #[serde(default)]
     pub mode: MeasurementMode,
+    /// Calls made before measurement starts; their results are discarded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warmup_repetitions: Option<u32>,
+    /// Upper bound in seconds for the whole job, warm-up included; the Runner
+    /// fails the job when it is exceeded. `None` lets the Runner choose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Free key-value metadata, echoed back in the job status.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<HashMap<String, String>>,
 }
@@ -95,9 +136,13 @@ fn default_repetitions() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobAccepted {
+    /// Identifier for polling the job.
     pub job_id: String,
+    /// Always `accepted`.
     pub status: String,
+    /// Position in the execution queue; 1 means next.
     pub queue_position: u32,
+    /// Submission time, RFC 3339.
     pub created_at: String,
 }
 
@@ -111,18 +156,26 @@ pub struct JobAccepted {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HardwareInfo {
+    /// Primary compute element: `cpu`, `gpu`, `fpga`, `npu`, `other`, or
+    /// `unknown` when the Runner does not describe its hardware.
     #[serde(rename = "type")]
     pub hw_type: String,
+    /// Human-readable hardware model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Number of compute units; the basis of `cpu.avg_normalized_pct`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cores: Option<u32>,
+    /// Total available memory in kilobytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_total_kb: Option<u64>,
+    /// Attached accelerator, if inference does not run on the primary element.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accelerator_model: Option<String>,
+    /// Clock of the primary compute element in MHz.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clock_mhz: Option<f64>,
+    /// Operating system or runtime on the target, e.g. `RTEMS 6`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub os: Option<String>,
 }
@@ -158,55 +211,80 @@ impl Default for HardwareInfo {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JobMetrics {
+    /// Exit code of the last repetition; 0 is success.
     pub return_code: Option<i64>,
 
+    /// Average execution time per repetition in milliseconds: the binary's own
+    /// elapsed time, without container overhead.
     #[serde(rename = "time.avg_ms")]
     pub time_avg_ms: Option<f64>,
+    /// Median latency in milliseconds; needs at least 2 repetitions in latency mode.
     #[serde(rename = "time.latency_p50_ms")]
     pub time_latency_p50_ms: Option<f64>,
+    /// 95th-percentile latency in milliseconds; needs at least 20 repetitions.
     #[serde(rename = "time.latency_p95_ms")]
     pub time_latency_p95_ms: Option<f64>,
+    /// 99th-percentile latency in milliseconds; needs at least 100 repetitions.
     #[serde(rename = "time.latency_p99_ms")]
     pub time_latency_p99_ms: Option<f64>,
+    /// Inferences per second; throughput mode only.
     #[serde(rename = "time.throughput_fps")]
     pub time_throughput_fps: Option<f64>,
+    /// Time from process start to the first inference call in milliseconds.
     #[serde(rename = "time.startup_ms")]
     pub time_startup_ms: Option<f64>,
+    /// Duration of the first (cold) inference call in milliseconds.
     #[serde(rename = "time.first_inference_ms")]
     pub time_first_inference_ms: Option<f64>,
 
+    /// Average resident set size across repetitions in kilobytes.
     #[serde(rename = "memory.avg_rss_kb")]
     pub memory_avg_rss_kb: Option<f64>,
+    /// Peak resident set size across repetitions in kilobytes.
     #[serde(rename = "memory.peak_rss_kb")]
     pub memory_peak_rss_kb: Option<f64>,
+    /// Bytes leaked according to Valgrind or `ASan`; `null` without that
+    /// instrumentation.
     #[serde(rename = "memory.leaks_bytes")]
     pub memory_leaks_bytes: Option<i64>,
+    /// Peak stack usage in kilobytes.
     #[serde(rename = "memory.stack_kb")]
     pub memory_stack_kb: Option<f64>,
+    /// Heap allocation calls across all repetitions.
     #[serde(rename = "memory.heap_allocations")]
     pub memory_heap_allocations: Option<i64>,
 
+    /// Average CPU use as a share of all cores, 0 to 100 %.
     #[serde(rename = "cpu.avg_normalized_pct")]
     pub cpu_avg_normalized_pct: Option<f64>,
 
+    /// Line coverage, 0 to 100 %; `null` if the binary is not instrumented.
     #[serde(rename = "coverage.line_pct")]
     pub coverage_line_pct: Option<f64>,
+    /// Branch coverage, 0 to 100 %; `null` if the binary is not instrumented.
     #[serde(rename = "coverage.branch_pct")]
     pub coverage_branch_pct: Option<f64>,
+    /// Function coverage, 0 to 100 %; `null` if the binary is not instrumented.
     #[serde(rename = "coverage.function_pct")]
     pub coverage_function_pct: Option<f64>,
+    /// Source lines executed; `null` if the binary is not instrumented.
     #[serde(rename = "coverage.lines_covered")]
     pub coverage_lines_covered: Option<i64>,
+    /// Instrumented source lines; `null` if the binary is not instrumented.
     #[serde(rename = "coverage.lines_total")]
     pub coverage_lines_total: Option<i64>,
 
+    /// Warnings from static analysers such as cppcheck.
     #[serde(rename = "static.warnings")]
     pub static_warnings: Option<i64>,
+    /// CRITICAL-severity `SonarQube` issues.
     #[serde(rename = "static.critical_issues")]
     pub static_critical_issues: Option<i64>,
+    /// MAJOR-severity `SonarQube` issues.
     #[serde(rename = "static.major_issues")]
     pub static_major_issues: Option<i64>,
 
+    /// Size of the binary on disk in kilobytes.
     #[serde(rename = "binary.size_kb")]
     pub binary_size_kb: Option<f64>,
 
@@ -217,11 +295,14 @@ pub struct JobMetrics {
     #[serde(rename = "harness.docker_overhead_ms")]
     pub harness_docker_overhead_ms: Option<f64>,
 
+    /// Average power draw during inference in watts.
     #[serde(rename = "power.avg_watts")]
     pub power_avg_watts: Option<f64>,
+    /// Peak power draw across repetitions in watts.
     #[serde(rename = "power.peak_watts")]
     pub power_peak_watts: Option<f64>,
 
+    /// Average die or board temperature in degrees Celsius.
     #[serde(rename = "hardware.temperature_celsius")]
     pub hardware_temperature_celsius: Option<f64>,
 }
@@ -277,11 +358,15 @@ impl JobMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobOutput {
+    /// Semantic type of the outputs, e.g. `classification_labels`.
     #[serde(rename = "type")]
     pub output_type: String,
+    /// Whether all repetitions produced bit-identical outputs (SRS-REL-004).
     pub result_consistent: bool,
+    /// One output per input item, not per repetition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<serde_json::Value>>,
+    /// SHA-256 of the canonical JSON of `outputs`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs_checksum: Option<String>,
 }
@@ -298,27 +383,40 @@ pub struct JobOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobStatusResponse {
+    /// Identifier from the submission.
     pub job_id: String,
+    /// Workload type of the job.
     pub use_case: WorkloadType,
+    /// Measurement mode of the job.
     pub mode: MeasurementMode,
+    /// Repetitions requested.
     pub repetitions: u32,
+    /// Current state.
     pub status: JobStatus,
     /// Non-null only while `status == "accepted"` (queued, not yet running).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<u32>,
+    /// Submission time, RFC 3339.
     pub created_at: String,
+    /// Start of execution; absent while queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    /// End of execution; present only in terminal states.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    /// Infrastructure error; present only when the job failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Metadata from the request, echoed unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<HashMap<String, String>>,
+    /// Hardware that executed the job; absent while queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hardware: Option<HardwareInfo>,
+    /// Aggregated metrics; all `None` until the job has run.
     #[serde(default)]
     pub metrics: JobMetrics,
+    /// Model outputs; absent while the job is running.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<JobOutput>,
 }
@@ -357,8 +455,11 @@ pub struct VersionResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
+    /// All checks passed (HTTP 200).
     Healthy,
+    /// Operational, but a non-critical check failed (HTTP 200).
     Degraded,
+    /// A critical check failed; do not submit jobs (HTTP 503).
     Unhealthy,
 }
 
@@ -394,6 +495,7 @@ pub struct HealthChecks {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HealthResponse {
+    /// Overall health.
     pub status: HealthStatus,
     /// Crate version of the running runner binary.
     pub runner_version: String,
@@ -413,7 +515,9 @@ pub struct HealthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DocsResponse {
+    /// Requirement documents the Runner declares (SRS-FUNC-018).
     pub documents: Vec<StrictdocDocument>,
+    /// Further evidence files, kept verbatim in the QDP.
     pub attachments: Vec<Attachment>,
 }
 
@@ -423,6 +527,7 @@ pub struct DocsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StrictdocDocument {
+    /// File name on the Runner.
     pub filename: String,
     /// Title extracted from `[DOCUMENT] TITLE:` as a convenience; `null` if
     /// the server does not pre-parse the document.
@@ -439,7 +544,9 @@ pub struct StrictdocDocument {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attachment {
+    /// File name on the Runner.
     pub filename: String,
+    /// MIME type of the file.
     pub content_type: String,
     /// Base64-encoded file contents (standard encoding, no line breaks).
     pub data: String,
@@ -455,6 +562,7 @@ pub struct Attachment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorResponse {
+    /// Error details.
     pub error: ApiError,
 }
 
@@ -464,10 +572,14 @@ pub struct ErrorResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiError {
+    /// Machine-readable code, e.g. `VALIDATION_ERROR` or `NOT_FOUND`.
     pub code: String,
+    /// Human-readable description.
     pub message: String,
+    /// Optional further context.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
+    /// Time of the error, RFC 3339.
     pub timestamp: String,
 }
 

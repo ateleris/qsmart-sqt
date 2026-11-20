@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The Orchestrator's configuration file (`sqt-reporter.yaml`): loading and
+//! validation (SRS-FUNC-001, SRS-FUNC-002).
+
 use std::path::Path;
 
 use anyhow::Context;

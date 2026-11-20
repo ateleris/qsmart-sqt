@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Test specifications and their results: what each ML-L requirement is
+//! checked against (SRS-FUNC-003), and what a run found.
+
 pub mod loader;
 
 use std::collections::HashMap;
@@ -9,11 +12,17 @@ use crate::constraint::{Constraint, ConstraintOutcome};
 use crate::metrics::Target;
 use sqt_types::WorkloadType;
 
+/// One test specification: an ML-L requirement, the workload that exercises
+/// it and the constraints its measurements must meet.
 #[derive(Debug, Clone, Default)]
 pub struct TestSpec {
+    /// UID of the ML-L requirement verified.
     pub requirement_uid: String,
+    /// Workload type the job runs (SRS-FUNC-019).
     pub workload_type: WorkloadType,
+    /// Input and timeout of the job.
     pub target: Target,
+    /// Constraints, with thresholds in the metric's unit.
     pub constraints: Vec<Constraint>,
     /// Constraints whose value unit does not reduce to the metric's unit. Each
     /// is reported as a failing outcome (SRS-FUNC-004).
@@ -30,9 +39,11 @@ pub struct TestSpec {
 /// unit does not reduce to the unit of its metric.
 #[derive(Debug, Clone)]
 pub struct UnreconcilableConstraint {
+    /// Wire name of the metric.
     pub metric: String,
     /// Display form of the operator, e.g. `<=`.
     pub operator: String,
+    /// Why the unit does not reduce.
     pub reason: String,
 }
 
@@ -44,15 +55,22 @@ pub struct UnreconcilableConstraint {
 /// performance requirement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutcomeKind {
+    /// Every constraint passed.
     Pass,
+    /// A constraint failed, or there was nothing to evaluate.
     Fail,
+    /// The Runner could not execute the job.
     InfraError,
 }
 
+/// Result of one specification.
 #[derive(Debug, Clone)]
 pub struct SpecResult {
+    /// The specification.
     pub spec: TestSpec,
+    /// One outcome per constraint.
     pub outcomes: Vec<ConstraintOutcome>,
+    /// Outcome of the specification.
     pub outcome: OutcomeKind,
     /// Backward-compat helper: `true` only for `OutcomeKind::Pass`.
     pub passed: bool,
@@ -100,10 +118,14 @@ impl SpecResult {
     }
 }
 
+/// Results of a whole run.
 #[derive(Debug, Clone)]
 pub struct RunResult {
+    /// One result per specification.
     pub results: Vec<SpecResult>,
+    /// When the results were assembled, RFC 3339 UTC.
     pub timestamp: String,
+    /// `project.version` from the configuration.
     pub config_version: String,
     /// `true` if the run was cut short by SIGTERM or Ctrl-C.
     pub interrupted: bool,

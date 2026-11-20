@@ -11,6 +11,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Serialize;
 
+/// How a Runner-declared requirement is covered in a run.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TraceStatus {
@@ -22,11 +23,16 @@ pub enum TraceStatus {
     Uncovered,
 }
 
+/// One row of the traceability matrix (SRS-FUNC-010).
 #[derive(Debug, Clone, Serialize)]
 pub struct TraceEntry {
+    /// Requirement UID.
     pub uid: String,
+    /// Requirement title.
     pub title: String,
+    /// How the requirement is covered.
     pub status: TraceStatus,
+    /// Verification methods from the requirement.
     pub verification_methods: Vec<String>,
     /// `"PASS"`, `"FAIL"`, `"INFRA_ERROR"`, or `None` when no result exists.
     pub outcome: Option<String>,
@@ -35,22 +41,35 @@ pub struct TraceEntry {
     pub evidence_paths: Vec<String>,
 }
 
+/// The traceability matrix of a run, written as JSON and text (SRS-DATA-002).
 #[derive(Debug, Serialize)]
 pub struct TraceabilityMatrix {
+    /// Version of the matrix format.
     pub schema_version: &'static str,
+    /// Generation time, RFC 3339 UTC.
     pub generated_at: String,
+    /// Counts by coverage and outcome.
     pub summary: TraceSummary,
+    /// One row per requirement.
     pub entries: Vec<TraceEntry>,
 }
 
+/// Counts of the matrix rows.
 #[derive(Debug, Serialize)]
 pub struct TraceSummary {
+    /// Requirements in the matrix.
     pub total: usize,
+    /// Requirements covered by a specification.
     pub tested: usize,
+    /// Requirements compliant by declaration.
     pub compliant_by_declaration: usize,
+    /// Testable requirements without a specification.
     pub uncovered: usize,
+    /// Tested requirements that passed.
     pub pass: usize,
+    /// Tested requirements that failed.
     pub fail: usize,
+    /// Tested requirements whose job hit an infrastructure error.
     pub infra_error: usize,
 }
 

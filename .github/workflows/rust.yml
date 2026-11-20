@@ -28,7 +28,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/ci-docker
         with:
-          run: cargo clippy --workspace --all-targets -- -D warnings
+          run: >-
+            cargo clippy --workspace --all-targets -- -D warnings
+            && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 
   # Licences, bans and sources (cargo-deny), security advisories (cargo-audit)
   # and the CycloneDX SBOM of each delivered binary.

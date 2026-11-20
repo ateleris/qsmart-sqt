@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! `binary.size_kb`: size of the binary on disk.
+
 use std::path::Path;
 
 use anyhow::{Context, Result};

@@ -1,16 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Evaluation of one constraint against a measured value.
+
 use std::collections::HashMap;
 
 use super::{Constraint, Op};
 
+/// Result of checking one constraint.
 #[derive(Debug, Clone)]
 pub struct ConstraintOutcome {
+    /// Whether the measured value satisfies the constraint.
     pub passed: bool,
+    /// Measured value; NaN when nothing could be measured.
     pub actual: f64,
+    /// Threshold of the constraint; NaN for an infrastructure error.
     pub expected: f64,
+    /// Human-readable result, e.g. `0 == 0: PASS`.
     pub message: String,
+    /// Facts behind the result, e.g. the job id or an error code.
     pub evidence: HashMap<String, String>,
 }
 

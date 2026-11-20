@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! Running a container with `docker run --rm`: a timeout, captured output and
+//! shell quoting of arguments.
+
 use std::{
     io::Read,
     path::{Path, PathBuf},
@@ -14,10 +17,16 @@ use uuid::Uuid;
 
 /// Specification for a Docker container run.
 pub struct DockerRun {
+    /// Image to run.
     pub image: String,
+    /// Command and arguments inside the container.
     pub command: Vec<String>,
+    /// Bind mounts: host path and container path.
     pub volumes: Vec<(PathBuf, String)>,
+    /// Working directory inside the container.
     pub working_dir: Option<String>,
+    /// When this elapses the container is killed and the run fails with an
+    /// error.
     pub timeout: Duration,
     /// Environment variables passed to the container via `-e`.
     pub env: Vec<(String, String)>,
@@ -25,9 +34,13 @@ pub struct DockerRun {
 
 /// Output captured from a Docker container run.
 pub struct DockerOutput {
+    /// Exit code of the container; -1 if the process ended without one.
     pub exit_code: i32,
+    /// Captured standard output.
     pub stdout: Vec<u8>,
+    /// Captured standard error.
     pub stderr: Vec<u8>,
+    /// Wall-clock time of the `docker run` call.
     pub wall_time: Duration,
 }
 

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The default backend: builds the binary when configured, runs it and the
+//! measurement tools in Docker containers and assembles the job metrics.
+
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -62,6 +65,7 @@ pub struct RawRun {
 }
 
 impl DockerExecutor {
+    /// A backend for the configured binary, build, tools and target description.
     pub fn new(
         binary_config: BinaryConfig,
         build_config: Option<BuildConfig>,

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The in-memory job store. Jobs are kept until the Runner stops.
+
 use std::{collections::HashMap, sync::Arc};
 
 use sqt_types::{JobMetrics, JobOutput, JobRequest, JobStatus, WorkloadType};
@@ -8,20 +10,32 @@ use tokio::sync::RwLock;
 
 /// In-memory state for a single job.
 pub struct JobState {
+    /// Job id, a UUID.
     pub id: String,
+    /// Workload type from the request.
     pub workload_type: WorkloadType,
+    /// Repetitions from the request.
     pub repetitions: u32,
+    /// Tags from the request, echoed in the status.
     pub tags: Option<HashMap<String, String>>,
+    /// Current state.
     pub status: JobStatus,
+    /// Submission time, RFC 3339.
     pub created_at: String,
+    /// Start of execution.
     pub started_at: Option<String>,
+    /// End of execution.
     pub completed_at: Option<String>,
+    /// Why the job failed.
     pub error: Option<String>,
+    /// Metrics, once the job has run.
     pub metrics: Option<JobMetrics>,
+    /// Inference output, once the job has run.
     pub output: Option<JobOutput>,
 }
 
 impl JobState {
+    /// A newly accepted job.
     pub fn new(id: String, request: &JobRequest) -> Self {
         Self {
             id,
@@ -39,8 +53,10 @@ impl JobState {
     }
 }
 
+/// Shared, lockable map of all jobs by id.
 pub type JobStore = Arc<RwLock<HashMap<String, JobState>>>;
 
+/// An empty job store.
 pub fn new_store() -> JobStore {
     Arc::new(RwLock::new(HashMap::new()))
 }

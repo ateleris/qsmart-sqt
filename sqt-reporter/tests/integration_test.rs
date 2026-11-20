@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The Orchestrator against an in-process mock Runner: full runs on the pass,
+//! fail and infrastructure-error paths.
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

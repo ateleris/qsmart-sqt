@@ -1,16 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Ateleris GmbH
 // SPDX-License-Identifier: ESA-PL-permissive-2.4
 
+//! The structure of `sqt-reporter.yaml` and its validation.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
+/// The whole configuration of a qualification run (SRS-FUNC-001).
 #[derive(Debug, Deserialize)]
 pub struct SqtConfig {
+    /// Project identity, stamped into the report.
     pub project: ProjectConfig,
+    /// The test specification files to load.
     pub test_specs: TestSpecsConfig,
+    /// Runner endpoint, authentication, concurrency, timeouts and retry.
     pub runner: RunnerConfig,
+    /// Where the run outputs go.
     pub report: ReportConfig,
 }
 
@@ -25,20 +32,34 @@ pub struct TestSpecsConfig {
     pub files: Vec<PathBuf>,
 }
 
+/// The `runner:` block: how to reach the Runner and how to pace the jobs.
 #[derive(Debug, Deserialize)]
 pub struct RunnerConfig {
+    /// Base URL of the Runner; `http://` or `https://`.
     pub url: String,
+    /// Name of the environment variable holding the bearer token (SRS-IF-006);
+    /// `None` to run unauthenticated.
     pub token_env: Option<String>,
+    /// Jobs in flight at once (SRS-PERF-002); at least 1, default 8.
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: u32,
+    /// Default per-job timeout in seconds, for specifications that set none
+    /// (SRS-PERF-004); default 300.
     #[serde(default = "default_job_timeout_secs")]
     pub job_timeout_secs: u64,
+    /// Retries after a transient Runner error (SRS-FUNC-020); at most 10,
+    /// default 3.
     #[serde(default = "default_retry_max")]
     pub retry_max: u32,
+    /// Back-off in seconds before the first retry, doubling for each further
+    /// retry; at most 60, default 1.
     #[serde(default = "default_retry_backoff_initial_secs")]
     pub retry_backoff_initial_secs: u64,
+    /// Delay in seconds before the first job-status poll, doubling each poll
+    /// (SRS-PERF-003); at least 1, default 1.
     #[serde(default = "default_poll_interval_initial_secs")]
     pub poll_interval_initial_secs: u64,
+    /// Upper bound in seconds for the delay between polls; default 30.
     #[serde(default = "default_poll_interval_max_secs")]
     pub poll_interval_max_secs: u64,
     /// Upper bound on one HTTP request to the Runner, body included.
@@ -169,6 +190,7 @@ impl SqtConfig {
         Ok(())
     }
 
+    /// Log the main configuration values at info level; never the token value.
     pub fn print_summary(&self) {
         tracing::info!("Project: {} v{}", self.project.name, self.project.version);
         tracing::info!("Runner URL: {}", self.runner.url);
