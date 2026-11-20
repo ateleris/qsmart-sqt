@@ -252,6 +252,13 @@ pub struct ServerConfig {
     #[serde(default)]
     pub auth: Option<AuthConfig>,
 
+    /// TLS for the Runner API (SRS-IF-010). When present, the Runner serves
+    /// HTTPS only, with this certificate and key. When absent, it serves plain
+    /// HTTP, which the contract allows only behind a TLS-terminating proxy or
+    /// on the local host.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+
     /// Binary under test configuration.
     pub binary: BinaryConfig,
 
@@ -268,7 +275,8 @@ pub struct ServerConfig {
 
     /// How many finished jobs stay queryable through `GET /api/v1/jobs/{id}`;
     /// older ones are dropped and answer 404 (backlog F-M5). Waiting and
-    /// running jobs are always kept. Default: 1000.
+    /// running jobs are always kept. Default: 1000; at least 1, or a finished
+    /// job would vanish before its client could fetch the result.
     #[serde(default = "default_max_finished_jobs")]
     pub max_finished_jobs: usize,
 
@@ -296,6 +304,16 @@ pub struct ServerConfig {
     pub docs: Option<DocsConfig>,
 }
 
+/// The `tls:` section: PEM files of the Runner's certificate chain and private
+/// key (SRS-IF-010). Relative paths are resolved against the working directory.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// Certificate chain, PEM, leaf certificate first.
+    pub cert: PathBuf,
+    /// Private key of the leaf certificate, PEM (PKCS#8, PKCS#1 or SEC1).
+    pub key: PathBuf,
+}
+
 fn default_max_finished_jobs() -> usize {
     1000
 }
@@ -316,7 +334,24 @@ impl ServerConfig {
         let mut config: Self = serde_yaml::from_str(&contents)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
 
+        if config.max_finished_jobs == 0 {
+            anyhow::bail!(
+                "max_finished_jobs must be at least 1: with 0 every job is dropped the moment \
+                 it finishes, before its client can fetch the result"
+            );
+        }
+
         let cwd = std::env::current_dir().context("failed to determine current directory")?;
+
+        // Resolve TLS file paths to absolute.
+        if let Some(ref mut tls) = config.tls {
+            if tls.cert.is_relative() {
+                tls.cert = cwd.join(&tls.cert);
+            }
+            if tls.key.is_relative() {
+                tls.key = cwd.join(&tls.key);
+            }
+        }
 
         // Resolve binary path to absolute.
         let binary_path = PathBuf::from(&config.binary.path);
@@ -737,5 +772,37 @@ docker:
 
         assert_eq!(config.binary.path, "/absolute/path/app");
         assert_eq!(config.workspace, PathBuf::from("/absolute/workspace"));
+    }
+
+    fn load_yaml(yaml: &str) -> Result<ServerConfig> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        ServerConfig::load(&path)
+    }
+
+    /// Verifies: SRS-INST-001
+    #[test]
+    fn zero_max_finished_jobs_rejected() {
+        let err = load_yaml("binary:\n  path: /bin/true\nmax_finished_jobs: 0\n")
+            .expect_err("max_finished_jobs: 0 must be rejected");
+        assert!(format!("{err:#}").contains("max_finished_jobs"), "{err:#}");
+        let ok = load_yaml("binary:\n  path: /bin/true\nmax_finished_jobs: 1\n").unwrap();
+        assert_eq!(ok.max_finished_jobs, 1);
+    }
+
+    /// Verifies: SRS-IF-010
+    #[test]
+    fn tls_section_is_optional_and_resolved_to_absolute_paths() {
+        let plain = load_yaml("binary:\n  path: /bin/true\n").unwrap();
+        assert!(plain.tls.is_none());
+        let tls = load_yaml(
+            "binary:\n  path: /bin/true\ntls:\n  cert: certs/runner.pem\n  key: /etc/sqt/key.pem\n",
+        )
+        .unwrap()
+        .tls
+        .unwrap();
+        assert!(tls.cert.is_absolute() && tls.cert.ends_with("certs/runner.pem"));
+        assert_eq!(tls.key, PathBuf::from("/etc/sqt/key.pem"));
     }
 }

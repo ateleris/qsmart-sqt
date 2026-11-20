@@ -401,10 +401,7 @@ impl LifecycleBackend for DockerExecutor {
             time_throughput_fps: raw.primary.throughput_fps,
             memory_peak_rss_kb: raw.primary.memory_peak_rss_kb,
             memory_avg_rss_kb: raw.primary.memory_avg_rss_kb,
-            cpu_avg_normalized_pct: normalize_cpu_pct(
-                raw.primary.cpu_pct,
-                core_count(self.hardware.cores),
-            ),
+            cpu_avg_normalized_pct: normalize_cpu_pct(raw.primary.cpu_pct, host_cpu_count()),
             memory_leaks_bytes: raw.leaks_bytes,
             coverage_line_pct: raw.coverage_line_pct,
             binary_size_kb: raw.binary_size_kb,
@@ -416,6 +413,39 @@ impl LifecycleBackend for DockerExecutor {
         };
 
         Ok(ExecutionOutcome { metrics, output })
+    }
+
+    /// Tool containers run as root and leave root-owned files in the job's
+    /// workspace, which the Runner, running as an ordinary user, may not
+    /// delete. When a plain removal is refused, the content is deleted through
+    /// a short-lived container of the configured run image (already present,
+    /// nothing is pulled); the now empty directory, created by the Runner, is
+    /// then removed as usual. The tool containers keep running as root, so no
+    /// tool image needs to work as another user.
+    fn remove_workspace(&self, workspace: &Path) -> Result<()> {
+        super::remove_workspace_with(workspace, |dir| {
+            let image = self
+                .tool_config
+                .run_image
+                .as_deref()
+                .context("no run image configured to clear the workspace with")?;
+            let quoted = shell_quote(&dir.display().to_string());
+            let spec = DockerRun {
+                image: image.to_string(),
+                command: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!("rm -rf -- {quoted}/* {quoted}/.[!.]* {quoted}/..?*"),
+                ],
+                volumes: vec![docker::identity_mount(dir)],
+                working_dir: None,
+                timeout: Duration::from_mins(1),
+                env: vec![],
+            };
+            let out = docker::run_container(&spec).context("clearing the workspace")?;
+            anyhow::ensure!(out.exit_code == 0, "rm exited with code {}", out.exit_code);
+            Ok(())
+        })
     }
 
     // Phase 4 (teardown): the default no-op suffices — `docker run --rm` removes
@@ -475,22 +505,32 @@ fn run_repeated(
     Ok(repetition::combine(&runs, &request.mode, items, outputs_identical))
 }
 
-/// The number of cores `cpu.avg_normalized_pct` is normalised by: the
-/// configured `hardware.cores`, which the Runner also reports to the client,
-/// or else the CPUs available to this process. Tool containers run on the same
-/// Docker host without a CPU limit, so they see the same CPUs.
-fn core_count(configured: Option<u32>) -> u32 {
-    configured.filter(|&c| c > 0).unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
-    })
+/// The number of CPUs `cpu.avg_normalized_pct` is normalised by: those
+/// available on the host that measured. GNU time's figure is measured in the
+/// tool container, which runs on the Runner's Docker host without a CPU limit,
+/// so it sees the same CPUs as this process. The configured `hardware.cores`
+/// describes the target and is not used: the measuring host may differ from it.
+fn host_cpu_count() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
-/// GNU time's "Percent of CPU" divided by the core count, so that 100 means
-/// every core was busy for the whole run, as the contract defines
-/// `cpu.avg_normalized_pct` (backlog F-M10). Clamped to 0..=100.
-fn normalize_cpu_pct(raw_pct: Option<f64>, cores: u32) -> Option<f64> {
-    raw_pct.map(|pct| (pct / f64::from(cores.max(1))).clamp(0.0, 100.0))
+/// GNU time's "Percent of CPU" divided by the CPU count, so that 100 means
+/// every CPU was busy for the whole run, as the contract defines
+/// `cpu.avg_normalized_pct` (backlog F-M10). A raw figure above what `cpus`
+/// CPUs can produce means the count is wrong; it is logged as a warning and the
+/// result is capped at 100.
+fn normalize_cpu_pct(raw_pct: Option<f64>, cpus: u32) -> Option<f64> {
+    let cpus = f64::from(cpus.max(1));
+    raw_pct.map(|pct| {
+        if pct > cpus * 100.0 {
+            tracing::warn!(
+                raw_pct = pct,
+                cpus,
+                "CPU figure above what the host's CPUs can produce; capped at 100 %"
+            );
+        }
+        (pct / cpus).clamp(0.0, 100.0)
+    })
 }
 
 /// Return compiler flags for the requested instrumentation mode.
@@ -657,9 +697,9 @@ mod tests {
 
     /// Verifies: SRS-FUNC-005
     #[test]
-    fn configured_core_count_wins_over_the_host() {
-        assert_eq!(core_count(Some(4)), 4);
-        assert!(core_count(None) >= 1);
-        assert!(core_count(Some(0)) >= 1);
+    fn cpu_count_is_the_measuring_hosts() {
+        let host = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        assert_eq!(host_cpu_count() as usize, host);
+        assert!(host_cpu_count() >= 1);
     }
 }

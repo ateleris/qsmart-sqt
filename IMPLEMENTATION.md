@@ -137,7 +137,14 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   skipped and their metrics reported `null`. A tool that did not complete
   (non-zero exit, no finished valgrind run, no source for cppcheck) also
   reports `null`, never `0`. `cpu.avg_normalized_pct` is GNU time's figure
-  divided by the core count, so 100 means every core was busy.
+  divided by the CPU count of the measuring host, so 100 means every CPU was
+  busy. A finished job's working directory is removed on a blocking thread;
+  root-owned tool output is deleted through a short-lived container of the run
+  image.
+- **TLS** (`tls.rs`): with a `tls:` section the Runner serves HTTPS only
+  (rustls, ring provider, no OpenSSL), with the configured certificate chain
+  and key, checked at start-up (SRS-IF-010). Without it, plain HTTP, with a
+  warning when bound to a non-loopback address.
 - **Docker helpers** (`docker.rs`): container run with timeout enforcement and
   kill-on-timeout; reader threads avoid pipe-buffer deadlock.
 
@@ -165,10 +172,6 @@ is *not* yet aligned with them:
   SRS-OPS-003, ADD LLR-031).
 - A termination signal stops polling the in-flight jobs instead of awaiting
   them; the Runner keeps running them (C-3, SRS-OPS-008).
-- The reference Runner serves plain HTTP; SRS-IF-010 wants the contract over
-  TLS (C-4).
-- Open review findings of the reference Runner's clean-up, CPU normalisation
-  and tool checks (C-5).
 
 **SQT-SW-1 requirements without a test yet** (the fulfilment matrix lists them on
 every push): FUNC-011, FUNC-012, FUNC-013, FUNC-014, FUNC-021, FUNC-022,

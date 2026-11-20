@@ -189,9 +189,9 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M10** `cpu.avg_normalized_pct` is raw GNU-time "Percent of CPU" (can exceed
   100%), not normalised as the field name and AD-015 promise
   (`run_binary.rs:90` → `executor/docker.rs:358`). **Fixed** in the
-  runner-robustness PR: divided by the core count (the configured
-  `hardware.cores`, else the CPUs available to the Runner) and clamped to
-  0..100, as the contract defines it.
+  runner-robustness PR: divided by the core count and clamped to 0..100, as
+  the contract defines it. Since C-5 the count is the CPUs of the measuring
+  host, not the configured `hardware.cores`.
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
   parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
@@ -422,8 +422,13 @@ none caused by the recent changes:
   local host (#42, #46), but `sqt-runner` has no TLS listener, so a remote
   reference Runner can only be reached securely through a TLS-terminating
   proxy. Fix: a TLS listener in `sqt-runner` (certificate and key from its
-  configuration), or document the proxy as the supported deployment. Goes
-  with assigning IF-010 to a release (R-10).
+  configuration), or document the proxy as the supported deployment.
+
+  **Fixed:** with a `tls:` section (certificate chain and key, PEM) the
+  reference Runner serves HTTPS only, through rustls with the ring provider
+  (no OpenSSL); certificate and key are loaded and checked at start-up.
+  Without it, the Runner serves plain HTTP and logs a warning when bound to a
+  non-loopback address. Goes with assigning IF-010 to a release (R-10).
 - **C-5, open review findings of #44** (reference Runner): job workspaces
   written by root-owned tool containers cannot be removed by the Runner, so
   F-M5's cleanup fails in a real Docker set-up (important); CPU normalisation
@@ -433,6 +438,19 @@ none caused by the recent changes:
   under test itself exits with 125 to 127; the cppcheck "nothing checked"
   test depends on English message text; the workspace is removed on an async
   worker thread; `queue_position` can be off under simultaneous submissions.
+
+  **Fixed:** a refused workspace removal falls back to deleting the content
+  through a short-lived container of the configured run image (tool
+  containers keep running as root), and a missing directory counts as
+  removed; the removal runs on a blocking thread after the job's result is
+  stored and its permit released; `max_finished_jobs: 0` is rejected at load;
+  the CPU figure is divided by the CPUs of the measuring host, and a figure
+  above what they can produce is logged before it is capped at 100; the
+  valgrind collector relies on its XML report, not the exit code; the
+  container counts the source files before cppcheck runs, so "nothing
+  checked" no longer depends on cppcheck's wording; the queue order is
+  assigned under the store's write lock, and `queue_position` is documented
+  as the position in submission order, a close estimate of the start order.
 
 Process for SQT-SW-1, not code:
 
