@@ -18,7 +18,11 @@ use sqt_types::WorkloadType;
 /// way. Increment the major component for breaking changes (SRS-DATA-001).
 ///
 /// 1.1 adds `run_id`, `evidence_manifest`, per-spec `evidence_ids` and `discovery`.
-pub const SCHEMA_VERSION: &str = "1.2";
+/// 1.2 adds `target.workload_type` and `target.workload_fan_out` to each result
+/// (SRS-FUNC-019).
+/// 1.3 adds the requirement-level counts `summary.requirements_total`,
+/// `requirements_passed`, `requirements_failed` and `requirements_infra_errors`.
+pub const SCHEMA_VERSION: &str = "1.3";
 
 // ---------------------------------------------------------------------------
 // Provenance
@@ -113,10 +117,11 @@ pub struct Report {
     pub results: Vec<SpecReport>,
 }
 
-/// Counts of specifications by outcome.
-#[derive(Serialize)]
+/// Counts of specifications and of requirements by outcome.
+#[derive(Serialize, Default)]
 pub struct Summary {
-    /// Specifications run.
+    /// Specifications run. A specification without a declared workload type
+    /// counts once per workload type it was run for (SRS-FUNC-019).
     pub total: usize,
     /// Specifications whose constraints all passed.
     pub passed: usize,
@@ -124,6 +129,15 @@ pub struct Summary {
     pub failed: usize,
     /// Specifications whose job hit an infrastructure error.
     pub infra_errors: usize,
+    /// Distinct ML-L requirements run.
+    pub requirements_total: usize,
+    /// Requirements every specification of which passed.
+    pub requirements_passed: usize,
+    /// Requirements with a failed specification.
+    pub requirements_failed: usize,
+    /// Requirements with no failed specification but at least one
+    /// infrastructure error.
+    pub requirements_infra_errors: usize,
 }
 
 impl Summary {
@@ -222,6 +236,26 @@ impl Report {
         let infra_errors =
             results.iter().filter(|r| r.outcome_kind == OutcomeKind::InfraError).count();
         let failed = total - passed - infra_errors;
+
+        // One outcome per requirement, combined over its specifications as the
+        // traceability matrix combines them (FAIL > INFRA_ERROR > PASS).
+        let mut uids: Vec<&str> = Vec::new();
+        for r in &result.results {
+            if !uids.contains(&r.spec.requirement_uid.as_str()) {
+                uids.push(&r.spec.requirement_uid);
+            }
+        }
+        let (mut req_passed, mut req_failed, mut req_infra) = (0, 0, 0);
+        for uid in &uids {
+            let of_uid: Vec<_> =
+                result.results.iter().filter(|r| r.spec.requirement_uid == *uid).collect();
+            match crate::traceability::combined_outcome(&of_uid) {
+                Some("PASS") => req_passed += 1,
+                Some("FAIL") => req_failed += 1,
+                Some(_) => req_infra += 1,
+                None => {}
+            }
+        }
         Self {
             schema_version: SCHEMA_VERSION,
             run_id: None,
@@ -231,7 +265,16 @@ impl Report {
             interrupted: result.interrupted,
             provenance,
             discovery: result.discovery.clone(),
-            summary: Summary { total, passed, failed, infra_errors },
+            summary: Summary {
+                total,
+                passed,
+                failed,
+                infra_errors,
+                requirements_total: uids.len(),
+                requirements_passed: req_passed,
+                requirements_failed: req_failed,
+                requirements_infra_errors: req_infra,
+            },
             results,
         }
     }
@@ -338,11 +381,15 @@ pub(crate) fn spec_report(sr: &SpecResult) -> SpecReport {
 // ---------------------------------------------------------------------------
 
 /// Wire name of a workload type, e.g. `time_series_forecasting`.
-pub fn workload_name(workload: &WorkloadType) -> String {
-    serde_json::to_value(workload)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+pub fn workload_name(workload: &WorkloadType) -> &'static str {
+    match workload {
+        WorkloadType::ObjectDetection => "object_detection",
+        WorkloadType::ImageClassification => "image_classification",
+        WorkloadType::PixelSegmentation => "pixel_segmentation",
+        WorkloadType::Classification => "classification",
+        WorkloadType::Regression => "regression",
+        WorkloadType::TimeSeriesForecasting => "time_series_forecasting",
+    }
 }
 
 /// How a specification is named in the terminal summary and the PDF: its
@@ -427,6 +474,15 @@ pub fn render_terminal(report: &Report, run_dir: &Path) -> String {
         report.summary.total,
         report.summary.failed,
         report.summary.infra_errors,
+    );
+    let s = &report.summary;
+    let _ = writeln!(
+        out,
+        "{}/{} requirements passed, {} failed, {} infra errors",
+        s.requirements_passed,
+        s.requirements_total,
+        s.requirements_failed,
+        s.requirements_infra_errors,
     );
     let (mut passed, mut failed, mut infra) = (0usize, 0usize, 0usize);
     for outcome in report.results.iter().flat_map(|spec| &spec.outcomes) {
@@ -559,11 +615,18 @@ fn report_lines(report: &Report) -> Vec<PdfLine> {
         PdfLine::blank(),
         PdfLine::bold(
             format!(
-                "Summary: {}/{} passed, {} failed, {} infra errors{interrupted}",
-                s.passed, s.total, s.failed, s.infra_errors
+                "Summary: {}/{} requirements passed, {} failed, {} infra errors{interrupted}",
+                s.requirements_passed,
+                s.requirements_total,
+                s.requirements_failed,
+                s.requirements_infra_errors
             ),
             12.0,
         ),
+        PdfLine::normal(format!(
+            "Specifications: {}/{} passed, {} failed, {} infra errors",
+            s.passed, s.total, s.failed, s.infra_errors
+        )),
         PdfLine::blank(),
     ];
 
@@ -776,7 +839,7 @@ mod tests {
     /// Verifies: SRS-OPS-001
     #[test]
     fn gate_failure_when_a_spec_failed() {
-        let s = Summary { total: 2, passed: 1, failed: 1, infra_errors: 0 };
+        let s = Summary { total: 2, passed: 1, failed: 1, infra_errors: 0, ..Summary::default() };
         assert!(s.is_gate_failure());
     }
 
@@ -785,21 +848,21 @@ mod tests {
     fn gate_failure_when_all_infra_errors_even_with_zero_failed() {
         // The regression this guards (F-C4): a run where every spec is an
         // INFRA_ERROR has failed == 0, but it must still fail the CI gate.
-        let s = Summary { total: 3, passed: 0, failed: 0, infra_errors: 3 };
+        let s = Summary { total: 3, passed: 0, failed: 0, infra_errors: 3, ..Summary::default() };
         assert!(s.is_gate_failure());
     }
 
     /// Verifies: SRS-OPS-001
     #[test]
     fn no_gate_failure_when_all_pass() {
-        let s = Summary { total: 2, passed: 2, failed: 0, infra_errors: 0 };
+        let s = Summary { total: 2, passed: 2, failed: 0, infra_errors: 0, ..Summary::default() };
         assert!(!s.is_gate_failure());
     }
 
     /// Verifies: SRS-OPS-001
     #[test]
     fn no_gate_failure_for_empty_run() {
-        let s = Summary { total: 0, passed: 0, failed: 0, infra_errors: 0 };
+        let s = Summary { total: 0, passed: 0, failed: 0, infra_errors: 0, ..Summary::default() };
         assert!(!s.is_gate_failure());
     }
 
@@ -884,7 +947,7 @@ mod tests {
         let report = Report::from_run_result(&run_result, make_provenance());
         let json = serde_json::to_string(&report).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["schema_version"], "1.2", "schema_version must be present and correct");
+        assert_eq!(parsed["schema_version"], "1.3", "schema_version must be present and correct");
     }
 
     /// Verifies: SRS-DATA-001
@@ -1099,5 +1162,81 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    /// A fanned-out requirement: six specifications sharing one UID, one per
+    /// workload type, with `failing` of them failing.
+    fn fanned_out(uid: &str, failing: usize) -> Vec<SpecResult> {
+        crate::specs::loader::ML_SPACE_PROFILE
+            .iter()
+            .enumerate()
+            .map(|(i, workload)| {
+                let mut r = if i < failing {
+                    failing_spec_result(uid, "build/app")
+                } else {
+                    passing_spec_result(uid, "build/app")
+                };
+                r.spec.workload_type = workload.clone();
+                r.spec.fan_out = true;
+                r
+            })
+            .collect()
+    }
+
+    /// Verifies: SRS-FUNC-019, SRS-OPS-003, SRS-DATA-001
+    #[test]
+    fn summary_counts_requirements_as_well_as_specifications() {
+        let result = make_run_result(fanned_out("REQ-FAN", 1));
+        let report = Report::from_run_result(&result, make_provenance());
+        let s = &report.summary;
+        assert_eq!((s.total, s.passed, s.failed), (6, 5, 1), "per specification");
+        assert_eq!(
+            (s.requirements_total, s.requirements_passed, s.requirements_failed),
+            (1, 0, 1),
+            "the requirement fails when one workload type failed"
+        );
+        assert_eq!(s.requirements_infra_errors, 0);
+
+        let text = render_terminal(&report, Path::new("/out"));
+        assert!(text.contains("5/6 specs passed, 1 failed"), "{text}");
+        assert!(text.contains("0/1 requirements passed, 1 failed, 0 infra errors"), "{text}");
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["schema_version"], "1.3");
+        assert_eq!(json["summary"]["requirements_total"], 1);
+        assert_eq!(json["summary"]["requirements_failed"], 1);
+    }
+
+    /// Verifies: SRS-OPS-003, SRS-DATA-001
+    #[test]
+    fn requirements_with_one_specification_count_once_each() {
+        let mut results = fanned_out("REQ-FAN", 0);
+        results.push(passing_spec_result("REQ-A", "build/a"));
+        results.push(SpecResult::infra_error(
+            make_spec("REQ-B", "build/b"),
+            "boom".to_string(),
+            HashMap::new(),
+        ));
+        let report = Report::from_run_result(&make_run_result(results), make_provenance());
+        let s = &report.summary;
+        assert_eq!(s.total, 8);
+        assert_eq!(
+            (
+                s.requirements_total,
+                s.requirements_passed,
+                s.requirements_failed,
+                s.requirements_infra_errors
+            ),
+            (3, 2, 0, 1)
+        );
+    }
+
+    /// Verifies: SRS-FUNC-019
+    #[test]
+    fn workload_names_are_the_wire_names() {
+        for workload in crate::specs::loader::ML_SPACE_PROFILE {
+            let wire = serde_json::to_value(&workload).unwrap();
+            assert_eq!(wire.as_str(), Some(workload_name(&workload)));
+        }
     }
 }

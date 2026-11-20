@@ -34,12 +34,17 @@ struct RawConstraint {
     value: serde_yaml::Value,
 }
 
+/// The YAML form of a specification. Unknown keys are refused, so a misspelt
+/// key (`use-case:`) is an error instead of being ignored: a missing
+/// `use_case` would otherwise silently fan the specification out.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawTestSpec {
     requirement_uid: String,
-    /// Absent: run every workload type of the ML Space Profile (SRS-FUNC-019).
-    #[serde(default)]
-    use_case: Option<String>,
+    /// Absent: run every workload type of the ML Space Profile
+    /// (SRS-FUNC-019). Present but null: an error.
+    #[serde(default, deserialize_with = "use_case_key")]
+    use_case: UseCaseKey,
     input: Option<PathBuf>,
     // repetitions is deserialized for forward compatibility; the orchestrator
     // reads it from the spec and passes it to JobRequest.  It is not used here.
@@ -61,6 +66,27 @@ struct RawTestSpec {
     /// Absolute tolerance for `ml.output_within_tolerance` (SRS-FUNC-016).
     #[serde(default)]
     precision_tolerance: Option<f64>,
+}
+
+/// The `use_case` key of a specification file.
+#[derive(Default)]
+enum UseCaseKey {
+    /// Not in the file: the specification is run for every workload type.
+    #[default]
+    Absent,
+    /// In the file with a null value: refused.
+    Null,
+    /// The declared workload type, by its wire name.
+    Named(String),
+}
+
+/// Deserialize a `use_case` key that is present; an absent key never reaches
+/// here and becomes [`UseCaseKey::Absent`] through `#[serde(default)]`.
+fn use_case_key<'de, D>(d: D) -> Result<UseCaseKey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(d)?.map_or(UseCaseKey::Null, UseCaseKey::Named))
 }
 
 // ---------------------------------------------------------------------------
@@ -249,11 +275,30 @@ fn split_number_and_unit(s: &str) -> anyhow::Result<(&str, &str)> {
 fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<Vec<TestSpec>> {
     let uid = &raw.requirement_uid;
     let declared = match &raw.use_case {
-        Some(name) => Some(
+        UseCaseKey::Named(name) => Some(
             parse_use_case(name).with_context(|| format!("invalid use_case in spec '{uid}'"))?,
         ),
-        None => None,
+        UseCaseKey::Null => bail!(
+            "use_case in spec '{uid}' is empty; name a workload type, or omit the key to run \
+             every workload type of the ML Space Profile"
+        ),
+        UseCaseKey::Absent => None,
     };
+    // Reference outputs fit one workload type; a specification run for all
+    // of them would score every workload type against the same reference.
+    if declared.is_none() {
+        let given = [
+            ("reference_outputs", raw.reference_outputs.is_some()),
+            ("precision_reference", raw.precision_reference.is_some()),
+            ("precision_tolerance", raw.precision_tolerance.is_some()),
+        ];
+        if let Some((key, _)) = given.iter().find(|(_, set)| *set) {
+            bail!(
+                "spec '{uid}' sets {key} but no use_case; reference outputs fit one workload \
+                 type, so declare the use_case they belong to"
+            );
+        }
+    }
 
     let timeout_secs = raw.timeout_secs.unwrap_or(default_timeout_secs);
 
@@ -551,6 +596,78 @@ constraints:
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].workload_type, WorkloadType::Regression);
         assert!(!specs[0].fan_out);
+    }
+
+    /// Verifies: SRS-FUNC-003, SRS-FUNC-019
+    #[test]
+    fn misspelt_use_case_key_is_an_error_not_a_fan_out() {
+        let yaml = r"
+requirement_uid: REQ-TYPO
+use-case: regression
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let err = parse_yaml_all(yaml).expect_err("an unknown key must be refused");
+        assert!(format!("{err:#}").contains("use-case"), "error should name the key: {err:#}");
+    }
+
+    /// Verifies: SRS-FUNC-003, SRS-FUNC-019
+    #[test]
+    fn null_use_case_is_an_error() {
+        let yaml = r"
+requirement_uid: REQ-NULL
+use_case: ~
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let err = parse_yaml_all(yaml).expect_err("an explicit null use_case must be refused");
+        assert!(format!("{err:#}").contains("use_case"), "{err:#}");
+    }
+
+    /// Verifies: SRS-FUNC-019, SRS-FUNC-016
+    #[test]
+    fn reference_outputs_need_a_declared_use_case() {
+        for key in
+            ["reference_outputs: [1.0]", "precision_reference: [1.0]", "precision_tolerance: 0.01"]
+        {
+            let yaml = format!(
+                "requirement_uid: REQ-REF\n{key}\nconstraints:\n  - metric: return_code\n    \
+                 operator: eq\n    value: 0\n"
+            );
+            let err = parse_yaml_all(&yaml).expect_err("a fan-out spec with references must fail");
+            let name = key.split(':').next().unwrap();
+            assert!(format!("{err:#}").contains(name), "{key}: {err:#}");
+        }
+    }
+
+    /// Verifies: SRS-FUNC-019
+    #[test]
+    fn ml_space_profile_lists_every_workload_type() {
+        // An exhaustive match: a variant added to `WorkloadType` fails to
+        // compile here until it is placed in the profile.
+        for workload in [
+            WorkloadType::ObjectDetection,
+            WorkloadType::ImageClassification,
+            WorkloadType::PixelSegmentation,
+            WorkloadType::Classification,
+            WorkloadType::Regression,
+            WorkloadType::TimeSeriesForecasting,
+        ] {
+            let in_profile = match workload {
+                WorkloadType::ObjectDetection
+                | WorkloadType::ImageClassification
+                | WorkloadType::PixelSegmentation
+                | WorkloadType::Classification
+                | WorkloadType::Regression
+                | WorkloadType::TimeSeriesForecasting => ML_SPACE_PROFILE.contains(&workload),
+            };
+            assert!(in_profile, "{workload:?} is missing from ML_SPACE_PROFILE");
+        }
+        assert_eq!(ML_SPACE_PROFILE.len(), 6);
     }
 
     /// Verifies: SRS-FUNC-003, SRS-FUNC-019

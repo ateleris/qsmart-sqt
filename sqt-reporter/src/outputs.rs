@@ -17,6 +17,17 @@ use crate::{
     traceability,
 };
 
+/// File name of the `n`-th specification's outcomes, e.g. `001-REQ-X.json`.
+/// A specification expanded per workload type (SRS-FUNC-019) also names its
+/// workload type, `001-REQ-X-regression.json`, so the six files of one
+/// requirement can be told apart without opening them.
+fn outcome_file_name(n: usize, uid: &str, fan_out_workload: Option<&str>) -> String {
+    match fan_out_workload {
+        Some(workload) => format!("{n:03}-{uid}-{workload}.json"),
+        None => format!("{n:03}-{uid}.json"),
+    }
+}
+
 /// Where the outputs of a run were written.
 #[derive(Debug)]
 pub struct RunOutputs {
@@ -43,14 +54,18 @@ pub fn write_run_outputs(
 ) -> Result<(Report, RunOutputs)> {
     for (i, spec_result) in result.results.iter_mut().enumerate() {
         let uid = spec_result.spec.requirement_uid.clone();
+        let workload = report::workload_name(&spec_result.spec.workload_type);
         let outcomes = report::spec_report(spec_result);
+        let mut details = std::collections::BTreeMap::new();
+        details.insert("workload_type".to_owned(), workload.to_owned());
         let id = store.store_json(
             "outcomes",
-            &format!("{:03}-{uid}.json", i + 1),
+            &outcome_file_name(i + 1, &uid, spec_result.spec.fan_out.then_some(workload)),
             &outcomes,
             EvidenceMeta {
                 kind: "constraint_outcomes",
                 requirement_uid: Some(uid),
+                details,
                 ..EvidenceMeta::default()
             },
         )?;
@@ -82,4 +97,16 @@ pub fn write_run_outputs(
 
     let qdp = report::write_qdp(&run_dir)?;
     Ok((rep, RunOutputs { run_dir, report_json, qdp }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outcome_file_name;
+
+    /// Verifies: SRS-FUNC-008, SRS-FUNC-019
+    #[test]
+    fn fanned_out_outcome_files_name_their_workload_type() {
+        assert_eq!(outcome_file_name(1, "REQ-X", None), "001-REQ-X.json");
+        assert_eq!(outcome_file_name(4, "REQ-X", Some("regression")), "004-REQ-X-regression.json");
+    }
 }
