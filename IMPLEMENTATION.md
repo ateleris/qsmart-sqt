@@ -1,9 +1,11 @@
 # SQT — Implementation State
 
-**Status**: Working end-to-end (reporter + reference runner)
-**Date**: 2026-10-15 (`main` at `b4ed836`)
-**Tests**: `cargo test --workspace` green in CI on `b4ed836` (279 at the 2026-07-03
-review); `cargo clippy --workspace` clean
+**Status**: Working end-to-end (reporter + reference runner). First release
+`v0.1.0` (SQT-SW-0) tagged and published on 2026-11-19; SQT-SW-1 (`v0.2.0`) in
+progress on `dev`.
+**Date**: 2026-11-19 (`dev` after #38 and #39)
+**Tests**: 312 tests, every one naming the SRS requirement it verifies; all CI
+gates green (rustfmt, clippy, supply-chain, test, e2e)
 
 ---
 
@@ -28,7 +30,8 @@ in the "Known Gaps & Deviations" section below and tracked in detail in
 
 ## Workspace Layout
 
-Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
+Three crates (see `ARCHITECTURE.md` §11.3 for the full tree). How to build,
+test, branch, tag tests and release is in `CONTRIBUTING.md`.
 
 | Crate | Role |
 |-------|------|
@@ -59,26 +62,38 @@ Three crates (see `ARCHITECTURE.md` §11.3 for the full tree):
   distinct from polling backoff, never resending a submission that may have
   reached the Runner, with a per-request timeout (SRS-FUNC-020); bearer token
   wrapped in a `Redacted`
-  newtype (SRS-OPS-005).
+  newtype (SRS-OPS-005). A job the Runner reports `failed` is returned to the
+  caller and recorded as `RUNNER_JOB_FAILED` with the Runner's error text
+  (SRS-IF-003, SRS-REL-003). Redirects are not followed: the client contacts
+  only the configured Runner URL (SRS-RES-002). At the most verbose log level
+  every request and response payload is logged, with the token redacted
+  (SRS-OPS-002). Every Runner response is recorded as raw bytes for the
+  evidence store.
 - **Orchestrator** (`orchestrator/mod.rs`): version-compatibility gate at session
   start (SRS-IF-008); groups specs by `(use_case, input)`; submits and polls the
   jobs concurrently, holding a `max_concurrent_jobs` permit from submit to
   completion (SRS-PERF-001/002), then evaluates; INFRA_ERROR outcome category,
   including a failed submit, that does not abort the run (SRS-OPS-006); SIGTERM/Ctrl-C handler that drains, persists a partial run, and
-  exits 2 (SRS-OPS-008); per-step progress logging (SRS-FUNC-012).
+  exits 2 (SRS-OPS-008); per-step progress logging (a start on SRS-FUNC-012, operator guidance).
 - **Accuracy/precision** (`accuracy/`): client-side accuracy metrics and
   element-wise precision comparison against spec-declared references (SRS-FUNC-016,
   SRS-FUNC-017), fed by the output the runner now returns.
-- **Baseline** (`baseline/`): parses baseline requirement docs, classifies by
-  verification method, coverage gate.
+- **Baseline** (`baseline/`): parses the requirement documents the Runner
+  declares (`GET /api/v1/docs`), classifies them by verification method and
+  keeps the documents and attachments verbatim as evidence. A failed fetch
+  stops the run before any job is submitted; an empty set proceeds with a
+  diagnostic (SRS-FUNC-018).
 - **Evidence / report / traceability** (`evidence/`, `report.rs`,
   `traceability/`, `outputs.rs`): one directory per run (`runs/<run_id>/`), raw
   Runner responses and per-spec outcomes as evidence with a SHA-256 manifest;
   `Report` (schema 1.1) with run id, manifest and per-spec evidence ids, and
   provenance (SRS-DATA-001/003); JSON + PDF (`printpdf`) + terminal outputs;
   dual-audience traceability matrix; `qdp.zip` of the run directory.
-- **CLI** (`main.rs`): `sqt run` and `sqt preflight` (also `run --preflight`);
-  exit codes 0/1/2.
+- **CLI** (`cli.rs`, `main.rs`): `sqt run` and `sqt preflight` (also
+  `run --preflight`); exit codes 0/1/2, stated in `sqt run --help` (SRS-HF-001).
+  `-v` and `-vv` raise the log level on top of `RUST_LOG`, `-q` logs only
+  warnings (SRS-OPS-002). The end-of-run summary lists every specification,
+  the specification and constraint counts and the run directory (SRS-OPS-003).
 
 ## sqt-runner — Implemented
 
@@ -118,30 +133,41 @@ and the DTOs disagree on field names.
 
 ## Known Gaps & Deviations
 
-Full detail, severity, and file:line evidence live in **`REVIEW_FINDINGS.md`**
-(2026-07-03 review, status updated 2026-10-15). The critical and high findings of
-that review are fixed except as listed here. Summary of what is *not* yet aligned
-with the architecture / SRS:
+Full detail, severity and evidence live in **`REVIEW_FINDINGS.md`**, including
+the SQT-SW-1 plan (steps P-1 to P-5) and the release follow-ups R-1 to R-10.
+Summary of what is *not* yet aligned with the architecture or the SRS:
 
-**Planned for SQT-SW-1:**
+**SQT-SW-1 requirements without a test yet** (the fulfilment matrix lists them on
+every push): FUNC-011, FUNC-012, FUNC-013, FUNC-014, FUNC-021, FUNC-022,
+FUNC-023, RES-003, HF-002. Among them:
 - API-profile qualification (SRS-FUNC-021 to SRS-FUNC-023): declared API profile,
-  generic workload set, coverage report — not implemented; target design in
-  `ARCHITECTURE.md` §4.7.
+  generic workload set, coverage report; target design in `ARCHITECTURE.md` §4.7.
+- Triggering verification activities through the Runner API (SRS-FUNC-014/015):
+  needs a contract change.
 - Closed metric/constraint vocabulary versus SRS-FUNC-006(a): decided to open the
   namespace, issue #17 (`ARCHITECTURE.md` §10.2).
+
+**Known limitations of `v0.1.0`**, recorded in the SRelD and carried into SW-1:
+- `repetitions` from a specification is not sent; the Runner also ignores
+  `repetitions`, `warmup_repetitions` and `mode` and runs the binary once (IF-002,
+  F-M6).
+- No default fan-out when a specification declares no workload type (F-M7,
+  SRS-FUNC-019).
+- Runner responses are validated by type, required fields and enumerations, not
+  against the ranges and patterns of the OpenAPI schema (IF-007).
 
 **Contract / behaviour:**
 - `input`: the OpenAPI `JobInput` union versus the free-form value the code
   accepts is still a pending contract decision (rest of F-H2).
-- Runner job failures surface as transport errors, not `RUNNER_JOB_FAILED`
-  (F-M3); the runner ignores `repetitions` / `warmup_repetitions` / `mode` (F-M6);
-  no default fan-out when a spec declares no workload type (F-M7, SRS-FUNC-019).
-- Evidence is not run-scoped and the JSON report needs `--output` (F-M4); other
-  robustness items F-M1, F-M5 and F-M8 to F-M11.
+- The bearer token is not refused over plain `http://` to a non-local host, as
+  SRS-IF-010 requires (R-10).
+- Robustness items F-M1 (a tool that did not run reads as zero), F-M5 (Runner
+  never cleans up job workspaces or the job store), F-M8 (traceability
+  provenance), F-M10 (CPU percentage not normalised); SIGTERM does not cancel
+  in-flight jobs on the Runner; `queue_position` is fixed at 1.
 
-**Housekeeping:**
-- rustfmt CI gate is advisory (`continue-on-error: true`) — SRS-QUAL-002/CDR-003.
-- No release tags yet (SRS-CDR-001); `v0.1.0` is planned for SQT-SW-0 at PDR.
+**Dependencies:** cargo-audit warns that `chrono` and `unsafe-libyaml` are
+unmaintained and `rustix` (test-only) is unsound; allowed by policy (R-7).
 
 ---
 
@@ -178,4 +204,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 # End-to-end: the Orchestrator against the real sqt-runner in Docker
 # (SRS-QUAL-003, SRS-VAL-001); the `e2e` CI job runs the same
 cargo test -p sqt-runner --test e2e_test -- --ignored
+
+# Fulfilment matrix: which SRS requirements the tests cover
+python3 ci/fulfilment-matrix.py --requirements ci/requirements.csv
 ```
+
+The CI gates, the release pipeline and the conventions every change follows are
+described in `CONTRIBUTING.md`.

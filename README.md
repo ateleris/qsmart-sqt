@@ -75,6 +75,8 @@ infrastructure-errored spec, `2` interrupted.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — target design.
 - [`IMPLEMENTATION.md`](IMPLEMENTATION.md) — current implementation state.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — branches, checks, test tagging and the release procedure.
+- [`REVIEW_FINDINGS.md`](REVIEW_FINDINGS.md) — backlog and SRS compliance.
 - [`job-api.openapi.yaml`](job-api.openapi.yaml) — the runner ↔ reporter contract.
 
 Additional strictdoc project at https://github.com/ateleris/qsmart-sqt-documentation.  
