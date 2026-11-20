@@ -110,6 +110,31 @@ impl From<&crate::config::RunnerConfig> for ClientOptions {
 /// fast even when requests may take long.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Check that `url` may carry the bearer token (SRS-IF-010): over HTTPS, or
+/// over plain HTTP only to the local host (`localhost`, `127.0.0.0/8`, `::1`).
+///
+/// The server certificate of an HTTPS Runner is always verified; the client
+/// offers no way to turn that off.
+///
+/// # Errors
+///
+/// Returns an error if `url` is not a valid URL, or if it is a plain-HTTP URL
+/// to any other host.
+pub fn check_token_transport(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).with_context(|| format!("invalid Runner URL {url}"))?;
+    // host_str() gives an IPv6 address in brackets, e.g. "[::1]".
+    let host = parsed.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']');
+    let local = host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    if parsed.scheme() == "http" && !local {
+        bail!(
+            "the Runner URL {url} uses plain http:// to a host other than the local machine; \
+             the bearer token is sent only over https:// or to localhost (SRS-IF-010)"
+        );
+    }
+    Ok(())
+}
+
 /// Whether a request may be sent again after a failure (SRS-FUNC-020).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Resend {
@@ -175,12 +200,15 @@ impl ApiClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the token contains invalid HTTP header characters.
+    /// Returns an error if the token contains invalid HTTP header characters,
+    /// or if a token is given for a URL that may not carry it
+    /// ([`check_token_transport`], SRS-IF-010).
     pub fn new(base_url: &str, token: Option<&str>, options: ClientOptions) -> Result<Self> {
         // Validate the token up-front so `new` fails fast on bad characters.
         if let Some(tok) = token {
             HeaderValue::from_str(&format!("Bearer {tok}"))
                 .context("API token contains invalid header characters")?;
+            check_token_transport(base_url)?;
         }
         // The SQT contacts only the configured Runner endpoint (SRS-RES-002):
         // a redirect to another location is not followed but fails the request.
@@ -586,6 +614,41 @@ mod tests {
         let r = Redacted("my-secret".to_owned());
         assert_eq!(format!("{r}"), "[REDACTED]");
         assert_eq!(format!("{r:?}"), "[REDACTED]");
+    }
+
+    /// Verifies: SRS-IF-010
+    #[test]
+    fn token_travels_only_over_https_or_to_the_local_host() {
+        for ok in [
+            "https://runner.example",
+            "https://10.0.0.5:3000",
+            "http://localhost:3000",
+            "http://LOCALHOST",
+            "http://127.0.0.1:3000",
+            "http://127.1.2.3",
+            "http://[::1]:3000",
+        ] {
+            assert!(check_token_transport(ok).is_ok(), "{ok} must be allowed");
+        }
+        for refused in [
+            "http://runner.example",
+            "http://10.0.0.5:3000",
+            "http://[2001:db8::1]",
+            "http://localhost.example",
+            "not a url",
+        ] {
+            assert!(check_token_transport(refused).is_err(), "{refused} must be refused");
+        }
+    }
+
+    /// Verifies: SRS-IF-010
+    #[test]
+    fn client_refuses_a_token_over_plain_http_to_a_remote_host() {
+        let err = ApiClient::new("http://runner.example", Some("tok"), ClientOptions::default())
+            .expect_err("a token over remote plain http must be refused");
+        assert!(format!("{err:#}").contains("SRS-IF-010"), "{err:#}");
+        // Without a token, plain http to any host stays allowed.
+        assert!(ApiClient::new("http://runner.example", None, ClientOptions::default()).is_ok());
     }
 
     /// Verifies: SRS-IF-006

@@ -159,8 +159,8 @@ FUNC-023, RES-003, HF-002. Among them:
 **Contract / behaviour:**
 - `input`: the OpenAPI `JobInput` union versus the free-form value the code
   accepts is still a pending contract decision (rest of F-H2).
-- The bearer token is not refused over plain `http://` to a non-local host, as
-  SRS-IF-010 requires (R-10).
+- SRS-IF-010 is implemented (a bearer token travels only over `https://` or to
+  localhost) but is in no release of the SQT-TN-AP plan yet (R-10).
 - Robustness items F-M1 (a tool that did not run reads as zero), F-M5 (Runner
   never cleans up job workspaces or the job store), F-M8 (traceability
   provenance), F-M10 (CPU percentage not normalised); SIGTERM does not cancel
