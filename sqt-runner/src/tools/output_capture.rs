@@ -65,8 +65,8 @@ fn parse_outputs(text: &str) -> Option<Vec<serde_json::Value>> {
     }
 }
 
-/// Lower-case hex SHA-1 of the raw output bytes. Used as evidence and, once
-/// multi-run support lands, to compare outputs across repetitions.
+/// Lower-case hex SHA-1 of the raw output bytes, reported as evidence of the
+/// output. Runs are compared on their raw output, not on this checksum.
 fn checksum(bytes: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(bytes);

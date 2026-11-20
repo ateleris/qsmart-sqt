@@ -238,7 +238,10 @@ impl LifecycleBackend for DockerExecutor {
         let binary_config = &prepared.binary_config;
         let input = prepared.input.as_deref();
         let workspace = ctx.workspace;
-        let timeout = ctx.timeout;
+        // One deadline for the whole job, binary runs and tools alike, as the
+        // contract defines `timeout_secs`. Each step gets what is left; a tool
+        // that finds no time left fails and its metric is reported as missing.
+        let deadline = Instant::now() + ctx.timeout;
 
         // --- Execution metrics -----------------------------------------------
         let run_image = config
@@ -252,7 +255,7 @@ impl LifecycleBackend for DockerExecutor {
             image = %run_image,
             "running binary"
         );
-        let primary = run_repeated(ctx, |budget| {
+        let primary = run_repeated(ctx, deadline, |budget| {
             run_binary::collect(run_image, binary_config, input, workspace, budget)
         })?;
         tracing::info!(
@@ -267,7 +270,7 @@ impl LifecycleBackend for DockerExecutor {
         // --- Optional: valgrind ----------------------------------------------
         let leaks_bytes = if let Some(ref image) = config.valgrind_image {
             tracing::info!(image = %image, "running valgrind");
-            match valgrind::collect(image, binary_config, workspace, timeout) {
+            match valgrind::collect(image, binary_config, workspace, time_left(deadline)) {
                 Ok(leaks) => {
                     tracing::info!(leaked_bytes = leaks, "valgrind complete");
                     #[expect(
@@ -288,7 +291,7 @@ impl LifecycleBackend for DockerExecutor {
         // --- Optional: coverage ----------------------------------------------
         let coverage_line_pct = if let Some(ref image) = config.coverage_image {
             tracing::info!(image = %image, "running lcov coverage");
-            match coverage::collect(image, &binary_config.path, workspace, timeout) {
+            match coverage::collect(image, &binary_config.path, workspace, time_left(deadline)) {
                 Ok(pct) => {
                     tracing::info!(line_pct = pct, "coverage complete");
                     Some(pct)
@@ -341,7 +344,12 @@ impl LifecycleBackend for DockerExecutor {
         // --- Optional: static analysis ---------------------------------------
         let static_warnings = if let Some(ref image) = config.static_image {
             tracing::info!(image = %image, "running static analysis");
-            match static_analysis::collect(image, &binary_config.path, workspace, timeout) {
+            match static_analysis::collect(
+                image,
+                &binary_config.path,
+                workspace,
+                time_left(deadline),
+            ) {
                 Ok(warnings) => {
                     tracing::info!(warnings, "static_analysis complete");
                     Some(warnings)
@@ -415,21 +423,31 @@ impl LifecycleBackend for DockerExecutor {
     // override it to release boards, power, etc.
 }
 
+/// Time left until `deadline`; zero once it has passed.
+fn time_left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
 /// Run the binary `warmup_repetitions` times unmeasured, then `repetitions`
 /// times measured, and combine the measured runs (`repetitions`, `mode` and
-/// `warmup_repetitions` of the request). All runs together stay within the
-/// job's time budget, as the contract defines `timeout_secs`; each run gets
-/// what is left of it. A run that fails to execute fails the job.
+/// `warmup_repetitions` of the request).
+///
+/// All runs stay within the job's `deadline`; each run gets what is left of
+/// it. A run that fails to execute, or the deadline passing, fails the whole
+/// job even when earlier runs completed: the job asked for a number of runs,
+/// and a figure over fewer would not be the one requested. Only the first
+/// run's output is kept; every later one is compared with it on the spot, so
+/// memory does not grow with the number of runs.
 fn run_repeated(
     ctx: &JobContext,
+    deadline: Instant,
     mut run_once: impl FnMut(Duration) -> Result<run_binary::RunBinaryOutput>,
 ) -> Result<repetition::Repeated> {
     let request = ctx.request;
     let warmup = request.warmup_repetitions.unwrap_or(0);
     let repetitions = request.repetitions.max(1);
-    let deadline = Instant::now() + ctx.timeout;
     let budget = |what: &str, i: u32, of: u32| {
-        let left = deadline.saturating_duration_since(Instant::now());
+        let left = time_left(deadline);
         if left.is_zero() {
             anyhow::bail!(
                 "job timeout of {:?} exceeded before {what} run {i} of {of}",
@@ -442,15 +460,19 @@ fn run_repeated(
         run_once(budget("warm-up", i, warmup)?)
             .with_context(|| format!("warm-up run {i} of {warmup}"))?;
     }
-    let mut runs = Vec::with_capacity(repetitions as usize);
+    let mut runs: Vec<run_binary::RunBinaryOutput> = Vec::new();
+    let mut outputs_identical = true;
     for i in 1..=repetitions {
-        runs.push(
-            run_once(budget("measured", i, repetitions)?)
-                .with_context(|| format!("measured run {i} of {repetitions}"))?,
-        );
+        let mut run = run_once(budget("measured", i, repetitions)?)
+            .with_context(|| format!("measured run {i} of {repetitions}"))?;
+        if let Some(first) = runs.first() {
+            outputs_identical &= run.stdout == first.stdout;
+            run.stdout = Vec::new();
+        }
+        runs.push(run);
     }
     let items = runs.first().map_or(1, |r| output_capture::output_count(&r.stdout));
-    Ok(repetition::combine(&runs, &request.mode, items))
+    Ok(repetition::combine(&runs, &request.mode, items, outputs_identical))
 }
 
 /// The number of cores `cpu.avg_normalized_pct` is normalised by: the
@@ -527,7 +549,7 @@ mod tests {
         // Warm-up runs take 1000 ms, measured runs 10, 20, 30 ms.
         let mut times = vec![1000.0, 1000.0, 10.0, 20.0, 30.0].into_iter();
         let mut calls = 0;
-        let r = run_repeated(&ctx, |_| {
+        let r = run_repeated(&ctx, Instant::now() + ctx.timeout, |_| {
             calls += 1;
             Ok(fake_run(times.next().unwrap(), "[1]"))
         })
@@ -544,7 +566,9 @@ mod tests {
         let ctx =
             JobContext { request: &req, workspace: &workspace, timeout: Duration::from_mins(1) };
         // 2 runs of 500 ms, 3 items each: 6 items in 1 s.
-        let r = run_repeated(&ctx, |_| Ok(fake_run(500.0, "[1,2,3]"))).unwrap();
+        let r =
+            run_repeated(&ctx, Instant::now() + ctx.timeout, |_| Ok(fake_run(500.0, "[1,2,3]")))
+                .unwrap();
         assert_eq!(r.throughput_fps, Some(6.0));
     }
 
@@ -556,7 +580,7 @@ mod tests {
         let ctx =
             JobContext { request: &req, workspace: &workspace, timeout: Duration::from_millis(50) };
         let mut budgets = Vec::new();
-        let err = run_repeated(&ctx, |budget| {
+        let err = run_repeated(&ctx, Instant::now() + ctx.timeout, |budget| {
             budgets.push(budget);
             std::thread::sleep(Duration::from_millis(20));
             Ok(fake_run(20.0, ""))
@@ -567,6 +591,34 @@ mod tests {
         assert!(budgets.len() < 6, "the job stops once the budget is spent");
     }
 
+    /// Verifies: SRS-REL-004, SRS-INST-001
+    #[test]
+    fn result_consistent_compares_every_measured_run() {
+        let req = request(3, Some(1), MeasurementMode::Latency);
+        let workspace = std::env::temp_dir();
+        let ctx =
+            JobContext { request: &req, workspace: &workspace, timeout: Duration::from_mins(1) };
+        // The warm-up run's different output does not count.
+        let mut outputs = vec!["[9]", "[1]", "[1]", "[1]"].into_iter();
+        let r = run_repeated(&ctx, Instant::now() + ctx.timeout, |_| {
+            Ok(fake_run(1.0, outputs.next().unwrap()))
+        })
+        .unwrap();
+        assert!(r.result_consistent);
+        assert_eq!(r.stdout, b"[1]");
+
+        let mut outputs = vec!["[1]", "[1]", "[2]"].into_iter();
+        let req = request(3, None, MeasurementMode::Latency);
+        let ctx =
+            JobContext { request: &req, workspace: &workspace, timeout: Duration::from_mins(1) };
+        let r = run_repeated(&ctx, Instant::now() + ctx.timeout, |_| {
+            Ok(fake_run(1.0, outputs.next().unwrap()))
+        })
+        .unwrap();
+        assert!(!r.result_consistent, "the third run wrote a different output");
+        assert_eq!(r.stdout, b"[1]", "the output reported is the first measured run's");
+    }
+
     /// Verifies: SRS-INST-001
     #[test]
     fn a_failing_run_fails_the_job() {
@@ -575,7 +627,7 @@ mod tests {
         let ctx =
             JobContext { request: &req, workspace: &workspace, timeout: Duration::from_mins(1) };
         let mut n = 0;
-        let err = run_repeated(&ctx, |_| {
+        let err = run_repeated(&ctx, Instant::now() + ctx.timeout, |_| {
             n += 1;
             if n == 2 {
                 anyhow::bail!("docker failed");

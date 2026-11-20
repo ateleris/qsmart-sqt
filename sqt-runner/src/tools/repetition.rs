@@ -6,27 +6,36 @@
 //!
 //! The Runner runs the binary `warmup_repetitions` times without measuring,
 //! then `repetitions` times measured. This module turns the measured runs into
-//! the job's figures. It is pure, so it is tested without Docker.
+//! the job's figures as `job-api.openapi.yaml` defines them. It is pure, so it
+//! is tested without Docker.
 
 use sqt_types::MeasurementMode;
 
 use super::run_binary::RunBinaryOutput;
 
+/// Upper bound on `repetitions` and on `warmup_repetitions` of one job. Each
+/// run is a container start, so even this bound means hours of work; a larger
+/// request is refused at submission.
+pub const MAX_REPETITIONS: u32 = 10_000;
+
 /// The metrics of a job, combined over its measured runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Repeated {
-    /// The first non-zero exit code of any run; 0 if every run exited with 0;
-    /// `None` if a run reported no exit code.
+    /// Exit code of the last measured run, as the contract defines
+    /// `return_code`; `None` if it reported none.
     pub return_code: Option<i64>,
     /// Mean execution time of the runs, in milliseconds.
     pub time_avg_ms: Option<f64>,
-    /// Median execution time (nearest rank), in milliseconds.
+    /// Median execution time (nearest rank), in milliseconds. Latency mode
+    /// with at least 2 runs only.
     pub latency_p50_ms: Option<f64>,
     /// 95th percentile of the execution time (nearest rank), in milliseconds.
+    /// Latency mode with at least 20 runs only.
     pub latency_p95_ms: Option<f64>,
     /// 99th percentile of the execution time (nearest rank), in milliseconds.
+    /// Latency mode with at least 100 runs only.
     pub latency_p99_ms: Option<f64>,
-    /// Items per second over all runs; only in throughput mode.
+    /// Items per second over all runs; throughput mode only.
     pub throughput_fps: Option<f64>,
     /// Highest peak resident set size of any run, in kilobytes.
     pub memory_peak_rss_kb: Option<f64>,
@@ -44,19 +53,27 @@ pub struct Repeated {
 
 /// Combine the measured runs of a job.
 ///
-/// A figure is reported only when every run measured it; one run without it
-/// makes the figure `None`, so a constraint on it fails instead of resting on
-/// part of the runs (SRS-REL-002). In latency mode the throughput stays `None`,
-/// as the contract defines. `items_per_run` is the number of inference results
-/// one run produces, used for the throughput.
-///
-/// # Panics
-///
-/// Never: an empty `runs` gives a result with every figure `None`.
-pub fn combine(runs: &[RunBinaryOutput], mode: &MeasurementMode, items_per_run: usize) -> Repeated {
+/// The output of the job is the first run's standard output; the caller says
+/// whether every run wrote the same (`outputs_identical`), so it need not keep
+/// every run's output. A figure is reported only when every run measured it;
+/// one run without it makes the figure `None`, so a constraint on it fails
+/// instead of resting on part of the runs (SRS-REL-002). As the contract
+/// defines them, the latency percentiles need at least 2, 20 and 100 runs and
+/// are `None` in throughput mode, and the throughput is `None` in latency mode.
+/// `items_per_run` is the number of inference results one run produces.
+pub fn combine(
+    runs: &[RunBinaryOutput],
+    mode: &MeasurementMode,
+    items_per_run: usize,
+    outputs_identical: bool,
+) -> Repeated {
     let times = all(runs, |r| r.time_execution_ms);
     let mut sorted = times.clone().unwrap_or_default();
     sorted.sort_by(f64::total_cmp);
+    let latency = *mode == MeasurementMode::Latency;
+    let pct = |p: f64, min_runs: usize| {
+        (latency && sorted.len() >= min_runs).then(|| percentile(&sorted, p)).flatten()
+    };
 
     let throughput_fps = match (mode, &times) {
         (MeasurementMode::Throughput, Some(t)) => {
@@ -71,21 +88,20 @@ pub fn combine(runs: &[RunBinaryOutput], mode: &MeasurementMode, items_per_run: 
         _ => None,
     };
 
-    let first_stdout = runs.first().map(|r| r.stdout.clone()).unwrap_or_default();
     Repeated {
-        return_code: return_code(runs),
+        return_code: runs.last().and_then(|r| r.return_code),
         time_avg_ms: times.as_deref().and_then(mean),
-        latency_p50_ms: percentile(&sorted, 50.0),
-        latency_p95_ms: percentile(&sorted, 95.0),
-        latency_p99_ms: percentile(&sorted, 99.0),
+        latency_p50_ms: pct(50.0, 2),
+        latency_p95_ms: pct(95.0, 20),
+        latency_p99_ms: pct(99.0, 100),
         throughput_fps,
         memory_peak_rss_kb: all(runs, |r| r.memory_peak_rss_kb)
             .and_then(|v| v.into_iter().reduce(f64::max)),
         memory_avg_rss_kb: all(runs, |r| r.memory_avg_rss_kb).as_deref().and_then(mean),
         cpu_pct: all(runs, |r| r.cpu_pct).as_deref().and_then(mean),
         docker_overhead_ms: all(runs, |r| r.docker_overhead_ms).as_deref().and_then(mean),
-        result_consistent: runs.iter().all(|r| r.stdout == first_stdout),
-        stdout: first_stdout,
+        stdout: runs.first().map(|r| r.stdout.clone()).unwrap_or_default(),
+        result_consistent: outputs_identical,
     }
 }
 
@@ -118,17 +134,11 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
     sorted.get(rank.min(sorted.len()) - 1).copied()
 }
 
-fn return_code(runs: &[RunBinaryOutput]) -> Option<i64> {
-    let codes: Option<Vec<i64>> = runs.iter().map(|r| r.return_code).collect();
-    let codes = codes.filter(|c| !c.is_empty())?;
-    Some(codes.iter().copied().find(|&c| c != 0).unwrap_or(0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn run(ms: f64, code: i64, stdout: &str) -> RunBinaryOutput {
+    fn run(ms: f64, code: i64) -> RunBinaryOutput {
         RunBinaryOutput {
             return_code: Some(code),
             time_execution_ms: Some(ms),
@@ -136,79 +146,84 @@ mod tests {
             memory_avg_rss_kb: Some(ms),
             cpu_pct: Some(100.0),
             docker_overhead_ms: Some(5.0),
-            stdout: stdout.as_bytes().to_vec(),
+            stdout: b"[1]".to_vec(),
         }
+    }
+
+    fn runs(n: u32) -> Vec<RunBinaryOutput> {
+        (1..=n).map(|i| run(f64::from(i), 0)).collect()
     }
 
     /// Verifies: SRS-FUNC-005, SRS-INST-001
     #[test]
     fn latency_figures_cover_every_measured_run() {
-        let runs: Vec<_> = (1..=10).map(|i| run(f64::from(i) * 10.0, 0, "[1]")).collect();
-        let r = combine(&runs, &MeasurementMode::Latency, 1);
+        let runs: Vec<_> = (1..=10).map(|i| run(f64::from(i) * 10.0, 0)).collect();
+        let r = combine(&runs, &MeasurementMode::Latency, 1, true);
         assert_eq!(r.time_avg_ms, Some(55.0));
         assert_eq!(r.latency_p50_ms, Some(50.0));
-        assert_eq!(r.latency_p95_ms, Some(100.0));
-        assert_eq!(r.latency_p99_ms, Some(100.0));
         assert_eq!(r.memory_peak_rss_kb, Some(1000.0), "peak is the highest of any run");
         assert_eq!(r.memory_avg_rss_kb, Some(55.0));
         assert_eq!(r.throughput_fps, None, "latency mode leaves throughput null");
-        assert_eq!(r.return_code, Some(0));
+    }
+
+    /// Verifies: SRS-FUNC-005, SRS-REL-002
+    #[test]
+    fn percentiles_need_the_contract_minimum_of_runs() {
+        let one = combine(&runs(1), &MeasurementMode::Latency, 1, true);
+        assert_eq!(one.latency_p50_ms, None, "p50 needs at least 2 runs");
+        let two = combine(&runs(2), &MeasurementMode::Latency, 1, true);
+        assert_eq!(two.latency_p50_ms, Some(1.0));
+        assert_eq!(two.latency_p95_ms, None, "p95 needs at least 20 runs");
+        let twenty = combine(&runs(20), &MeasurementMode::Latency, 1, true);
+        assert_eq!(twenty.latency_p95_ms, Some(19.0));
+        assert_eq!(twenty.latency_p99_ms, None, "p99 needs at least 100 runs");
+        let hundred = combine(&runs(100), &MeasurementMode::Latency, 1, true);
+        assert_eq!(hundred.latency_p50_ms, Some(50.0));
+        assert_eq!(hundred.latency_p95_ms, Some(95.0));
+        assert_eq!(hundred.latency_p99_ms, Some(99.0));
     }
 
     /// Verifies: SRS-FUNC-005, SRS-INST-001
     #[test]
     fn throughput_counts_items_per_second_over_all_runs() {
         // 4 runs of 250 ms, 5 items each: 20 items in 1 s.
-        let runs: Vec<_> = (0..4).map(|_| run(250.0, 0, "[1,2,3,4,5]")).collect();
-        let r = combine(&runs, &MeasurementMode::Throughput, 5);
+        let runs: Vec<_> = (0..4).map(|_| run(250.0, 0)).collect();
+        let r = combine(&runs, &MeasurementMode::Throughput, 5, true);
         assert_eq!(r.throughput_fps, Some(20.0));
         assert_eq!(r.time_avg_ms, Some(250.0));
-    }
-
-    /// Verifies: SRS-REL-004, SRS-INST-001
-    #[test]
-    fn result_consistent_compares_every_run_output() {
-        let same = vec![run(1.0, 0, "[0.5]"), run(1.0, 0, "[0.5]"), run(1.0, 0, "[0.5]")];
-        assert!(combine(&same, &MeasurementMode::Latency, 1).result_consistent);
-        let differ = vec![run(1.0, 0, "[0.5]"), run(1.0, 0, "[0.5]"), run(1.0, 0, "[0.6]")];
-        let r = combine(&differ, &MeasurementMode::Latency, 1);
-        assert!(!r.result_consistent);
-        assert_eq!(r.stdout, b"[0.5]", "the output reported is the first run's");
+        assert_eq!(r.latency_p50_ms, None, "throughput mode leaves the percentiles null");
     }
 
     /// Verifies: SRS-FUNC-005, SRS-INST-001
     #[test]
-    fn one_failing_run_fails_the_job_return_code() {
-        let runs = vec![run(1.0, 0, ""), run(1.0, 3, ""), run(1.0, 0, "")];
-        assert_eq!(combine(&runs, &MeasurementMode::Latency, 1).return_code, Some(3));
+    fn return_code_is_the_last_runs() {
+        let r = combine(&[run(1.0, 3), run(1.0, 0)], &MeasurementMode::Latency, 1, true);
+        assert_eq!(r.return_code, Some(0), "the contract reports the last repetition's code");
+        let r = combine(&[run(1.0, 0), run(1.0, 2)], &MeasurementMode::Latency, 1, true);
+        assert_eq!(r.return_code, Some(2));
+    }
+
+    /// Verifies: SRS-REL-004
+    #[test]
+    fn result_consistent_is_the_callers_comparison() {
+        assert!(combine(&runs(3), &MeasurementMode::Latency, 1, true).result_consistent);
+        assert!(!combine(&runs(3), &MeasurementMode::Latency, 1, false).result_consistent);
     }
 
     /// Verifies: SRS-REL-002
     #[test]
     fn a_figure_missing_in_one_run_is_reported_as_missing() {
-        let mut runs = vec![run(10.0, 0, ""), run(20.0, 0, "")];
+        let mut runs = vec![run(10.0, 0), run(20.0, 0)];
         runs[1].cpu_pct = None;
-        runs[1].return_code = None;
-        let r = combine(&runs, &MeasurementMode::Latency, 1);
+        let r = combine(&runs, &MeasurementMode::Latency, 1, true);
         assert_eq!(r.cpu_pct, None);
-        assert_eq!(r.return_code, None);
         assert_eq!(r.time_avg_ms, Some(15.0), "figures every run measured are still reported");
-    }
-
-    /// Verifies: SRS-FUNC-005
-    #[test]
-    fn a_single_run_reports_its_own_figures() {
-        let r = combine(&[run(42.0, 0, "x")], &MeasurementMode::Latency, 1);
-        assert_eq!(r.time_avg_ms, Some(42.0));
-        assert_eq!(r.latency_p50_ms, Some(42.0));
-        assert_eq!(r.latency_p99_ms, Some(42.0));
-        assert!(r.result_consistent);
     }
 
     /// Verifies: SRS-REL-002
     #[test]
     fn no_runs_report_nothing() {
-        let r = combine(&[], &MeasurementMode::Throughput, 1);
+        let r = combine(&[], &MeasurementMode::Throughput, 1, true);
         assert_eq!(r.time_avg_ms, None);
         assert_eq!(r.return_code, None);
         assert_eq!(r.throughput_fps, None);
