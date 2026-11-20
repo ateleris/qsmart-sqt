@@ -324,7 +324,7 @@ Left open by the `v0.1.0` release. The documents named here are in
   bearer token over plain `http://` to any host, where IF-010 allows that only
   for the local host. Assign it at the SW-1 release planning; the fix is a
   configuration check that rejects a token with a non-loopback `http://` URL.
-  **Implemented** in the `r10-token-transport` PR: a token with a plain
+  **Implemented** in #42: a token with a plain
   `http://` URL to any host other than localhost is refused, in the
   configuration check and in `ApiClient::new`. Still open: assigning IF-010 to
   a release in the SQT-TN-AP plan (then `ci/requirements.csv`).
