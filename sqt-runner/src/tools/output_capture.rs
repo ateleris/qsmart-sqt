@@ -20,21 +20,29 @@ use sqt_types::JobOutput;
 /// Returns `None` when the binary produced no stdout (nothing to report).
 /// `output_type` is a caller-supplied semantic label (the workload type).
 ///
-/// `result_consistent` is `true`: the reference runner currently executes the
-/// binary once, so "every repetition produced identical output" holds
-/// vacuously. Cross-repetition comparison arrives with multi-run support
-/// (F-M6).
-pub fn build_job_output(output_type: &str, stdout: &[u8]) -> Option<JobOutput> {
+/// `result_consistent` says whether every measured run of the job wrote the
+/// same output (see [`super::repetition::combine`]).
+pub fn build_job_output(
+    output_type: &str,
+    stdout: &[u8],
+    result_consistent: bool,
+) -> Option<JobOutput> {
     if stdout.iter().all(u8::is_ascii_whitespace) {
         return None;
     }
     let text = String::from_utf8_lossy(stdout);
     Some(JobOutput {
         output_type: output_type.to_string(),
-        result_consistent: true,
+        result_consistent,
         outputs: parse_outputs(&text),
         outputs_checksum: Some(checksum(stdout)),
     })
+}
+
+/// The number of inference results in one run's stdout, for the throughput:
+/// the length of a JSON array, else 1.
+pub fn output_count(stdout: &[u8]) -> usize {
+    parse_outputs(&String::from_utf8_lossy(stdout)).map_or(1, |v| v.len().max(1))
 }
 
 /// Interpret the binary's stdout as a list of per-inference outputs.
@@ -57,8 +65,8 @@ fn parse_outputs(text: &str) -> Option<Vec<serde_json::Value>> {
     }
 }
 
-/// Lower-case hex SHA-1 of the raw output bytes. Used as evidence and, once
-/// multi-run support lands, to compare outputs across repetitions.
+/// Lower-case hex SHA-1 of the raw output bytes, reported as evidence of the
+/// output. Runs are compared on their raw output, not on this checksum.
 fn checksum(bytes: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(bytes);
@@ -77,7 +85,7 @@ mod tests {
     /// Verifies: SRS-INST-001
     #[test]
     fn json_array_stdout_becomes_outputs_vector() {
-        let out = build_job_output("classification", br#"[{"label":"cat"},{"label":"dog"}]"#)
+        let out = build_job_output("classification", br#"[{"label":"cat"},{"label":"dog"}]"#, true)
             .expect("output present");
         let outputs = out.outputs.expect("outputs present");
         assert_eq!(outputs.len(), 2);
@@ -89,7 +97,7 @@ mod tests {
     /// Verifies: SRS-INST-001
     #[test]
     fn single_json_object_becomes_one_element_vector() {
-        let out = build_job_output("regression", br#"{"prediction":0.87}"#).unwrap();
+        let out = build_job_output("regression", br#"{"prediction":0.87}"#, true).unwrap();
         let outputs = out.outputs.unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["prediction"], 0.87);
@@ -98,7 +106,7 @@ mod tests {
     /// Verifies: SRS-INST-001
     #[test]
     fn non_json_stdout_is_wrapped_as_string() {
-        let out = build_job_output("raw", b"hello world\n").unwrap();
+        let out = build_job_output("raw", b"hello world\n", true).unwrap();
         let outputs = out.outputs.unwrap();
         assert_eq!(outputs, vec![serde_json::Value::String("hello world".to_string())]);
     }
@@ -106,8 +114,8 @@ mod tests {
     /// Verifies: SRS-INST-001
     #[test]
     fn empty_or_whitespace_stdout_yields_no_output() {
-        assert!(build_job_output("raw", b"").is_none());
-        assert!(build_job_output("raw", b"   \n\t ").is_none());
+        assert!(build_job_output("raw", b"", true).is_none());
+        assert!(build_job_output("raw", b"   \n\t ", true).is_none());
     }
 
     /// Verifies: SRS-INST-001, SRS-REL-004
@@ -120,8 +128,8 @@ mod tests {
     /// Verifies: SRS-INST-001, SRS-REL-004
     #[test]
     fn identical_bytes_share_a_checksum() {
-        let a = build_job_output("x", b"same output").unwrap();
-        let b = build_job_output("x", b"same output").unwrap();
+        let a = build_job_output("x", b"same output", true).unwrap();
+        let b = build_job_output("x", b"same output", true).unwrap();
         assert_eq!(a.outputs_checksum, b.outputs_checksum);
     }
 }

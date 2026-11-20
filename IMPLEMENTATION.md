@@ -49,7 +49,9 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   `token_env` (SRS-FUNC-002, SRS-IF-006). Unknown keys ignored.
 - **Spec loading** (`specs/loader.rs`): reads only the files in
   `test_specs.files` — no directory scan (SRS-MAINT-002). Parses `use_case`,
-  `input`, optional `repetitions`/`timeout_secs`, `constraints`, and
+  `input`, optional `repetitions`/`warmup_repetitions`/`mode`/`timeout_secs`
+  (sent with the job, SRS-IF-002; specs that differ in them run as separate
+  jobs), `constraints`, and
   `precision_reference`/`precision_tolerance` + `reference_outputs`. Unit-suffixed
   constraint values (`100ms`, `2MB`, `512 KB`) are normalised at load time
   (partial SRS-FUNC-004 — see gaps). A spec without `use_case` is expanded into
@@ -119,8 +121,11 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
 - **Tools** (`tools/`): `run_binary` (time/RSS/CPU via `/usr/bin/time -v`;
   `time.avg_ms` is the binary's own elapsed time, the Docker overhead goes to
   `harness.docker_overhead_ms`; arguments and stdin target are shell-quoted),
-  `output_capture` (stdout as the job output with checksum and
-  `result_consistent`),
+  `repetition` (the binary runs `warmup_repetitions` times unmeasured, then
+  `repetitions` times, all within the job timeout; mean, p50/p95/p99 latency,
+  throughput in throughput mode, highest peak RSS),
+  `output_capture` (stdout of the first measured run as the job output, with
+  checksum and `result_consistent` = every run wrote the same output),
   `valgrind`, `coverage`, `static_analysis` (cppcheck), `sonarqube`,
   `binary_size` — each run in its configured Docker image; unconfigured tools are
   skipped and their metrics reported `null`. A tool that did not complete
@@ -157,9 +162,6 @@ FUNC-023, RES-003, HF-002. Among them:
   namespace, issue #17 (`ARCHITECTURE.md` §10.2).
 
 **Known limitations of `v0.1.0`**, recorded in the SRelD and carried into SW-1:
-- `repetitions` from a specification is not sent; the Runner also ignores
-  `repetitions`, `warmup_repetitions` and `mode` and runs the binary once (IF-002,
-  F-M6).
 - Runner responses are validated by type, required fields and enumerations, not
   against the ranges and patterns of the OpenAPI schema (IF-007).
 

@@ -9,7 +9,10 @@
 requirement_uid: REQ-ML-L-001
 use_case: image_classification   # object_detection | image_classification | pixel_segmentation | classification | regression | time_series_forecasting
 # input: datasets/sample.bin     # optional: path delivered to the binary (stdin/arg/env per runner config)
-# timeout_secs: 300              # optional: per-spec timeout (defaults to runner.job_timeout_secs)
+# timeout_secs: 300              # optional: time for the whole job, all runs and tools (defaults to runner.job_timeout_secs)
+# repetitions: 10               # optional: measured runs of the binary (default 1)
+# warmup_repetitions: 3          # optional: unmeasured runs before measuring (default 0)
+# mode: latency                  # optional: latency (default) or throughput
 
 constraints:
   - metric: return_code          # process exit code

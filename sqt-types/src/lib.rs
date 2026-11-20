@@ -54,7 +54,7 @@ pub enum Instrumentation {
 }
 
 /// How the Runner schedules repetitions and which timing metrics it fills.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MeasurementMode {
     /// Each inference call is timed on its own: `time.avg_ms` and the latency

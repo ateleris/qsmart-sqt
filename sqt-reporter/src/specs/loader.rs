@@ -20,7 +20,7 @@ use sqt_types::WorkloadType;
 
 use crate::constraint::{Constraint, Op};
 use crate::metrics::Target;
-use crate::specs::{TestSpec, UnreconcilableConstraint};
+use crate::specs::{Measurement, TestSpec, UnreconcilableConstraint};
 
 // ---------------------------------------------------------------------------
 // Raw deserialization types
@@ -41,14 +41,15 @@ struct RawTestSpec {
     #[serde(default)]
     use_case: Option<String>,
     input: Option<PathBuf>,
-    // repetitions is deserialized for forward compatibility; the orchestrator
-    // reads it from the spec and passes it to JobRequest.  It is not used here.
+    /// Measured runs of the binary (default 1, at least 1).
     #[serde(default)]
-    #[expect(
-        dead_code,
-        reason = "accepted so existing specs keep loading; not yet sent to the Runner (SRS-IF-002, SQT-SW-1)"
-    )]
     repetitions: Option<u32>,
+    /// Runs before measurement starts (default 0).
+    #[serde(default)]
+    warmup_repetitions: Option<u32>,
+    /// `latency` (default) or `throughput`.
+    #[serde(default)]
+    mode: Option<sqt_types::MeasurementMode>,
     #[serde(default)]
     timeout_secs: Option<u64>,
     constraints: Vec<RawConstraint>,
@@ -303,11 +304,22 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<V
         constraints.push(constraint);
     }
 
+    let repetitions = raw.repetitions.unwrap_or(1);
+    if repetitions == 0 {
+        bail!("repetitions in spec '{uid}' must be at least 1");
+    }
+    let measurement = Measurement {
+        repetitions,
+        warmup_repetitions: raw.warmup_repetitions.unwrap_or(0),
+        mode: raw.mode.unwrap_or_default(),
+    };
+
     let spec = TestSpec {
         requirement_uid: raw.requirement_uid,
         workload_type: declared.clone().unwrap_or_default(),
         fan_out: declared.is_none(),
         target,
+        measurement,
         constraints,
         unreconcilable,
         reference_outputs: raw.reference_outputs,
@@ -428,6 +440,80 @@ constraints:
         assert_eq!(spec.target.input, Some(PathBuf::from("datasets/reference.bin")));
         assert_eq!(spec.target.timeout, Duration::from_mins(2));
         assert_eq!(spec.constraints.len(), 3);
+    }
+
+    /// Verifies: SRS-IF-002
+    #[test]
+    fn measurement_settings_are_read_from_the_spec() {
+        let yaml = r"
+requirement_uid: REQ-REP-001
+use_case: regression
+repetitions: 10
+warmup_repetitions: 3
+mode: throughput
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let spec = parse_yaml(yaml).expect("should parse");
+        assert_eq!(
+            spec.measurement,
+            Measurement {
+                repetitions: 10,
+                warmup_repetitions: 3,
+                mode: sqt_types::MeasurementMode::Throughput,
+            }
+        );
+    }
+
+    /// Verifies: SRS-IF-002
+    #[test]
+    fn measurement_settings_default_to_the_contract_defaults() {
+        let yaml = r"
+requirement_uid: REQ-REP-002
+use_case: regression
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let spec = parse_yaml(yaml).expect("should parse");
+        assert_eq!(spec.measurement, Measurement::default());
+        assert_eq!(spec.measurement.repetitions, 1);
+        assert_eq!(spec.measurement.warmup_repetitions, 0);
+        assert_eq!(spec.measurement.mode, sqt_types::MeasurementMode::Latency);
+    }
+
+    /// Verifies: SRS-IF-002, SRS-FUNC-003
+    #[test]
+    fn zero_repetitions_rejected() {
+        let yaml = r"
+requirement_uid: REQ-REP-003
+use_case: regression
+repetitions: 0
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let err = parse_yaml(yaml).expect_err("zero repetitions must be rejected");
+        assert!(format!("{err:#}").contains("repetitions"), "{err:#}");
+    }
+
+    /// Verifies: SRS-IF-002
+    #[test]
+    fn unknown_mode_rejected() {
+        let yaml = r"
+requirement_uid: REQ-REP-004
+use_case: regression
+mode: fastest
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        assert!(parse_yaml(yaml).is_err(), "an unknown mode must be rejected");
     }
 
     /// Verifies: SRS-FUNC-004

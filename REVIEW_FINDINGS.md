@@ -168,7 +168,12 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   are not capped.
 - **F-M6** Runner ignores `repetitions` / `warmup_repetitions` / `mode` — binary
   runs once, `mode` always echoed `latency` (`handlers.rs:221`). `time.avg_ms` is a
-  single sample despite the name.
+  single sample despite the name. **Fixed** in the `repetitions` PR, together with
+  IF-002 on the Orchestrator side: a spec's `repetitions`, `warmup_repetitions`
+  and `mode` are sent; the Runner runs the warm-up runs, then the measured runs,
+  all within the job timeout, and reports the mean, the p50/p95/p99 latencies, the
+  throughput (throughput mode), the highest peak RSS and `result_consistent`
+  across the runs; the status echoes the mode.
 - **F-M7** No default use-case fan-out (SRS-FUNC-019): `use_case` is required, so an
   undeclared workload is a hard error rather than one-job-per-type. **Fixed** in
   the `fanout-workloads` PR: a spec without `use_case` runs once per workload type;

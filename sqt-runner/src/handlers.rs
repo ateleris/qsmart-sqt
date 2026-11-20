@@ -15,7 +15,7 @@ use axum::{
 use sqt_types::{
     ApiError as ApiErrorBody, Attachment, DocsResponse, ErrorResponse, HealthCheckValue,
     HealthChecks, HealthResponse, HealthStatus, JobAccepted, JobRequest, JobStatus,
-    JobStatusResponse, MeasurementMode, StrictdocDocument, VersionResponse,
+    JobStatusResponse, StrictdocDocument, VersionResponse,
 };
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::{
     executor::ExecutionBackend,
     store::{self, JobStore},
+    tools::repetition::MAX_REPETITIONS,
 };
 
 /// Shared application state passed to all handlers.
@@ -56,11 +57,14 @@ pub struct AppState {
 // ---------------------------------------------------------------------------
 
 /// `POST /api/v1/jobs`: queue a job and return 202 with its id. The job
-/// runs in the background once the jobs before it have finished.
+/// runs in the background once the jobs before it have finished. A request
+/// whose `repetitions` is not between 1 and [`MAX_REPETITIONS`], or whose
+/// `warmup_repetitions` exceeds it, is refused with 400 `VALIDATION_ERROR`.
 pub async fn create_job(
     State(state): State<AppState>,
     Json(req): Json<JobRequest>,
-) -> (StatusCode, Json<JobAccepted>) {
+) -> Result<(StatusCode, Json<JobAccepted>), (StatusCode, Json<ErrorResponse>)> {
+    validate_request(&req)?;
     let job_id = Uuid::new_v4().to_string();
 
     let job = store::JobState::new(job_id.clone(), &req);
@@ -167,10 +171,41 @@ pub async fn create_job(
         // _permit dropped here — next queued job can acquire the semaphore.
     });
 
-    (
+    Ok((
         StatusCode::ACCEPTED,
         Json(JobAccepted { job_id, status: "accepted".into(), queue_position, created_at }),
-    )
+    ))
+}
+
+/// Refuse a job request outside the contract's bounds and the Runner's limits.
+fn validate_request(req: &JobRequest) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let problem = if (1..=MAX_REPETITIONS).contains(&req.repetitions) {
+        req.warmup_repetitions
+            .filter(|&w| w > MAX_REPETITIONS)
+            .map(|w| format!("warmup_repetitions must be at most {MAX_REPETITIONS}, got {w}"))
+    } else {
+        Some(format!(
+            "repetitions must be between 1 and {MAX_REPETITIONS}, got {}",
+            req.repetitions
+        ))
+    };
+    match problem {
+        None => Ok(()),
+        Some(message) => {
+            tracing::warn!("POST /api/v1/jobs - rejected: {message}");
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: ApiErrorBody {
+                        code: "VALIDATION_ERROR".into(),
+                        message,
+                        details: None,
+                        timestamp: crate::now_iso(),
+                    },
+                }),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +228,7 @@ pub async fn get_job(
                 job.id.clone(),
                 job.workload_type.clone(),
                 job.repetitions,
+                job.mode.clone(),
                 job.tags.clone(),
                 job.status.clone(),
                 job.created_at.clone(),
@@ -210,6 +246,7 @@ pub async fn get_job(
         id,
         workload_type,
         repetitions,
+        mode,
         tags,
         status,
         created_at,
@@ -246,7 +283,7 @@ pub async fn get_job(
     Ok(Json(JobStatusResponse {
         job_id: id,
         use_case: workload_type,
-        mode: MeasurementMode::default(),
+        mode,
         repetitions,
         status,
         queue_position,
@@ -476,7 +513,7 @@ mod tests {
     };
     use base64::Engine as _;
     use http_body_util::BodyExt as _;
-    use sqt_types::{HardwareInfo, JobMetrics};
+    use sqt_types::{HardwareInfo, JobMetrics, MeasurementMode};
     use tokio::sync::Semaphore;
     use tower::ServiceExt as _;
 
@@ -654,6 +691,28 @@ mod tests {
         assert_eq!(json["queue_position"], 1);
     }
 
+    /// Verifies: SRS-INST-001, SRS-IF-002
+    #[tokio::test]
+    async fn post_job_outside_the_repetition_bounds_returns_400() {
+        for body in [
+            serde_json::json!({ "use_case": "regression", "repetitions": 0 }),
+            serde_json::json!({ "use_case": "regression", "repetitions": 4_294_967_295_u64 }),
+            serde_json::json!({ "use_case": "regression", "warmup_repetitions": 10_001 }),
+        ] {
+            let app = test_app(None);
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/jobs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+            let json = body_json(resp.into_body()).await;
+            assert_eq!(json["error"]["code"], "VALIDATION_ERROR", "{body}");
+        }
+    }
+
     /// Verifies: SRS-INST-001
     #[tokio::test]
     async fn post_job_returns_job_id_that_is_retrievable() {
@@ -697,7 +756,7 @@ mod tests {
         assert_eq!(json["use_case"], "regression");
     }
 
-    /// Verifies: SRS-INST-001
+    /// Verifies: SRS-INST-001, SRS-IF-002
     #[tokio::test]
     async fn get_job_surfaces_captured_output() {
         // F-H1: a completed job's captured output must reach the response
@@ -721,9 +780,9 @@ mod tests {
             let req = JobRequest {
                 use_case: sqt_types::WorkloadType::Regression,
                 input: None,
-                repetitions: 1,
+                repetitions: 5,
                 instrumentation: sqt_types::Instrumentation::default(),
-                mode: MeasurementMode::default(),
+                mode: MeasurementMode::Throughput,
                 warmup_repetitions: None,
                 timeout_secs: None,
                 tags: None,
@@ -750,6 +809,10 @@ mod tests {
         assert_eq!(json["output"]["result_consistent"], true);
         assert_eq!(json["output"]["outputs_checksum"], "deadbeef");
         assert_eq!(json["output"]["outputs"][0]["prediction"], 0.5);
+        // The status echoes the request's measurement settings (it always
+        // said "latency" before).
+        assert_eq!(json["mode"], "throughput");
+        assert_eq!(json["repetitions"], 5);
     }
 
     /// Verifies: SRS-INST-001
