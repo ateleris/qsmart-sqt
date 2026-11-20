@@ -145,7 +145,8 @@ impl SqtConfig {
     ///
     /// Returns an error naming the offending field (SRS-FUNC-002) if a required field is
     /// empty, `runner.url` has an invalid scheme, `test_specs.files` is empty, a runner
-    /// setting is out of range, or the bearer token env var is missing/empty.
+    /// setting is out of range, the bearer token env var is missing/empty, or a token
+    /// would travel over plain `http://` to a host other than the local one (SRS-IF-010).
     pub fn validate(&mut self, config_dir: &Path) -> Result<()> {
         if self.project.name.is_empty() {
             bail!("project.name must not be empty");
@@ -169,6 +170,8 @@ impl SqtConfig {
             if var_name.is_empty() {
                 bail!("runner.token_env must not be empty; omit it to run unauthenticated");
             }
+            crate::api::client::check_token_transport(&self.runner.url)
+                .map_err(|e| anyhow::anyhow!("runner.url: {e:#}"))?;
             match std::env::var(var_name) {
                 Ok(val) if !val.is_empty() => {}
                 _ => {
@@ -611,5 +614,28 @@ report:
     fn empty_output_dir_rejected() {
         let err = load(&config_with("", "")).unwrap_err();
         assert!(err.to_string().contains("report.output_dir"), "{err}");
+    }
+
+    /// Verifies: SRS-IF-010, SRS-FUNC-002
+    #[test]
+    fn token_over_plain_http_to_a_remote_runner_rejected() {
+        // The transport check comes before the token variable is read, so the
+        // variable need not exist.
+        let yaml = r#"
+project:
+  name: "Test"
+  version: "1.0.0"
+test_specs:
+  files:
+    - "./specs/example.yaml"
+runner:
+  url: "http://runner.example:3000"
+  token_env: "SQT_TEST_UNUSED_TOKEN_VAR"
+report:
+  output_dir: "./reports"
+"#;
+        let msg = format!("{:#}", load(yaml).unwrap_err());
+        assert!(msg.contains("runner.url"), "error should name the field: {msg}");
+        assert!(msg.contains("https://"), "error should say what to use: {msg}");
     }
 }
