@@ -177,6 +177,11 @@ fn display_url(url: &reqwest::Url) -> String {
     shown.to_string()
 }
 
+/// `ts` in UTC as RFC 3339 with milliseconds, e.g. `2026-11-20T15:36:17.042Z`.
+fn rfc3339_millis(ts: jiff::Timestamp) -> String {
+    format!("{}.{:03}Z", ts.strftime("%Y-%m-%dT%H:%M:%S"), ts.subsec_millisecond())
+}
+
 /// Whether a request may be sent again after a failure (SRS-FUNC-020).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Resend {
@@ -315,7 +320,7 @@ impl ApiClient {
             operation,
             url: url.to_owned(),
             status: status.as_u16(),
-            received_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            received_at: rfc3339_millis(jiff::Timestamp::now()),
             job_id: job_id.map(str::to_owned),
             body: body.to_vec(),
         };
@@ -657,6 +662,15 @@ fn validate_version_response(resp: &sqt_types::VersionResponse) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies: SRS-FUNC-008
+    #[test]
+    fn response_timestamps_are_utc_rfc3339_with_milliseconds() {
+        let ts = jiff::Timestamp::from_millisecond(1_795_073_657_042).unwrap();
+        assert_eq!(rfc3339_millis(ts), "2026-11-19T07:34:17.042Z");
+        let whole = jiff::Timestamp::from_millisecond(1_795_073_657_000).unwrap();
+        assert_eq!(rfc3339_millis(whole), "2026-11-19T07:34:17.000Z");
+    }
 
     fn make_client(retry_max: u32) -> ApiClient {
         let options =

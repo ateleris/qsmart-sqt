@@ -21,7 +21,7 @@ mod schema;
 pub fn load_config(path: &Path) -> anyhow::Result<SqtConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-    let mut config: SqtConfig = serde_yaml::from_str(&content)
+    let mut config: SqtConfig = serde_saphyr::from_str(&content)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
     config.validate(config_dir)?;

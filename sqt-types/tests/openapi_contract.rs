@@ -10,22 +10,22 @@
 
 use std::collections::BTreeSet;
 
-use serde_yaml::Value;
+use serde_json::Value;
 use sqt_types::JobMetrics;
 
 fn openapi() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../job-api.openapi.yaml");
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
-    serde_yaml::from_str(&text).expect("job-api.openapi.yaml is not valid YAML")
+    serde_saphyr::from_str(&text).expect("job-api.openapi.yaml is not valid YAML")
 }
 
 /// Property names declared for `components.schemas.<schema>`.
 fn schema_properties(doc: &Value, schema: &str) -> BTreeSet<String> {
     doc["components"]["schemas"][schema]["properties"]
-        .as_mapping()
+        .as_object()
         .unwrap_or_else(|| panic!("schema `{schema}` has no `properties` map"))
         .keys()
-        .map(|k| k.as_str().expect("property key is a string").to_string())
+        .cloned()
         .collect()
 }
 

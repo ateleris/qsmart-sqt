@@ -331,7 +331,7 @@ impl ServerConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file: {}", path.display()))?;
-        let mut config: Self = serde_yaml::from_str(&contents)
+        let mut config: Self = serde_saphyr::from_str(&contents)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
 
         if config.max_finished_jobs == 0 {
@@ -439,6 +439,23 @@ mod tests {
 
     /// Verifies: SRS-INST-001
     #[test]
+    fn every_example_runner_configuration_loads() {
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../examples"));
+        let mut loaded = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let yaml = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("yaml"));
+            if name.starts_with("sqt-runner") && yaml {
+                ServerConfig::load(&path).unwrap_or_else(|e| panic!("{name} does not load: {e:#}"));
+                loaded += 1;
+            }
+        }
+        assert!(loaded >= 3, "found only {loaded} example Runner configurations");
+    }
+
+    /// Verifies: SRS-INST-001
+    #[test]
     fn parse_minimal_config() {
         let yaml = r"
 binary:
@@ -448,7 +465,7 @@ docker:
     run:
       image: sqt-run:latest
 ";
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(config.binary.path, "target/debug/my-app");
         assert!(config.binary.args.is_empty());
         assert!(config.binary.env.is_empty());
@@ -489,7 +506,7 @@ docker:
     static_analysis:
       image: sqt-static:latest
 "#;
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(config.binary.path, "target/debug/my-app");
         assert_eq!(config.binary.args, vec!["--model", "resnet50"]);
         assert_eq!(config.binary.env.get("LD_LIBRARY_PATH").unwrap(), "/opt/libs");
@@ -504,7 +521,7 @@ docker:
     #[test]
     fn auth_absent_by_default() {
         let yaml = "binary:\n  path: app\n";
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         assert!(config.auth.is_none());
     }
 
@@ -512,7 +529,7 @@ docker:
     #[test]
     fn auth_parses_token_env() {
         let yaml = "binary:\n  path: app\nauth:\n  token_env: SQT_RUNNER_TOKEN\n";
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(config.auth.as_ref().unwrap().token_env, "SQT_RUNNER_TOKEN");
     }
 
@@ -520,7 +537,7 @@ docker:
     #[test]
     fn backend_defaults_to_docker_when_absent() {
         let yaml = "binary:\n  path: app\n";
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         assert!(matches!(config.backend, Backend::Docker));
     }
 
@@ -528,7 +545,7 @@ docker:
     #[test]
     fn backend_unknown_value_is_error() {
         let yaml = "backend: labgrid\nbinary:\n  path: app\n";
-        let result: Result<ServerConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<ServerConfig, _> = serde_saphyr::from_str(yaml);
         assert!(result.is_err(), "unknown backend should fail to parse until a variant exists");
     }
 
@@ -540,7 +557,7 @@ binary:
   path: app
   input_mode: stdin
 ";
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         assert!(matches!(config.binary.input_mode, InputMode::Stdin));
     }
 
@@ -552,7 +569,7 @@ binary:
   path: app
   input_mode: "env:INPUT_FILE"
 "#;
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         match config.binary.input_mode {
             InputMode::Env(ref var) => assert_eq!(var, "INPUT_FILE"),
             other => panic!("expected Env, got {other:?}"),
@@ -567,7 +584,7 @@ binary:
   path: app
   input_mode: "foobar"
 "#;
-        let result: Result<ServerConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<ServerConfig, _> = serde_saphyr::from_str(yaml);
         assert!(result.is_err());
     }
 
@@ -584,7 +601,7 @@ docker:
     valgrind:
       image: valgrind:1
 ";
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         let tc = ToolConfig::from_tools(&config.docker.tools);
         assert_eq!(tc.run_image.as_deref(), Some("run:1"));
         assert_eq!(tc.valgrind_image.as_deref(), Some("valgrind:1"));
@@ -609,7 +626,7 @@ docker:
 ";
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::set_var("MY_SONAR_TOKEN", "secret-token") };
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         let tc = ToolConfig::from_tools(&config.docker.tools);
         assert_eq!(tc.sonar_url.as_deref(), Some("http://sonar:9000"));
         assert_eq!(tc.sonar_token.as_deref(), Some("secret-token"));
@@ -631,7 +648,7 @@ docker:
 ";
         // SAFETY: test-only, single-threaded context
         unsafe { std::env::remove_var("SONAR_TOKEN") };
-        let config: ServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerConfig = serde_saphyr::from_str(yaml).unwrap();
         let tc = ToolConfig::from_tools(&config.docker.tools);
         assert!(tc.sonar_token.is_none());
     }
@@ -644,7 +661,7 @@ binary:
   path: app
   input_mode: "env:"
 "#;
-        let result: Result<ServerConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<ServerConfig, _> = serde_saphyr::from_str(yaml);
         assert!(result.is_err());
     }
 

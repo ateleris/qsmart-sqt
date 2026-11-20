@@ -26,11 +26,13 @@ allow_attributes_without_reason = "warn"
 sqt-types = { path = "./sqt-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = { package = "serde_yaml_ng", version = "0.9" }
+# Pure-Rust YAML deserialiser (no unsafe-libyaml, which RustSec lists as unmaintained).
+serde-saphyr = { version = "2.2", default-features = false, features = ["deserialize"] }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "http2", "charset"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# UTC timestamps only; no time-zone database needed.
+jiff = { version = "1", default-features = false, features = ["std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"

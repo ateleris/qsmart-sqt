@@ -305,7 +305,10 @@ Left open by the `v0.1.0` release. The documents named here are in
   unmaintained (RUSTSEC-2026-0543) and `unsafe-libyaml` unmaintained
   (RUSTSEC-2024-0449), both in the delivered binaries; `rustix` unsound in
   `xattr` (RUSTSEC-2026-0486), test dependency only through `tempfile`. Look for
-  maintained replacements before SQT-SW-1.
+  maintained replacements before SQT-SW-1. **Fixed** in #49: `chrono`
+  is replaced by `jiff` (UTC only), `serde_yaml_ng` and its `unsafe-libyaml` by
+  the pure-Rust `serde-saphyr`, and `rustix` is updated to 1.1.6, which fixes
+  RUSTSEC-2026-0486. cargo-audit reports no warning.
 - **R-8** The SRS defines the `Generic` allocation as "constrains the
   Orchestrator-Runner API contract itself" (SRS-GEN-001 and the attribute
   table), but 13 of the 21 `Generic` requirements constrain the SQT or the
@@ -374,11 +377,11 @@ Steps, in this order:
 - **P-3** Carry-overs and robustness: IF-002 `repetitions` together with the
   Runner repetition loop (F-M6); FUNC-019 fan-out (F-M7); F-M1, F-M5, F-M10;
   SIGTERM cancelling in-flight jobs (OPS-008); `queue_position`; R-7.
-  **Done** except R-7: #43 (fan-out), #44 (F-M1, F-M5, F-M10, `queue_position`),
+  **Done**: #43 (fan-out), #44 (F-M1, F-M5, F-M10, `queue_position`),
   #45 (repetitions), with the review fixes #46 and #47. The SIGTERM item is
   replaced by C-3 below: SRS-OPS-008 does not require cancellation, so no
-  contract change is needed. Still open from the reviews: the findings of #44
-  (C-5).
+  contract change is needed; C-3 and the findings of #44 (C-5) are fixed in
+  #48. R-7 is done in #49.
 - **P-4** Features, after the PDR outcome and the release planning: FUNC-006
   (#17); FUNC-014/015 with the contract change; FUNC-021..023; FUNC-011, 013;
   RES-003; HF-002.

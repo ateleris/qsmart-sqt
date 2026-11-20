@@ -22,12 +22,12 @@ tokio = { workspace = true }
 axum = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 base64 = "0.22"
 sha1 = "0.10"
-chrono = { workspace = true }
+jiff = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
