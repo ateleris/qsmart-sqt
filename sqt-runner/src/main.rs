@@ -25,6 +25,7 @@ mod docker;
 mod executor;
 mod handlers;
 mod store;
+mod tls;
 mod tools;
 
 use config::{
@@ -57,6 +58,19 @@ struct Cli {
 
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// Warn when the Runner serves plain HTTP on an address other machines can
+/// reach. The contract is carried over TLS (SRS-IF-010); without a `tls:`
+/// section that takes a TLS-terminating proxy in front of the Runner.
+fn warn_if_plain_http_is_exposed(addr: SocketAddr) {
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            "serving PLAIN HTTP on {addr}, which other machines can reach: the Runner API \
+             contract requires TLS (SRS-IF-010) — add a `tls:` section to the configuration, \
+             or put a TLS-terminating proxy in front of the Runner"
+        );
+    }
 }
 
 /// Run startup readiness checks: the execution backend's own preflight (Docker
@@ -189,6 +203,12 @@ async fn main() {
 
     let auth_token = resolve_auth_token(server_config.auth.as_ref());
 
+    // Load and check the certificate before anything else starts (SRS-IF-010).
+    let tls_config = server_config
+        .tls
+        .as_ref()
+        .map(|t| tls::load_server_config(t).expect("failed to load the TLS certificate or key"));
+
     let executor = build_executor(
         server_config.backend,
         server_config.binary,
@@ -237,7 +257,13 @@ async fn main() {
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse().expect("invalid host:port");
 
-    tracing::info!("sqt-runner listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    if let Some(tls_config) = tls_config {
+        tracing::info!("sqt-runner listening on https://{addr}");
+        tls::serve(listener, app, tls_config).await.unwrap();
+    } else {
+        warn_if_plain_http_is_exposed(addr);
+        tracing::info!("sqt-runner listening on http://{addr}");
+        axum::serve(listener, app).await.unwrap();
+    }
 }

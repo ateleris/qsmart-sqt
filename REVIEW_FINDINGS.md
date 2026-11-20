@@ -161,14 +161,14 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   evidence manifest.
 - **F-M5** Runner resource leaks: per-job workspace dirs never cleaned up; job
   store grows unbounded with no eviction / queue-depth cap (`handlers.rs`,
-  `store.rs`). **Fixed** in the runner-robustness PR: a job's working
+  `store.rs`). **Fixed** in #44: a job's working
   directory is removed when it finishes (`keep_job_workspaces: true` keeps
   it), and only the newest `max_finished_jobs` finished jobs (default 1000)
   stay in the store; an evicted job answers 404 `JOB_NOT_FOUND`. Waiting jobs
   are not capped.
 - **F-M6** Runner ignores `repetitions` / `warmup_repetitions` / `mode` — binary
   runs once, `mode` always echoed `latency` (`handlers.rs:221`). `time.avg_ms` is a
-  single sample despite the name. **Fixed** in the `repetitions` PR, together with
+  single sample despite the name. **Fixed** in #45, together with
   IF-002 on the Orchestrator side: a spec's `repetitions`, `warmup_repetitions`
   and `mode` are sent; the Runner runs the warm-up runs, then the measured runs,
   all within the job timeout, and reports the mean, the p50/p95/p99 latencies, the
@@ -189,9 +189,9 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
 - **F-M10** `cpu.avg_normalized_pct` is raw GNU-time "Percent of CPU" (can exceed
   100%), not normalised as the field name and AD-015 promise
   (`run_binary.rs:90` → `executor/docker.rs:358`). **Fixed** in the
-  runner-robustness PR: divided by the core count (the configured
-  `hardware.cores`, else the CPUs available to the Runner) and clamped to
-  0..100, as the contract defines it.
+  runner-robustness PR: divided by the core count and clamped to 0..100, as
+  the contract defines it. Since C-5 the count is the CPUs of the measuring
+  host, not the configured `hardware.cores`.
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
   parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
@@ -287,11 +287,11 @@ Left open by the `v0.1.0` release. The documents named here are in
 - **R-4** `ci/release-notes.py` says each image must load with the ID in
   `IMAGES.txt`. That only holds on Docker's containerd image store; the classic
   store shows the config digest. The SRelD I1R1 lists both IDs. Fix the wording,
-  or write both IDs into `IMAGES.txt`. **Fixed** in the `image-records` PR:
+  or write both IDs into `IMAGES.txt`. **Fixed** in #34:
   `IMAGES.txt` records both digests and the notes explain which one applies.
 - **R-5** `IMAGES.txt` of `v0.1.0` does not record the Docker Engine version of
   the build. The line that adds it is in PR #31, which is not merged. Take it
-  over independently of GHCR. **Fixed** in the `image-records` PR, with the
+  over independently of GHCR. **Fixed** in #34, with the
   image store of the build.
 - **R-6** Publishing the images to GHCR. The old PR #31 was closed: it was
   based on `main` from before the 2026-11-19 rewrite. Its workflow is carried
@@ -362,7 +362,7 @@ Steps, in this order:
 - **P-2** Make the fulfilment matrix authoritative: run `ci/fulfilment-matrix.py`
   with `--srs` in CI, against the SRS of the docs repository at a pinned tag,
   so every requirement without a passing test shows up on each push.
-  **Done** in the `p2-requirements-list` PR, with a requirement list instead of
+  **Done** in #39, with a requirement list instead of
   the SRS: the docs repository is private, and a release must build from a
   clean clone without secrets (SRS-CDR-002). `ci/requirements.csv` holds UID,
   title, verification method and planned release, generated from the SRS and
@@ -428,10 +428,16 @@ none caused by the recent changes:
   local host (#42, #46), but `sqt-runner` has no TLS listener, so a remote
   reference Runner can only be reached securely through a TLS-terminating
   proxy. Fix: a TLS listener in `sqt-runner` (certificate and key from its
-  configuration), or document the proxy as the supported deployment. Goes
-  with assigning IF-010 to a release (R-10). Orchestrator side, in #48: the
-  optional `runner.ca_cert` lets it verify a Runner certificate issued by a
-  private CA.
+  configuration), or document the proxy as the supported deployment.
+
+  **Fixed** in #48: with a `tls:` section (certificate chain and key, PEM) the
+  reference Runner serves HTTPS only, through rustls with the ring provider
+  (no OpenSSL); certificate and key are loaded and checked at start-up.
+  Without it, the Runner serves plain HTTP and logs a warning when bound to a
+  non-loopback address. On the Orchestrator side, the optional
+  `runner.ca_cert` lets it verify a Runner certificate issued by a private CA;
+  certificates are always verified. Still open: assigning IF-010 to a release
+  (R-10).
 - **C-5, open review findings of #44** (reference Runner): job workspaces
   written by root-owned tool containers cannot be removed by the Runner, so
   F-M5's cleanup fails in a real Docker set-up (important); CPU normalisation
@@ -441,6 +447,19 @@ none caused by the recent changes:
   under test itself exits with 125 to 127; the cppcheck "nothing checked"
   test depends on English message text; the workspace is removed on an async
   worker thread; `queue_position` can be off under simultaneous submissions.
+
+  **Fixed:** a refused workspace removal falls back to deleting the content
+  through a short-lived container of the configured run image (tool
+  containers keep running as root), and a missing directory counts as
+  removed; the removal runs on a blocking thread after the job's result is
+  stored and its permit released; `max_finished_jobs: 0` is rejected at load;
+  the CPU figure is divided by the CPUs of the measuring host, and a figure
+  above what they can produce is logged before it is capped at 100; the
+  valgrind collector relies on its XML report, not the exit code; the
+  container counts the source files before cppcheck runs, so "nothing
+  checked" no longer depends on cppcheck's wording; the queue order is
+  assigned under the store's write lock, and `queue_position` is documented
+  as the position in submission order, a close estimate of the start order.
 
 Process for SQT-SW-1, not code:
 

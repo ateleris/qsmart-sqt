@@ -10,6 +10,16 @@ backend: docker                      # execution backend (default: docker)
 # auth:
 #   token_env: SQT_RUNNER_TOKEN
 
+# TLS (SRS-IF-010). The Runner API contract is carried over TLS. When present,
+# the runner serves HTTPS only, with this certificate chain and private key
+# (PEM; relative paths resolved against the working directory); both are
+# checked at startup. When absent it serves plain HTTP, which is fine on the
+# local host; bound to any other address it logs a warning, and a
+# TLS-terminating proxy must then sit in front of it.
+# tls:
+#   cert: /etc/sqt-runner/cert.pem   # certificate chain, leaf first
+#   key: /etc/sqt-runner/key.pem     # private key of the leaf certificate
+
 binary:
   path: /usr/bin/hostname  # relative or absolute; resolved to absolute at load time
   # args: ["--model", "resnet50"]    # optional: fixed args always appended
@@ -20,7 +30,7 @@ binary:
 
 workspace: ./sqt-workspace           # evidence and tool output dir (default: /tmp/sqt-dev-server)
 # keep_job_workspaces: false         # keep each job's subdirectory after it finished (default: removed)
-# max_finished_jobs: 1000            # finished jobs kept for GET /api/v1/jobs/{id}; older ones answer 404
+# max_finished_jobs: 1000            # finished jobs kept for GET /api/v1/jobs/{id}, at least 1; older ones answer 404
 
 # Docker-backend-specific settings (tools + optional build step).
 docker:

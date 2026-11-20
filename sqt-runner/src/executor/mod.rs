@@ -5,7 +5,7 @@
 
 use std::{collections::HashMap, path::Path, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqt_types::{HardwareInfo, JobMetrics, JobOutput, JobRequest};
 
 pub mod docker;
@@ -102,6 +102,44 @@ pub trait ExecutionBackend: Send + Sync {
     /// `hardware` is returned verbatim in `JobStatusResponse.hardware`;
     /// `target_id` and `toolchain_versions` feed `GET /api/v1/version`.
     fn describe(&self) -> BackendDescriptor;
+
+    /// Remove a finished job's workspace directory (backlog F-M5).
+    ///
+    /// A directory that no longer exists counts as removed. Backends whose
+    /// tools write files the Runner may not delete override this.
+    fn remove_workspace(&self, workspace: &Path) -> Result<()>;
+}
+
+/// Remove `workspace` with `std::fs::remove_dir_all`. If that is refused
+/// (`PermissionDenied`), let `make_removable` clear what the Runner may not
+/// delete, then remove the directory again. A directory that does not exist
+/// counts as removed. Pure apart from the file system, so the decision is
+/// tested without Docker.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be removed, or if
+/// `make_removable` fails.
+pub fn remove_workspace_with(
+    workspace: &Path,
+    make_removable: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    use std::io::ErrorKind;
+    match std::fs::remove_dir_all(workspace) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            make_removable(workspace).with_context(|| {
+                format!("{} could not be removed ({e}) nor made removable", workspace.display())
+            })?;
+            match std::fs::remove_dir_all(workspace) {
+                Err(e) if e.kind() != ErrorKind::NotFound => Err(e)
+                    .with_context(|| format!("{} is still not removable", workspace.display())),
+                _ => Ok(()),
+            }
+        }
+        Err(e) => Err(e).with_context(|| format!("removing {}", workspace.display())),
+    }
 }
 
 /// Ergonomic, lifecycle-oriented backend trait — **implement this**, not
@@ -145,6 +183,13 @@ pub trait LifecycleBackend: Send + Sync {
     fn teardown(&self, _ctx: &JobContext, _prepared: Self::Prepared) -> Result<()> {
         Ok(())
     }
+
+    /// See [`ExecutionBackend::remove_workspace`]. Defaults to a plain removal.
+    fn remove_workspace(&self, workspace: &Path) -> Result<()> {
+        remove_workspace_with(workspace, |_| {
+            anyhow::bail!("this backend cannot remove files the Runner may not delete")
+        })
+    }
 }
 
 impl<T: LifecycleBackend> ExecutionBackend for T {
@@ -154,6 +199,10 @@ impl<T: LifecycleBackend> ExecutionBackend for T {
 
     fn describe(&self) -> BackendDescriptor {
         LifecycleBackend::describe(self)
+    }
+
+    fn remove_workspace(&self, workspace: &Path) -> Result<()> {
+        LifecycleBackend::remove_workspace(self, workspace)
     }
 
     fn execute(&self, request: &JobRequest, workspace: &Path) -> Result<ExecutionOutcome> {
@@ -167,5 +216,83 @@ impl<T: LifecycleBackend> ExecutionBackend for T {
             tracing::warn!(error = format!("{e:#}"), "teardown failed");
         }
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, os::unix::fs::PermissionsExt};
+
+    use super::*;
+
+    /// A workspace holding a directory the current user may not delete from,
+    /// as root-owned tool output is for the Runner. Returns `None` when the
+    /// test runs as root, which may delete anything.
+    fn locked_workspace(root: &Path) -> Option<std::path::PathBuf> {
+        let ws = root.join("job");
+        let locked = ws.join("tool-output");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("valgrind.xml"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let probe = locked.join("probe");
+        if std::fs::write(&probe, "").is_ok() {
+            std::fs::remove_file(probe).unwrap();
+            return None;
+        }
+        Some(ws)
+    }
+
+    fn unlock(ws: &Path) {
+        std::fs::set_permissions(ws.join("tool-output"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+    }
+
+    /// Verifies: SRS-INST-001
+    #[test]
+    fn a_missing_or_ordinary_workspace_is_removed_without_the_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let called = Cell::new(false);
+        let fallback = |_: &Path| {
+            called.set(true);
+            Ok(())
+        };
+        remove_workspace_with(&dir.path().join("never-created"), fallback).unwrap();
+        let ws = dir.path().join("job");
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::write(ws.join("sub/file"), "x").unwrap();
+        remove_workspace_with(&ws, fallback).unwrap();
+        assert!(!ws.exists());
+        assert!(!called.get(), "no fallback for a directory the Runner may delete");
+    }
+
+    /// Verifies: SRS-INST-001
+    #[test]
+    fn a_refused_removal_falls_back_and_then_removes_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(ws) = locked_workspace(dir.path()) else {
+            return; // running as root: nothing is refused
+        };
+        let called = Cell::new(false);
+        remove_workspace_with(&ws, |w| {
+            called.set(true);
+            unlock(w); // what the clean-up container achieves
+            Ok(())
+        })
+        .unwrap();
+        assert!(called.get(), "a refused removal must use the fallback");
+        assert!(!ws.exists(), "the workspace must be gone afterwards");
+    }
+
+    /// Verifies: SRS-INST-001
+    #[test]
+    fn a_failing_fallback_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(ws) = locked_workspace(dir.path()) else {
+            return; // running as root: nothing is refused
+        };
+        let err = remove_workspace_with(&ws, |_| anyhow::bail!("docker unavailable"))
+            .expect_err("a workspace that stays must be reported");
+        assert!(format!("{err:#}").contains("docker unavailable"), "{err:#}");
+        unlock(&ws);
     }
 }
