@@ -5,6 +5,11 @@
 //!
 //! Reads spec files listed explicitly in `config.test_specs.files`.
 //! Auto-discovery from the filesystem is prohibited (SRS-MAINT-002).
+//!
+//! A specification that declares no `use_case` is expanded into one
+//! specification per workload type of the ML Space Profile
+//! ([`ML_SPACE_PROFILE`]), so the Orchestrator submits one job per type
+//! (SRS-FUNC-019).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -32,7 +37,9 @@ struct RawConstraint {
 #[derive(Deserialize)]
 struct RawTestSpec {
     requirement_uid: String,
-    use_case: String,
+    /// Absent: run every workload type of the ML Space Profile (SRS-FUNC-019).
+    #[serde(default)]
+    use_case: Option<String>,
     input: Option<PathBuf>,
     // repetitions is deserialized for forward compatibility; the orchestrator
     // reads it from the spec and passes it to JobRequest.  It is not used here.
@@ -59,6 +66,17 @@ struct RawTestSpec {
 // ---------------------------------------------------------------------------
 // WorkloadType parsing
 // ---------------------------------------------------------------------------
+
+/// The workload types of the ML Space Profile, in the order the jobs of a
+/// fanned-out specification are listed (SRS-FUNC-019, `ARCHITECTURE.md` §5.2).
+pub const ML_SPACE_PROFILE: [WorkloadType; 6] = [
+    WorkloadType::ObjectDetection,
+    WorkloadType::ImageClassification,
+    WorkloadType::PixelSegmentation,
+    WorkloadType::Classification,
+    WorkloadType::Regression,
+    WorkloadType::TimeSeriesForecasting,
+];
 
 fn parse_use_case(s: &str) -> anyhow::Result<WorkloadType> {
     match s {
@@ -224,10 +242,18 @@ fn split_number_and_unit(s: &str) -> anyhow::Result<(&str, &str)> {
 // Conversion: RawTestSpec → TestSpec
 // ---------------------------------------------------------------------------
 
-fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<TestSpec> {
+/// Convert one specification file into the specifications it stands for: one
+/// when it declares a `use_case`, one per workload type of
+/// [`ML_SPACE_PROFILE`] when it declares none (SRS-FUNC-019). The expanded
+/// specifications share the requirement UID, constraints and input.
+fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<Vec<TestSpec>> {
     let uid = &raw.requirement_uid;
-    let workload_type = parse_use_case(&raw.use_case)
-        .with_context(|| format!("invalid use_case in spec '{uid}'"))?;
+    let declared = match &raw.use_case {
+        Some(name) => Some(
+            parse_use_case(name).with_context(|| format!("invalid use_case in spec '{uid}'"))?,
+        ),
+        None => None,
+    };
 
     let timeout_secs = raw.timeout_secs.unwrap_or(default_timeout_secs);
 
@@ -277,16 +303,24 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
         constraints.push(constraint);
     }
 
-    Ok(TestSpec {
+    let spec = TestSpec {
         requirement_uid: raw.requirement_uid,
-        workload_type,
+        workload_type: declared.clone().unwrap_or_default(),
+        fan_out: declared.is_none(),
         target,
         constraints,
         unreconcilable,
         reference_outputs: raw.reference_outputs,
         precision_reference: raw.precision_reference,
         precision_tolerance: raw.precision_tolerance,
-    })
+    };
+    if declared.is_some() {
+        return Ok(vec![spec]);
+    }
+    Ok(ML_SPACE_PROFILE
+        .iter()
+        .map(|workload| TestSpec { workload_type: workload.clone(), ..spec.clone() })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +335,9 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
 ///   does not set its own `timeout_secs`.
 ///
 /// Returns the full list of specs, or an `Err` on the first parse failure
-/// (the error message includes the file path).
+/// (the error message includes the file path). A file without `use_case`
+/// contributes one spec per workload type (SRS-FUNC-019), so the list can be
+/// longer than `files`.
 ///
 /// # Errors
 ///
@@ -311,14 +347,14 @@ fn convert_spec(raw: RawTestSpec, default_timeout_secs: u64) -> anyhow::Result<T
 pub fn load_specs(files: &[PathBuf], default_timeout_secs: u64) -> anyhow::Result<Vec<TestSpec>> {
     let mut specs = Vec::with_capacity(files.len());
     for path in files {
-        let spec = load_one_spec(path, default_timeout_secs)
+        let loaded = load_one_spec(path, default_timeout_secs)
             .with_context(|| format!("failed to load spec file '{}'", path.display()))?;
-        specs.push(spec);
+        specs.extend(loaded);
     }
     Ok(specs)
 }
 
-fn load_one_spec(path: &Path, default_timeout_secs: u64) -> anyhow::Result<TestSpec> {
+fn load_one_spec(path: &Path, default_timeout_secs: u64) -> anyhow::Result<Vec<TestSpec>> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading '{}'", path.display()))?;
     let raw: RawTestSpec = serde_yaml::from_str(&content)
@@ -336,10 +372,15 @@ mod tests {
     use super::*;
     use crate::constraint::Op;
 
-    /// Deserialise a YAML string directly (without file I/O) and convert to `TestSpec`.
-    fn parse_yaml(yaml: &str) -> anyhow::Result<TestSpec> {
+    /// Deserialise a YAML string directly (without file I/O) and convert it.
+    fn parse_yaml_all(yaml: &str) -> anyhow::Result<Vec<TestSpec>> {
         let raw: RawTestSpec = serde_yaml::from_str(yaml).with_context(|| "parsing test YAML")?;
         convert_spec(raw, 300)
+    }
+
+    /// The first specification of a YAML string; for files that declare a `use_case`.
+    fn parse_yaml(yaml: &str) -> anyhow::Result<TestSpec> {
+        Ok(parse_yaml_all(yaml)?.remove(0))
     }
 
     /// Verifies: SRS-FUNC-003
@@ -461,16 +502,55 @@ constraints:
     /// Verifies: SRS-FUNC-003
     #[test]
     fn missing_required_field_returns_error() {
-        // Missing `use_case` — serde should reject this.
+        // Missing `requirement_uid` — serde should reject this.
         let yaml = r"
-requirement_uid: REQ-MISSING
+use_case: regression
 constraints:
   - metric: return_code
     operator: eq
     value: 0
 ";
-        let result = parse_yaml(yaml);
-        assert!(result.is_err(), "missing use_case must be an error");
+        let result = parse_yaml_all(yaml);
+        assert!(result.is_err(), "missing requirement_uid must be an error");
+    }
+
+    /// Verifies: SRS-FUNC-019
+    #[test]
+    fn spec_without_use_case_expands_to_every_workload_type() {
+        let yaml = r"
+requirement_uid: REQ-ALL
+input: data/sample
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let specs = parse_yaml_all(yaml).expect("a spec without use_case loads");
+        let workloads: Vec<_> = specs.iter().map(|s| s.workload_type.clone()).collect();
+        assert_eq!(workloads, ML_SPACE_PROFILE.to_vec());
+        for spec in &specs {
+            assert_eq!(spec.requirement_uid, "REQ-ALL");
+            assert!(spec.fan_out);
+            assert_eq!(spec.constraints.len(), 1);
+            assert_eq!(spec.target.input.as_deref(), Some(std::path::Path::new("data/sample")));
+        }
+    }
+
+    /// Verifies: SRS-FUNC-019
+    #[test]
+    fn spec_with_use_case_is_not_expanded() {
+        let yaml = r"
+requirement_uid: REQ-ONE
+use_case: regression
+constraints:
+  - metric: return_code
+    operator: eq
+    value: 0
+";
+        let specs = parse_yaml_all(yaml).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].workload_type, WorkloadType::Regression);
+        assert!(!specs[0].fan_out);
     }
 
     /// Verifies: SRS-FUNC-003, SRS-FUNC-019
@@ -550,7 +630,7 @@ constraints:
     value: 0
 ";
         let raw: RawTestSpec = serde_yaml::from_str(yaml).unwrap();
-        let spec = convert_spec(raw, 600).unwrap();
+        let spec = convert_spec(raw, 600).unwrap().remove(0);
         assert_eq!(spec.target.timeout, Duration::from_mins(10));
     }
 

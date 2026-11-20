@@ -10,6 +10,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::specs::{RunResult, SpecResult};
+use sqt_types::WorkloadType;
 
 /// Schema version for the JSON report format.
 ///
@@ -17,7 +18,7 @@ use crate::specs::{RunResult, SpecResult};
 /// way. Increment the major component for breaking changes (SRS-DATA-001).
 ///
 /// 1.1 adds `run_id`, `evidence_manifest`, per-spec `evidence_ids` and `discovery`.
-pub const SCHEMA_VERSION: &str = "1.1";
+pub const SCHEMA_VERSION: &str = "1.2";
 
 // ---------------------------------------------------------------------------
 // Provenance
@@ -157,6 +158,13 @@ pub struct SpecReport {
 /// What a specification ran.
 #[derive(Serialize)]
 pub struct TargetReport {
+    /// Workload type of the job (SRS-FUNC-019); schema 1.2.
+    pub workload_type: WorkloadType,
+    /// `true` when the specification declared no workload type and this is one
+    /// of the jobs it was expanded into (SRS-FUNC-019); omitted when `false`.
+    /// Schema 1.2.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub workload_fan_out: bool,
     /// Binary under test as given in the specification; empty when the Runner
     /// configures it.
     pub binary: String,
@@ -313,6 +321,8 @@ pub(crate) fn spec_report(sr: &SpecResult) -> SpecReport {
         passed: sr.passed,
         outcome_kind: report_outcome_kind,
         target: TargetReport {
+            workload_type: sr.spec.workload_type.clone(),
+            workload_fan_out: sr.spec.fan_out,
             binary: sr.spec.target.binary.to_string_lossy().into_owned(),
             input: sr.spec.target.input.as_ref().map(|p| p.to_string_lossy().into_owned()),
             timeout_secs: sr.spec.target.timeout.as_secs(),
@@ -326,6 +336,25 @@ pub(crate) fn spec_report(sr: &SpecResult) -> SpecReport {
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
+
+/// Wire name of a workload type, e.g. `time_series_forecasting`.
+pub fn workload_name(workload: &WorkloadType) -> String {
+    serde_json::to_value(workload)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// How a specification is named in the terminal summary and the PDF: its
+/// requirement UID, followed by the workload type when the specification was
+/// expanded from one without a declared workload type (SRS-FUNC-019).
+fn spec_label(spec: &SpecReport) -> String {
+    if spec.target.workload_fan_out {
+        format!("{} [{}]", spec.requirement_uid, workload_name(&spec.target.workload_type))
+    } else {
+        spec.requirement_uid.clone()
+    }
+}
 
 /// Print the end-of-run summary to stdout (SRS-OPS-003).
 pub fn print_terminal(report: &Report, run_dir: &Path) {
@@ -344,7 +373,7 @@ pub fn render_terminal(report: &Report, run_dir: &Path) -> String {
             OutcomeKind::Fail => "FAIL",
             OutcomeKind::InfraError => "[INFRA]",
         };
-        let _ = writeln!(out, "{:<60} {status}", spec.requirement_uid);
+        let _ = writeln!(out, "{:<60} {status}", spec_label(spec));
         for outcome in &spec.outcomes {
             let outcome_label = match outcome.outcome_kind {
                 OutcomeKind::Pass => "PASS",
@@ -544,7 +573,7 @@ fn report_lines(report: &Report) -> Vec<PdfLine> {
             OutcomeKind::Fail => "FAIL",
             OutcomeKind::InfraError => "INFRA",
         };
-        lines.push(PdfLine::bold(format!("{}  [{status}]", spec.requirement_uid), 11.0));
+        lines.push(PdfLine::bold(format!("{}  [{status}]", spec_label(spec)), 11.0));
         for outcome in &spec.outcomes {
             lines.push(PdfLine::normal(format!("    {}  {}", outcome.metric, outcome.message)));
         }
@@ -855,7 +884,7 @@ mod tests {
         let report = Report::from_run_result(&run_result, make_provenance());
         let json = serde_json::to_string(&report).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["schema_version"], "1.1", "schema_version must be present and correct");
+        assert_eq!(parsed["schema_version"], "1.2", "schema_version must be present and correct");
     }
 
     /// Verifies: SRS-DATA-001

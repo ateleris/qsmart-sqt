@@ -160,7 +160,9 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   runs once, `mode` always echoed `latency` (`handlers.rs:221`). `time.avg_ms` is a
   single sample despite the name.
 - **F-M7** No default use-case fan-out (SRS-FUNC-019): `use_case` is required, so an
-  undeclared workload is a hard error rather than one-job-per-type.
+  undeclared workload is a hard error rather than one-job-per-type. **Fixed** in
+  the `fanout-workloads` PR: a spec without `use_case` runs once per workload type;
+  the requirement passes only if every workload type passed.
 - **F-M8** Traceability matrix lacks provenance (SRS-DATA-003 wants it on *every*
   output) and omits actual constraint values; `evidence_paths` holds evidence-map
   values, not artefact paths.

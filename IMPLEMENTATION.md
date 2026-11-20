@@ -52,7 +52,9 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   `input`, optional `repetitions`/`timeout_secs`, `constraints`, and
   `precision_reference`/`precision_tolerance` + `reference_outputs`. Unit-suffixed
   constraint values (`100ms`, `2MB`, `512 KB`) are normalised at load time
-  (partial SRS-FUNC-004 — see gaps).
+  (partial SRS-FUNC-004 — see gaps). A spec without `use_case` is expanded into
+  one spec per workload type of the ML Space Profile, so one job runs per type
+  (SRS-FUNC-019).
 - **Constraint evaluation** (`constraint/`): typed `Constraint`/`Op`/`Value`;
   closed metric vocabulary via `Constraint::from_name`. Missing metric → failing
   outcome (SRS-REL-002); zero-constraint spec → FAIL (SRS-REL-001).
@@ -86,7 +88,8 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
 - **Evidence / report / traceability** (`evidence/`, `report.rs`,
   `traceability/`, `outputs.rs`): one directory per run (`runs/<run_id>/`), raw
   Runner responses and per-spec outcomes as evidence with a SHA-256 manifest;
-  `Report` (schema 1.1) with run id, manifest and per-spec evidence ids, and
+  `Report` (schema 1.2) with run id, manifest, per-spec evidence ids and
+  workload type, and
   provenance (SRS-DATA-001/003); JSON + PDF (`printpdf`) + terminal outputs;
   dual-audience traceability matrix; `qdp.zip` of the run directory.
 - **CLI** (`cli.rs`, `main.rs`): `sqt run` and `sqt preflight` (also
@@ -151,8 +154,6 @@ FUNC-023, RES-003, HF-002. Among them:
 - `repetitions` from a specification is not sent; the Runner also ignores
   `repetitions`, `warmup_repetitions` and `mode` and runs the binary once (IF-002,
   F-M6).
-- No default fan-out when a specification declares no workload type (F-M7,
-  SRS-FUNC-019).
 - Runner responses are validated by type, required fields and enumerations, not
   against the ranges and patterns of the OpenAPI schema (IF-007).
 
