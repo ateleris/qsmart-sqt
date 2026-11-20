@@ -1563,7 +1563,7 @@ The SQT Reporter is what the SRS calls the **Orchestrator**.
 13. **CI/CD Integration**
     - Single CLI entry point; self-discoverable options without external documentation (SRS-HF-001)
     - Exit 0 = all pass; exit 1 = any fail or infra-error; exit 2 = interrupted (SRS-OPS-001)
-    - End-of-run terminal summary: per-spec pass/fail/blocked counts, evidence location (SRS-OPS-003)
+    - End-of-run terminal summary: per-spec and per-requirement pass/fail/blocked counts, evidence location (SRS-OPS-003)
     - Operator-configurable diagnostic verbosity; full request/response trace at max verbosity (SRS-OPS-002)
     - No implicit network access beyond the configured Runner endpoint (SRS-RES-002)
 
@@ -2024,14 +2024,15 @@ per-format on/off switch. `-o <path>` additionally copies `report.json` elsewher
 
 ```text
 <report.output_dir>/runs/<run_id>/       run_id = UTC timestamp, e.g. 20261022T101530123Z
-    report.json                          run report, schema 1.2 (SRS-FUNC-009)
+    report.json                          run report, schema 1.3 (SRS-FUNC-009)
     report.pdf
     traceability.json, traceability.txt  when the Runner serves a baseline
     qdp.zip                              the whole run directory
     evidence/
         manifest.json                    every artefact: id, kind, SHA-256, size, job/spec
         runner/NNNN-<operation>[-<job_id>].json   raw Runner responses, in arrival order
-        outcomes/NNN-<requirement_uid>.json       constraint outcomes per spec
+        outcomes/NNN-<requirement_uid>[-<workload>].json   constraint outcomes per spec;
+                                         the workload type is named for a fanned-out spec
 ```
 
 An evidence artefact's stable identifier is its path relative to the run
@@ -2045,7 +2046,9 @@ written.
 #### JSON Report (Machine-Readable) — the primary artefact
 - **Target audience**: CI/CD, automation, downstream tooling
 - **Contents**: one entry per spec with each constraint outcome and measured value,
-  and the workload type it ran (schema 1.2),
+  and the workload type it ran (schema 1.2), counts per specification and per
+  requirement (schema 1.3; a requirement run for several workload types passes
+  only if all passed),
   plus run metadata: `schema_version` (SRS-DATA-001), provenance (SQT version,
   Runner version/target/OS/toolchain, sanitised config — SRS-DATA-003), and the
   `interrupted` flag (SRS-OPS-008)

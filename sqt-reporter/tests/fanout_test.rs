@@ -50,7 +50,7 @@ async fn spawn_runner(submitted: Submitted, failing: Option<WorkloadType>) -> St
                     let id = report::workload_name(&request.use_case);
                     submitted.lock().unwrap().push(request.use_case);
                     Json(JobAccepted {
-                        job_id: id,
+                        job_id: id.to_owned(),
                         status: "accepted".into(),
                         queue_position: 0,
                         created_at: "2026-01-01T00:00:00Z".into(),

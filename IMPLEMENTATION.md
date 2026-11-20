@@ -47,7 +47,8 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   `report`); validates before any network call; resolves relative paths; rejects
   empty required fields, bad URL scheme, empty spec list, and a set-but-empty
   `token_env` (SRS-FUNC-002, SRS-IF-006). Unknown keys ignored.
-- **Spec loading** (`specs/loader.rs`): reads only the files in
+- **Spec loading** (`specs/loader.rs`): refuses unknown keys, so a misspelt
+  `use_case` is an error rather than a fan-out; reads only the files in
   `test_specs.files` — no directory scan (SRS-MAINT-002). Parses `use_case`,
   `input`, optional `repetitions`/`warmup_repetitions`/`mode`/`timeout_secs`
   (sent with the job, SRS-IF-002; specs that differ in them run as separate
@@ -90,15 +91,16 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
 - **Evidence / report / traceability** (`evidence/`, `report.rs`,
   `traceability/`, `outputs.rs`): one directory per run (`runs/<run_id>/`), raw
   Runner responses and per-spec outcomes as evidence with a SHA-256 manifest;
-  `Report` (schema 1.2) with run id, manifest, per-spec evidence ids and
-  workload type, and
+  `Report` (schema 1.3) with run id, manifest, per-spec evidence ids and
+  workload type, specification and requirement counts, and
   provenance (SRS-DATA-001/003); JSON + PDF (`printpdf`) + terminal outputs;
   dual-audience traceability matrix; `qdp.zip` of the run directory.
 - **CLI** (`cli.rs`, `main.rs`): `sqt run` and `sqt preflight` (also
   `run --preflight`); exit codes 0/1/2, stated in `sqt run --help` (SRS-HF-001).
   `-v` and `-vv` raise the log level on top of `RUST_LOG`, `-q` logs only
   warnings (SRS-OPS-002). The end-of-run summary lists every specification,
-  the specification and constraint counts and the run directory (SRS-OPS-003).
+  the specification, requirement and constraint counts and the run directory
+  (SRS-OPS-003).
 
 ## sqt-runner — Implemented
 
