@@ -18,15 +18,25 @@ The script fails when a test has no such line or the line is malformed, so
 "each test names the SRS requirement it verifies" is enforced, not hoped for.
 
 Optional inputs:
-  --junit FILE   nextest JUnit report; adds each test's result to the matrix
-  --srs FILE     the SRS StrictDoc file; adds titles and verification methods,
-                 lists requirements no test covers, and fails on unknown UIDs
+  --junit FILE         nextest JUnit report; adds each test's result to the matrix
+  --requirements FILE  ci/requirements.csv, the SRS requirement list with each
+                       requirement's verification method and planned release
+                       (see ci/requirements-from-srs.py); adds titles and
+                       methods, lists requirements no test covers, and fails
+                       on unknown UIDs
+  --srs FILE           the SRS StrictDoc file itself, instead of the list (no
+                       releases)
+  --release-gate VER   with --junit: fail unless every requirement planned for
+                       the releases up to VER (e.g. 0.2.0: SQT-SW-0 and SW-1)
+                       whose method is Test has a passing test or CI gate
 
-Outputs (each optional): --json FILE, --markdown FILE. With neither, a short
-summary is printed.
+Outputs (each optional): --json FILE, --markdown FILE, --summary FILE (a short
+per-release overview for the CI job summary). With none, a one-line summary is
+printed.
 """
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -50,6 +60,19 @@ CI_GATES = {
     "SRS-CDR-003": ".github/workflows/rust.yml, every job, on every push and pull request",
     "SRS-PORT-001": ".github/workflows/rust.yml, every job, on x86-64 Linux (ci/Dockerfile)",
 }
+
+
+# The SQT-TN-AP releases and the version each is tagged with.
+RELEASE_VERSIONS = [("SW-0", (0, 1)), ("SW-1", (0, 2)), ("SW-2", (1, 0))]
+
+
+def releases_up_to(version: str) -> list[str]:
+    """The releases whose requirements a tag of `version` must fulfil."""
+    m = re.match(r"v?(\d+)\.(\d+)", version)
+    if not m:
+        raise ValueError(f"not a version: {version}")
+    v = (int(m.group(1)), int(m.group(2)))
+    return [name for name, at in RELEASE_VERSIONS if at <= v]
 
 
 def suite_and_prefix(crate_dir: Path, rel: Path) -> tuple[str, str]:
@@ -137,11 +160,22 @@ def read_junit(path: Path) -> dict:
     return results
 
 
+def read_requirements(path: Path) -> dict:
+    """ci/requirements.csv: uid -> title, method and planned release."""
+    rows = [line for line in path.read_text().splitlines() if line and not line.startswith("#")]
+    return {
+        row["uid"]: {"title": row["title"], "method": row["method"], "release": row["release"]}
+        for row in csv.DictReader(rows)
+    }
+
+
 def read_srs(path: Path) -> dict:
     text = path.read_text()
     reqs = {}
     for block in re.split(r"\n\[(?:REQUIREMENT|COMPOSITE_REQUIREMENT)\]\n", text)[1:]:
-        block = block.split("\n[")[0]
+        # Up to the next StrictDoc marker line ([TEXT], [[SECTION]], ...);
+        # a line of text may itself start with "[LINK: ...]".
+        block = re.split(r"\n\[\[?/?[A-Z_]+\]\]?\n", block)[0]
         uid = re.search(r"^UID: (\S+)", block, re.M)
         if not uid:
             continue
@@ -150,6 +184,7 @@ def read_srs(path: Path) -> dict:
         reqs[uid.group(1)] = {
             "title": title.group(1).strip() if title else "",
             "method": method.group(1).strip() if method else "",
+            "release": "",
         }
     return reqs
 
@@ -158,9 +193,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=".", help="workspace root (default: .)")
     ap.add_argument("--junit", type=Path)
-    ap.add_argument("--srs", type=Path)
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument("--requirements", type=Path)
+    src.add_argument("--srs", type=Path)
+    ap.add_argument("--release-gate", metavar="VERSION")
     ap.add_argument("--json", type=Path)
     ap.add_argument("--markdown", type=Path)
+    ap.add_argument("--summary", type=Path)
     ap.add_argument("--version", default="", help="SQT version or tag stamped into the output")
     args = ap.parse_args()
 
@@ -182,7 +221,12 @@ def main() -> int:
             elif t["result"] == "not run":
                 errors.append(f"{t['file']}: `{t['test']}` not found in {args.junit}")
 
-    srs = read_srs(args.srs) if args.srs else {}
+    if args.requirements:
+        srs = read_requirements(args.requirements)
+    elif args.srs:
+        srs = read_srs(args.srs)
+    else:
+        srs = {}
     by_uid: dict = {}
     for t in tests:
         for uid in t["verifies"]:
@@ -195,19 +239,29 @@ def main() -> int:
     order = list(srs) + sorted((set(by_uid) | set(CI_GATES)) - set(srs), key=uid_sort_key)
     for uid in order:
         verifying = by_uid.get(uid, [])
-        info = srs.get(uid, {"title": "", "method": ""})
+        info = srs.get(uid, {"title": "", "method": "", "release": ""})
         requirements.append({
             "uid": uid,
             "title": info["title"],
             "verification_method": info["method"],
+            "release": info["release"],
             "tests": [f"{t['suite']} {t['test']}" for t in verifying],
             "ci_gate": CI_GATES.get(uid),
             "status": status_of(info["method"], verifying, bool(srs), uid in CI_GATES),
         })
 
+    gate = None
+    if args.release_gate:
+        if not args.requirements or not args.junit:
+            errors.append("--release-gate needs --requirements and --junit")
+        else:
+            gate = release_gate(args.release_gate, requirements)
+            errors += gate["errors"]
+
     matrix = {
         "sqt_version": args.version,
-        "srs": str(args.srs) if args.srs else None,
+        "srs": str(args.requirements or args.srs) if (args.requirements or args.srs) else None,
+        "release_gate": gate,
         "tests_total": len(tests),
         "tests_without_requirement": sum(1 for t in tests if t["none"]),
         "requirements": requirements,
@@ -217,7 +271,9 @@ def main() -> int:
         args.json.write_text(json.dumps(matrix, indent=2) + "\n")
     if args.markdown:
         args.markdown.write_text(markdown(matrix, bool(srs), bool(args.junit)))
-    if not args.json and not args.markdown:
+    if args.summary:
+        args.summary.write_text(summary(matrix, bool(args.junit)))
+    if not args.json and not args.markdown and not args.summary:
         covered = sum(1 for r in requirements if r["tests"])
         print(f"{len(tests)} tests, {matrix['tests_without_requirement']} verify no requirement; "
               f"{covered} requirements have at least one test")
@@ -225,6 +281,66 @@ def main() -> int:
     for e in errors:
         print(f"error: {e}", file=sys.stderr)
     return 1 if errors else 0
+
+
+def release_gate(version: str, requirements: list) -> dict:
+    """Check the requirements planned up to `version`: a Test requirement needs
+    a passing test or a CI gate; the other methods are verified by signed notes
+    in the release's evidence package, outside CI."""
+    releases = releases_up_to(version)
+    gaps, notes = [], []
+    for r in requirements:
+        if r["release"] not in releases:
+            continue
+        method = r["verification_method"]
+        if method.lower() == "test":
+            if r["status"] not in ("verified", "CI gate"):
+                gaps.append(r)
+        elif method:
+            notes.append(r)
+        else:
+            gaps.append(r)
+    errors = [
+        f"release gate {version}: {r['uid']} ({r['release']}, {r['verification_method'] or 'no method'}) "
+        f"is {r['status']}"
+        for r in gaps
+    ]
+    return {
+        "version": version,
+        "releases": releases,
+        "gaps": [r["uid"] for r in gaps],
+        "by_note": [r["uid"] for r in notes],
+        "errors": errors,
+    }
+
+
+def summary(m: dict, have_results: bool) -> str:
+    """Per-release overview of the Test requirements, for the CI job summary."""
+    reqs = m["requirements"]
+    out = ["## 📋 Fulfilment matrix", ""]
+    if not any(r["release"] for r in reqs):
+        return "\n".join(out + ["_No requirement list given; see the matrix artefact._", ""])
+    word = "pass" if have_results else "have tests"
+    out += [f"| Release | Test requirements that {word} | Missing | Verified by note |", "|---|---|---|---|"]
+    for name, _ in RELEASE_VERSIONS:
+        rel = [r for r in reqs if r["release"] == name]
+        if not rel:
+            continue
+        tests = [r for r in rel if r["verification_method"].lower() == "test"]
+        good = {"verified", "CI gate"} if have_results else {"verified", "CI gate", "tested"}
+        done = [r for r in tests if r["status"] in good]
+        missing = [r["uid"] for r in tests if r["status"] not in good]
+        notes = len(rel) - len(tests)
+        shown = ", ".join(u.removeprefix("SRS-") for u in missing) or "–"
+        out.append(f"| {name} | {len(done)} / {len(tests)} | {shown} | {notes} |")
+    unplanned = [r["uid"] for r in reqs if not r["release"] and r["title"]]
+    if unplanned:
+        out += ["", f"In no release of the plan: {', '.join(unplanned)}."]
+    gate = m.get("release_gate")
+    if gate:
+        verdict = "passed" if not gate["gaps"] else f"failed: {', '.join(gate['gaps'])}"
+        out += ["", f"Release gate {gate['version']} ({', '.join(gate['releases'])}): {verdict}."]
+    return "\n".join(out) + "\n"
 
 
 def uid_sort_key(uid: str):
@@ -253,12 +369,15 @@ def markdown(m: dict, have_srs: bool, have_results: bool) -> str:
         f"{m['tests_total']} tests; {m['tests_without_requirement']} verify no SRS requirement.",
         "Generated by `ci/fulfilment-matrix.py` from the `/// Verifies:` line of each test.",
         "",
-        "| Requirement | Title | Method | Status | Tests |",
-        "|---|---|---|---|---|",
+        "| Requirement | Title | Method | Release | Status | Tests |",
+        "|---|---|---|---|---|---|",
     ]
     for r in m["requirements"]:
         tests = "<br>".join(f"`{t.split(' ', 1)[1]}`" for t in r["tests"]) or r["ci_gate"] or "–"
-        out.append(f"| {r['uid']} | {r['title']} | {r['verification_method'] or '–'} | {r['status']} | {tests} |")
+        out.append(
+            f"| {r['uid']} | {r['title']} | {r['verification_method'] or '–'} | {r['release'] or '–'} "
+            f"| {r['status']} | {tests} |"
+        )
     none = [t for t in m["tests"] if t["none"]]
     if none:
         out += ["", "## Tests that verify no SRS requirement", "", "| Test | Reason |", "|---|---|"]

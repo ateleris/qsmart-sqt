@@ -42,10 +42,19 @@ jobs:
         with:
           run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Tests and coverage gate (Orchestrator ≥ 80 % lines)
+      - name: Tests, coverage gate (Orchestrator ≥ 80 % lines) and requirements gate
         uses: ./.github/actions/ci-docker
         with:
-          run: COVERAGE_FAIL_UNDER=80 bash ci/run-tests.sh
+          run: >-
+            COVERAGE_FAIL_UNDER=80 MATRIX_GATE=${{ steps.tag.outputs.version }}
+            bash ci/run-tests.sh
+
+      - name: Fulfilment summary
+        if: always()
+        run: |
+          if [ -f fulfilment-summary.md ]; then
+            cat fulfilment-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: End-to-end against the reference Runner (SRS-QUAL-003)
         uses: ./.github/actions/ci-docker

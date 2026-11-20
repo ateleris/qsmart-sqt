@@ -8,10 +8,13 @@
 #   coverage.json                -> raw llvm-cov report
 #   coverage-summary.md          -> appended to the GitHub job summary
 #   fulfilment-matrix.{json,md}  -> requirements fulfilment matrix (ci/fulfilment-matrix.py)
+#   fulfilment-summary.md        -> appended to the GitHub job summary
 # Exits non-zero if any test fails (so the workflow fails too), if the coverage
-# report cannot be produced, or if
-# COVERAGE_FAIL_UNDER is set and the Orchestrator's line coverage is below it
-# (the release gate: measured on every merge, enforced at the tag).
+# report cannot be produced, if a test names no requirement or an unknown one,
+# if COVERAGE_FAIL_UNDER is set and the Orchestrator's line coverage is below it
+# (the release gate: measured on every merge, enforced at the tag), or if
+# MATRIX_GATE is set to the release version and a Test requirement planned up
+# to that release has no passing test (the requirements release gate).
 set -uo pipefail
 
 # The target dir is a persistent cache shared by all CI runs. --no-report does
@@ -50,10 +53,14 @@ if [ -f "$JUNIT" ]; then
   ' "$JUNIT" || true
 fi
 
-# Fulfilment matrix from the tests' `/// Verifies:` lines and their results.
-# Fails the job if a test names no requirement.
-python3 ci/fulfilment-matrix.py --junit "$JUNIT" \
-  --json fulfilment-matrix.json --markdown fulfilment-matrix.md || status=1
+# Fulfilment matrix from the tests' `/// Verifies:` lines and their results,
+# against the SRS requirement list (ci/requirements.csv). Fails the job if a
+# test names no requirement or one the SRS does not have; at a release tag
+# (MATRIX_GATE), also if a planned Test requirement has no passing test.
+python3 ci/fulfilment-matrix.py --junit "$JUNIT" --requirements ci/requirements.csv \
+  ${MATRIX_GATE:+--release-gate "$MATRIX_GATE"} \
+  --json fulfilment-matrix.json --markdown fulfilment-matrix.md \
+  --summary fulfilment-summary.md || status=1
 
 # Coverage report + summary (written into the workspace). The Orchestrator
 # figure is sqt-reporter alone: the Runner and the shared types are excluded.
