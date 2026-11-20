@@ -32,6 +32,10 @@ pub struct AppState {
     pub store: JobStore,
     /// Directory under which each job gets its own working directory.
     pub workspace: PathBuf,
+    /// Keep a job's working directory after it finished (otherwise removed).
+    pub keep_job_workspaces: bool,
+    /// Finished jobs kept in the store; older ones are evicted (F-M5).
+    pub max_finished_jobs: usize,
     /// The backend that executes jobs and describes the target.
     pub executor: Arc<dyn ExecutionBackend>,
     /// Limits concurrent job execution to one at a time (sequential queue).
@@ -62,10 +66,11 @@ pub async fn create_job(
     let job = store::JobState::new(job_id.clone(), &req);
     let created_at = job.created_at.clone();
 
-    {
+    let queue_position = {
         let mut store = state.store.write().await;
         store.insert(job_id.clone(), job);
-    }
+        store::queue_position(&store, &job_id).unwrap_or(1)
+    };
 
     tracing::info!(
         job_id = %job_id,
@@ -81,6 +86,8 @@ pub async fn create_job(
     let workspace = state.workspace.join(&job_id); // per-job subdirectory
     let executor = state.executor.clone();
     let semaphore = state.job_semaphore.clone();
+    let keep_workspace = state.keep_job_workspaces;
+    let max_finished = state.max_finished_jobs;
     let id = job_id.clone();
 
     tokio::spawn(async move {
@@ -116,6 +123,12 @@ pub async fn create_job(
         })
         .await;
 
+        // The metrics and output are in memory now; the working directory
+        // only holds tool output (backlog F-M5).
+        if !keep_workspace && let Err(e) = std::fs::remove_dir_all(&workspace) {
+            tracing::warn!(job_id = %id, error = %e, "could not remove the job workspace");
+        }
+
         let mut s = store.write().await;
         if let Some(job) = s.get_mut(&id) {
             job.completed_at = Some(crate::now_iso());
@@ -147,19 +160,16 @@ pub async fn create_job(
                 }
             }
         }
+        let evicted = store::evict_finished(&mut s, max_finished);
+        if evicted > 0 {
+            tracing::debug!(evicted, "dropped the oldest finished jobs from the store");
+        }
         // _permit dropped here — next queued job can acquire the semaphore.
     });
 
     (
         StatusCode::ACCEPTED,
-        Json(JobAccepted {
-            job_id,
-            status: "accepted".into(),
-            // TODO(auth): enforce Bearer token validation before this handler
-            // is reachable. Tracked for a dedicated auth session.
-            queue_position: 1,
-            created_at,
-        }),
+        Json(JobAccepted { job_id, status: "accepted".into(), queue_position, created_at }),
     )
 }
 
@@ -177,6 +187,7 @@ pub async fn get_job(
 ) -> Result<Json<JobStatusResponse>, NotFound> {
     let snapshot = {
         let store = state.store.read().await;
+        let position = store::queue_position(&store, &job_id);
         store.get(&job_id).map(|job| {
             (
                 job.id.clone(),
@@ -190,6 +201,7 @@ pub async fn get_job(
                 job.error.clone(),
                 job.metrics.clone(),
                 job.output.clone(),
+                position,
             )
         })
     }; // read lock released here
@@ -206,6 +218,7 @@ pub async fn get_job(
         error,
         metrics,
         output,
+        queue_position,
     ) = snapshot.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -228,7 +241,6 @@ pub async fn get_job(
 
     // `queue_position` is non-null only while the job is still accepted (queued).
     // `hardware` is null until the job starts running.
-    let queue_position = (status == JobStatus::Accepted).then_some(1);
     let hardware = (status != JobStatus::Accepted).then(|| state.executor.describe().hardware);
 
     Ok(Json(JobStatusResponse {
@@ -504,6 +516,8 @@ mod tests {
         let state = AppState {
             store: store::new_store(),
             workspace: std::path::PathBuf::from("/tmp"),
+            keep_job_workspaces: true,
+            max_finished_jobs: 1000,
             executor: Arc::new(StubExecutor),
             job_semaphore: Arc::new(Semaphore::new(1)),
             docs_dir,
@@ -646,6 +660,8 @@ mod tests {
         let state = AppState {
             store: store::new_store(),
             workspace: std::path::PathBuf::from("/tmp"),
+            keep_job_workspaces: true,
+            max_finished_jobs: 1000,
             executor: Arc::new(StubExecutor),
             job_semaphore: Arc::new(Semaphore::new(1)),
             docs_dir: None,
@@ -691,6 +707,8 @@ mod tests {
         let state = AppState {
             store: store::new_store(),
             workspace: std::path::PathBuf::from("/tmp"),
+            keep_job_workspaces: true,
+            max_finished_jobs: 1000,
             executor: Arc::new(StubExecutor),
             job_semaphore: Arc::new(Semaphore::new(1)),
             docs_dir: None,
@@ -942,6 +960,8 @@ mod tests {
         let state = AppState {
             store: store::new_store(),
             workspace: std::path::PathBuf::from("/nonexistent/workspace/zzz"),
+            keep_job_workspaces: true,
+            max_finished_jobs: 1000,
             executor: Arc::new(StubExecutor),
             job_semaphore: Arc::new(Semaphore::new(1)),
             docs_dir: None,
@@ -958,5 +978,124 @@ mod tests {
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["status"], "unhealthy");
         assert_eq!(json["checks"]["workspace"], "missing");
+    }
+
+    fn queue_state(
+        workspace: std::path::PathBuf,
+        keep: bool,
+        max_finished: usize,
+        permits: usize,
+    ) -> AppState {
+        AppState {
+            store: store::new_store(),
+            workspace,
+            keep_job_workspaces: keep,
+            max_finished_jobs: max_finished,
+            executor: Arc::new(StubExecutor),
+            job_semaphore: Arc::new(Semaphore::new(permits)),
+            docs_dir: None,
+            runner_version: "0.0.0-test".to_string(),
+            os: "linux".to_string(),
+        }
+    }
+
+    fn jobs_app(state: AppState) -> Router {
+        Router::new()
+            .route("/api/v1/jobs", post(create_job))
+            .route("/api/v1/jobs/{job_id}", get(get_job))
+            .with_state(state)
+    }
+
+    async fn submit(app: &Router) -> serde_json::Value {
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/jobs")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"use_case":"regression"}"#))
+            .unwrap();
+        body_json(app.clone().oneshot(req).await.unwrap().into_body()).await
+    }
+
+    async fn status_of(app: &Router, job_id: &str) -> (StatusCode, serde_json::Value) {
+        let req = axum::http::Request::builder()
+            .uri(format!("/api/v1/jobs/{job_id}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        (status, body_json(resp.into_body()).await)
+    }
+
+    /// Wait until every job in the store has finished.
+    async fn until_all_finished(state: &AppState) {
+        for _ in 0..200 {
+            let done = state
+                .store
+                .read()
+                .await
+                .values()
+                .all(|j| matches!(j.status, JobStatus::Complete | JobStatus::Failed));
+            if done {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("jobs did not finish");
+    }
+
+    /// Verifies: SRS-INST-001
+    #[tokio::test]
+    async fn queued_jobs_report_their_place_in_the_queue() {
+        // No execution slot is free, so every job waits.
+        let app = jobs_app(queue_state(std::path::PathBuf::from("/tmp"), true, 1000, 0));
+
+        let mut ids = Vec::new();
+        for expected in 1..=3 {
+            let accepted = submit(&app).await;
+            assert_eq!(accepted["queue_position"], expected, "{accepted}");
+            ids.push(accepted["job_id"].as_str().unwrap().to_string());
+        }
+        for (i, id) in ids.iter().enumerate() {
+            let (_, json) = status_of(&app, id).await;
+            assert_eq!(json["status"], "accepted");
+            assert_eq!(json["queue_position"], i + 1, "{json}");
+        }
+    }
+
+    /// Verifies: SRS-INST-001
+    #[tokio::test]
+    async fn the_oldest_finished_jobs_are_evicted_and_answer_404() {
+        let state = queue_state(std::path::PathBuf::from("/tmp"), true, 2, 1);
+        let app = jobs_app(state.clone());
+
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(submit(&app).await["job_id"].as_str().unwrap().to_string());
+            until_all_finished(&state).await;
+        }
+
+        let (status, json) = status_of(&app, &ids[0]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+        assert_eq!(json["error"]["code"], "JOB_NOT_FOUND");
+        for id in &ids[1..] {
+            assert_eq!(status_of(&app, id).await.0, StatusCode::OK, "{id} should still be kept");
+        }
+        assert_eq!(state.store.read().await.len(), 2);
+    }
+
+    /// Verifies: SRS-INST-001
+    #[tokio::test]
+    async fn a_finished_job_leaves_no_workspace_behind_unless_asked_to() {
+        for keep in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let state = queue_state(root.path().to_path_buf(), keep, 1000, 1);
+            let app = jobs_app(state.clone());
+
+            let id = submit(&app).await["job_id"].as_str().unwrap().to_string();
+            until_all_finished(&state).await;
+
+            assert_eq!(status_of(&app, &id).await.1["status"], "complete");
+            assert_eq!(root.path().join(&id).exists(), keep, "keep_job_workspaces = {keep}");
+        }
     }
 }

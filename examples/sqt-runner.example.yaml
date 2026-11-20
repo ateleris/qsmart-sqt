@@ -19,6 +19,8 @@ binary:
   input_mode: stdin                  # stdin | arg | env:VAR_NAME  (default: stdin)
 
 workspace: ./sqt-workspace           # evidence and tool output dir (default: /tmp/sqt-dev-server)
+# keep_job_workspaces: false         # keep each job's subdirectory after it finished (default: removed)
+# max_finished_jobs: 1000            # finished jobs kept for GET /api/v1/jobs/{id}; older ones answer 404
 
 # Docker-backend-specific settings (tools + optional build step).
 docker:

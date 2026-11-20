@@ -255,9 +255,22 @@ pub struct ServerConfig {
     /// Binary under test configuration.
     pub binary: BinaryConfig,
 
-    /// Workspace directory for evidence and tool output.
+    /// Workspace directory for evidence and tool output. Each job works in
+    /// its own subdirectory, removed when the job finishes unless
+    /// `keep_job_workspaces` is set.
     #[serde(default = "default_workspace")]
     pub workspace: PathBuf,
+
+    /// Keep each job's working directory (tool output such as the valgrind
+    /// XML) after the job has finished, e.g. to debug a tool. Default: removed.
+    #[serde(default)]
+    pub keep_job_workspaces: bool,
+
+    /// How many finished jobs stay queryable through `GET /api/v1/jobs/{id}`;
+    /// older ones are dropped and answer 404 (backlog F-M5). Waiting and
+    /// running jobs are always kept. Default: 1000.
+    #[serde(default = "default_max_finished_jobs")]
+    pub max_finished_jobs: usize,
 
     /// Docker backend settings (tools, build step).
     #[serde(default)]
@@ -276,10 +289,15 @@ pub struct ServerConfig {
 
     /// Qualification documents served via `GET /api/v1/docs`.
     ///
-    /// When absent the endpoint returns 404. Configure this to point to the
-    /// zip file pre-placed by the ML-L Provider before a qualification session.
+    /// When absent the endpoint serves an empty set (200, no documents), so
+    /// the Runner declares no requirements. Configure this to point to the
+    /// directory the ML-L Provider fills before a qualification session.
     #[serde(default)]
     pub docs: Option<DocsConfig>,
+}
+
+fn default_max_finished_jobs() -> usize {
+    1000
 }
 
 fn default_workspace() -> PathBuf {

@@ -14,6 +14,11 @@ use crate::docker::{self, DockerRun};
 ///
 /// Expects the binary to have been built with `--coverage` (gcov) and the
 /// coverage data files (`.gcda`, `.gcno`) to exist alongside the binary.
+///
+/// # Errors
+///
+/// Returns an error, so the metric is reported as `null` (backlog F-M1,
+/// SRS-REL-002), when lcov fails or its summary has no line figure.
 pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -> Result<f64> {
     let binary_path = Path::new(binary);
     let binary_dir = binary_path.parent().unwrap_or(Path::new("/"));
@@ -43,7 +48,9 @@ pub fn collect(image: &str, binary: &str, workspace: &Path, timeout: Duration) -
     let stdout_text = String::from_utf8_lossy(&output.stdout);
     let stderr_text = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout_text}\n{stderr_text}");
-
+    if output.exit_code != 0 {
+        bail!("coverage: lcov exited with code {}: {}", output.exit_code, combined.trim());
+    }
     parse_line_coverage(&combined)
 }
 

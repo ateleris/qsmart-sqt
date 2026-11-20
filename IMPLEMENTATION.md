@@ -105,7 +105,10 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   `GET /api/v1/health`. Bearer-token middleware on every route except `/health`
   when `auth.token_env` is configured, 401 otherwise (SRS-IF-006); without a
   token, auth is off with a startup warning. In-memory job store; one job at a
-  time (`Semaphore::new(1)`); blocking work runs on `spawn_blocking`.
+  time (`Semaphore::new(1)`), with each waiting job's real `queue_position`;
+  blocking work runs on `spawn_blocking`. A job's working directory is removed
+  when it finishes, and only the newest `max_finished_jobs` finished jobs are
+  kept (default 1000).
 - **Config** (`config.rs`): `backend:` discriminant + `docker:` section (tools +
   optional build step), `binary`, `workspace`, `hardware`, `runner_hardware`,
   optional `docs`. All paths resolved to absolute at load.
@@ -120,7 +123,10 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   `result_consistent`),
   `valgrind`, `coverage`, `static_analysis` (cppcheck), `sonarqube`,
   `binary_size` — each run in its configured Docker image; unconfigured tools are
-  skipped and their metrics reported `null`.
+  skipped and their metrics reported `null`. A tool that did not complete
+  (non-zero exit, no finished valgrind run, no source for cppcheck) also
+  reports `null`, never `0`. `cpu.avg_normalized_pct` is GNU time's figure
+  divided by the core count, so 100 means every core was busy.
 - **Docker helpers** (`docker.rs`): container run with timeout enforcement and
   kill-on-timeout; reader threads avoid pipe-buffer deadlock.
 
@@ -162,10 +168,8 @@ FUNC-023, RES-003, HF-002. Among them:
   accepts is still a pending contract decision (rest of F-H2).
 - SRS-IF-010 is implemented (a bearer token travels only over `https://` or to
   localhost) but is in no release of the SQT-TN-AP plan yet (R-10).
-- Robustness items F-M1 (a tool that did not run reads as zero), F-M5 (Runner
-  never cleans up job workspaces or the job store), F-M8 (traceability
-  provenance), F-M10 (CPU percentage not normalised); SIGTERM does not cancel
-  in-flight jobs on the Runner; `queue_position` is fixed at 1.
+- Robustness item F-M8 (traceability provenance); SIGTERM does not cancel
+  in-flight jobs on the Runner.
 
 **Dependencies:** cargo-audit warns that `chrono` and `unsafe-libyaml` are
 unmaintained and `rustix` (test-only) is unsound; allowed by policy (R-7).

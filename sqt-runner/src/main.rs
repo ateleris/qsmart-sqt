@@ -206,6 +206,8 @@ async fn main() {
     let state = handlers::AppState {
         store: store::new_store(),
         workspace: server_config.workspace,
+        keep_job_workspaces: server_config.keep_job_workspaces,
+        max_finished_jobs: server_config.max_finished_jobs,
         executor,
         job_semaphore: Arc::new(Semaphore::new(1)),
         docs_dir: server_config.docs.map(|d| d.directory),
