@@ -2289,10 +2289,10 @@ member crates and a shared `[workspace.dependencies]` table. Key dependencies:
 ```toml
 # Shared
 serde, serde_json
-serde_yaml            # = serde_yaml_ng (maintained fork; aliased as serde_yaml)
+serde-saphyr          # YAML deserialisation, pure Rust (no unsafe-libyaml)
 tokio                 # rt-multi-thread, macros, sync, signal
 reqwest = "0.12"      # json, rustls-tls, blocking
-chrono                # clock (no default features)
+jiff                  # UTC timestamps (no time-zone database)
 tracing, tracing-subscriber (env-filter)
 clap = "4"            # derive, env
 anyhow

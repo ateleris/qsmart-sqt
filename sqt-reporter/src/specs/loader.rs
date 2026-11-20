@@ -26,12 +26,22 @@ use crate::specs::{Measurement, TestSpec, UnreconcilableConstraint};
 // Raw deserialization types
 // ---------------------------------------------------------------------------
 
+/// A constraint value as written in the spec file.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawValue {
+    Number(f64),
+    Bool(bool),
+    String(String),
+}
+
 #[derive(Deserialize)]
 struct RawConstraint {
     metric: String,
     operator: String,
-    /// Can be a YAML string like `"100ms"` or a plain number like `0`.
-    value: serde_yaml::Value,
+    /// Can be a YAML string like `"100ms"`, a plain number like `0`, or a
+    /// boolean for boolean-like metrics.
+    value: RawValue,
 }
 
 /// The YAML form of a specification. Unknown keys are refused, so a misspelt
@@ -190,17 +200,12 @@ fn canonical_unit(metric: &str) -> Option<&'static str> {
 
 /// Parse a YAML value (string, number or boolean) into the canonical unit of
 /// `metric`. A bare number is taken to be in the canonical unit already.
-fn parse_value(raw: &serde_yaml::Value, metric: &str) -> Result<f64, ValueError> {
+fn parse_value(raw: &RawValue, metric: &str) -> Result<f64, ValueError> {
     match raw {
-        serde_yaml::Value::Number(n) => Ok(n
-            .as_f64()
-            .ok_or_else(|| anyhow::anyhow!("invalid numeric value for metric '{metric}'"))?),
-        serde_yaml::Value::String(s) => parse_unit_value(s.trim(), metric),
-        serde_yaml::Value::Bool(b) => {
-            // Support `true`/`false` for boolean-like metrics (e.g., output.result_consistent)
-            Ok(if *b { 1.0 } else { 0.0 })
-        }
-        _ => Err(anyhow::anyhow!("unsupported value type for metric '{metric}': {raw:?}").into()),
+        RawValue::Number(n) => Ok(*n),
+        RawValue::String(s) => parse_unit_value(s.trim(), metric),
+        // `true`/`false` for boolean-like metrics (e.g. output.result_consistent).
+        RawValue::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
     }
 }
 
@@ -414,7 +419,7 @@ pub fn load_specs(files: &[PathBuf], default_timeout_secs: u64) -> anyhow::Resul
 fn load_one_spec(path: &Path, default_timeout_secs: u64) -> anyhow::Result<Vec<TestSpec>> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading '{}'", path.display()))?;
-    let raw: RawTestSpec = serde_yaml::from_str(&content)
+    let raw: RawTestSpec = serde_saphyr::from_str(&content)
         .with_context(|| format!("parsing YAML in '{}'", path.display()))?;
     convert_spec(raw, default_timeout_secs)
 }
@@ -431,7 +436,7 @@ mod tests {
 
     /// Deserialise a YAML string directly (without file I/O) and convert it.
     fn parse_yaml_all(yaml: &str) -> anyhow::Result<Vec<TestSpec>> {
-        let raw: RawTestSpec = serde_yaml::from_str(yaml).with_context(|| "parsing test YAML")?;
+        let raw: RawTestSpec = serde_saphyr::from_str(yaml).with_context(|| "parsing test YAML")?;
         convert_spec(raw, 300)
     }
 
@@ -832,7 +837,7 @@ constraints:
     operator: eq
     value: 0
 ";
-        let raw: RawTestSpec = serde_yaml::from_str(yaml).unwrap();
+        let raw: RawTestSpec = serde_saphyr::from_str(yaml).unwrap();
         let spec = convert_spec(raw, 600).unwrap().remove(0);
         assert_eq!(spec.target.timeout, Duration::from_mins(10));
     }

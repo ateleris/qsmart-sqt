@@ -54,15 +54,15 @@ impl RunDir {
         let runs = output_dir.join("runs");
         std::fs::create_dir_all(&runs)
             .with_context(|| format!("cannot create run directory parent: {}", runs.display()))?;
-        let mut now = chrono::Utc::now();
+        let mut now = jiff::Timestamp::now();
         loop {
-            let id = now.format("%Y%m%dT%H%M%S%3fZ").to_string();
+            let id = run_id(now);
             let path = runs.join(&id);
             match std::fs::create_dir(&path) {
                 Ok(()) => return Ok(Self { id, path }),
                 // Two runs within the same millisecond: take the next one.
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    now += chrono::Duration::milliseconds(1);
+                    now += jiff::SignedDuration::from_millis(1);
                 }
                 Err(e) => {
                     return Err(e).with_context(|| {
@@ -72,6 +72,12 @@ impl RunDir {
             }
         }
     }
+}
+
+/// The run identifier for `ts`: its UTC time to the millisecond, e.g.
+/// `20261120T153617042Z`, so identifiers sort in time order.
+fn run_id(ts: jiff::Timestamp) -> String {
+    format!("{}{:03}Z", ts.strftime("%Y%m%dT%H%M%S"), ts.subsec_millisecond())
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +242,15 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    /// Verifies: SRS-OPS-004
+    #[test]
+    fn run_id_is_utc_time_to_the_millisecond() {
+        let ts = jiff::Timestamp::from_millisecond(1_795_073_657_042).unwrap();
+        assert_eq!(run_id(ts), "20261119T073417042Z");
+        let ts = jiff::Timestamp::from_millisecond(1_795_073_657_007).unwrap();
+        assert_eq!(run_id(ts), "20261119T073417007Z", "milliseconds keep their leading zeros");
+    }
 
     fn store_in(tmp: &tempfile::TempDir) -> EvidenceStore {
         EvidenceStore::new(RunDir::create(tmp.path()).unwrap()).unwrap()

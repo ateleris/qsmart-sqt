@@ -57,7 +57,8 @@ struct Cli {
 }
 
 fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339()
+    // RFC 3339 in UTC, e.g. `2026-11-20T15:36:17.123456789Z`.
+    jiff::Timestamp::now().to_string()
 }
 
 /// Warn when the Runner serves plain HTTP on an address other machines can

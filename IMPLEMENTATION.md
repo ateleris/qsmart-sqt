@@ -202,8 +202,9 @@ FUNC-023, RES-003, HF-002. Among them:
   through a proxy) but is in no release of the SQT-TN-AP plan yet (R-10).
 - Robustness item F-M8 (traceability provenance).
 
-**Dependencies:** cargo-audit warns that `chrono` and `unsafe-libyaml` are
-unmaintained and `rustix` (test-only) is unsound; allowed by policy (R-7).
+**Dependencies:** cargo-audit reports no vulnerability and no warning (R-7
+fixed: `chrono` replaced by `jiff`, the YAML parser by the pure-Rust
+`serde-saphyr`, `rustix` updated to 1.1.6).
 
 ---
 

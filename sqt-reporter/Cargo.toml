@@ -19,13 +19,13 @@ path = "src/main.rs"
 sqt-types = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
 anyhow = "1"
 tokio = { workspace = true, features = ["time", "signal", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
