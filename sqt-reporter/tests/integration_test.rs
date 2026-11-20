@@ -492,7 +492,7 @@ async fn run_writes_report_and_evidence_into_its_own_directory() {
     // The report references its evidence by those ids.
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&written.report_json).unwrap()).unwrap();
-    assert_eq!(json["schema_version"], "1.1");
+    assert_eq!(json["schema_version"], "1.2");
     assert_eq!(json["run_id"], run_id.as_str());
     assert_eq!(json["evidence_manifest"], "evidence/manifest.json");
     assert_eq!(json["discovery"]["status"], "empty", "the mock declares no requirements");

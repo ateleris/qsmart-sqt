@@ -1039,8 +1039,11 @@ ADD and this document call it the *workload type* (AD-025).
 
 **Default session**: when a spec does not declare a workload type, the SQT Reporter
 submits one job per supported workload type (SRS-FUNC-019). Jobs are queued on the Runner
-side and polled concurrently by the Reporter. Not implemented yet: the spec loader
-requires `use_case` (F-M7 in `REVIEW_FINDINGS.md`).
+side and polled concurrently by the Reporter. The loader expands such a spec into one
+spec per workload type with the same requirement UID; the report marks each with
+`workload_fan_out` and its `workload_type`, and the requirement passes only if every
+workload type passed (traceability: a failed constraint outranks an infrastructure
+error).
 
 ### 5.3 Measurement Modes
 
@@ -2021,7 +2024,7 @@ per-format on/off switch. `-o <path>` additionally copies `report.json` elsewher
 
 ```text
 <report.output_dir>/runs/<run_id>/       run_id = UTC timestamp, e.g. 20261022T101530123Z
-    report.json                          run report, schema 1.1 (SRS-FUNC-009)
+    report.json                          run report, schema 1.2 (SRS-FUNC-009)
     report.pdf
     traceability.json, traceability.txt  when the Runner serves a baseline
     qdp.zip                              the whole run directory
@@ -2042,6 +2045,7 @@ written.
 #### JSON Report (Machine-Readable) — the primary artefact
 - **Target audience**: CI/CD, automation, downstream tooling
 - **Contents**: one entry per spec with each constraint outcome and measured value,
+  and the workload type it ran (schema 1.2),
   plus run metadata: `schema_version` (SRS-DATA-001), provenance (SQT version,
   Runner version/target/OS/toolchain, sanitised config — SRS-DATA-003), and the
   `interrupted` flag (SRS-OPS-008)

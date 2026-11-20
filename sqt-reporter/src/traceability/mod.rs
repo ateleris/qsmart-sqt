@@ -73,11 +73,32 @@ pub struct TraceSummary {
     pub infra_error: usize,
 }
 
+/// The outcome of a requirement from all its specification results: `FAIL`
+/// if any failed, else `INFRA_ERROR` if any hit an infrastructure error, else
+/// `PASS`; `None` without results. A requirement passes only if every
+/// workload type it was run for passed (SRS-FUNC-019).
+pub fn combined_outcome(results: &[&crate::specs::SpecResult]) -> Option<&'static str> {
+    use crate::specs::OutcomeKind;
+    if results.is_empty() {
+        None
+    } else if results.iter().any(|r| r.outcome == OutcomeKind::Fail) {
+        Some("FAIL")
+    } else if results.iter().any(|r| r.outcome == OutcomeKind::InfraError) {
+        Some("INFRA_ERROR")
+    } else {
+        Some("PASS")
+    }
+}
+
 /// Build a traceability matrix from baseline requirements and run results.
 ///
 /// - Testable requirements with a matching `SpecResult` → `Tested`
 /// - Compliant-by-declaration requirements → `CompliantByDeclaration`
 /// - Testable requirements with no matching spec → `Uncovered`
+///
+/// A requirement with several results (a specification expanded per workload
+/// type, SRS-FUNC-019) gets the combined outcome of [`combined_outcome`] and
+/// the evidence of all of them.
 pub fn build(
     req_set: &crate::baseline::RequirementSet,
     run_result: &crate::specs::RunResult,
@@ -87,21 +108,15 @@ pub fn build(
 
     // Testable requirements — either Tested or Uncovered.
     for req in &req_set.testable {
-        let spec_result = run_result.results.iter().find(|r| r.spec.requirement_uid == req.uid);
-        let (outcome, evidence) = match spec_result {
-            Some(sr) => {
-                let outcome_str = match sr.outcome {
-                    crate::specs::OutcomeKind::Pass => "PASS",
-                    crate::specs::OutcomeKind::Fail => "FAIL",
-                    crate::specs::OutcomeKind::InfraError => "INFRA_ERROR",
-                }
-                .to_string();
-                (Some(outcome_str), sr.evidence.clone())
-            }
-            None => (None, Vec::new()),
-        };
-        let status =
-            if spec_result.is_some() { TraceStatus::Tested } else { TraceStatus::Uncovered };
+        // A requirement can have several results: a specification expanded
+        // into one job per workload type (SRS-FUNC-019), or several files for
+        // one UID. The requirement passes only if every result passed; a
+        // failed constraint outranks an infrastructure error.
+        let results: Vec<_> =
+            run_result.results.iter().filter(|r| r.spec.requirement_uid == req.uid).collect();
+        let outcome = combined_outcome(&results).map(str::to_string);
+        let evidence: Vec<String> = results.iter().flat_map(|r| r.evidence.clone()).collect();
+        let status = if results.is_empty() { TraceStatus::Uncovered } else { TraceStatus::Tested };
         entries.push(TraceEntry {
             uid: req.uid.clone(),
             title: req.title.clone(),
@@ -381,5 +396,20 @@ mod tests {
         assert!(content.starts_with("TRACEABILITY MATRIX\n"), "must start with header");
         assert!(content.contains("Generated: 2026-06-05T12:00:00Z"), "must contain timestamp");
         assert!(content.contains("Total:"), "must contain summary line");
+    }
+
+    /// Verifies: SRS-FUNC-019
+    #[test]
+    fn combined_outcome_passes_only_when_every_result_passed() {
+        let pass = SpecResult::new(make_spec("REQ-W"), vec![passing_outcome()]);
+        let mut failing = passing_outcome();
+        failing.passed = false;
+        let fail = SpecResult::new(make_spec("REQ-W"), vec![failing]);
+        let infra = SpecResult::infra_error(make_spec("REQ-W"), "down".into(), HashMap::new());
+
+        assert_eq!(combined_outcome(&[]), None);
+        assert_eq!(combined_outcome(&[&pass, &pass]), Some("PASS"));
+        assert_eq!(combined_outcome(&[&pass, &infra]), Some("INFRA_ERROR"));
+        assert_eq!(combined_outcome(&[&infra, &fail, &pass]), Some("FAIL"));
     }
 }

@@ -20,6 +20,11 @@ pub struct TestSpec {
     pub requirement_uid: String,
     /// Workload type the job runs (SRS-FUNC-019).
     pub workload_type: WorkloadType,
+    /// `true` when the specification file declared no workload type and the
+    /// loader expanded it into one specification per workload type of the ML
+    /// Space Profile (SRS-FUNC-019). Every expanded specification keeps the
+    /// requirement UID of the file.
+    pub fan_out: bool,
     /// Input and timeout of the job.
     pub target: Target,
     /// Constraints, with thresholds in the metric's unit.
