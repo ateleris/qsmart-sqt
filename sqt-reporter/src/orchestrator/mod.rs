@@ -14,9 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use sqt_types::{
-    Instrumentation, JobRequest, JobStatus, MeasurementMode, VersionResponse, WorkloadType,
-};
+use sqt_types::{Instrumentation, JobRequest, JobStatus, VersionResponse, WorkloadType};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -28,36 +26,41 @@ use crate::{
     constraint::{ConstraintOutcome, evaluator::evaluate},
     evidence::{EvidenceMeta, EvidenceStore},
     report::{ConfigSummary, RunProvenance},
-    specs::{RunResult, SpecResult, TestSpec},
+    specs::{Measurement, RunResult, SpecResult, TestSpec},
 };
 
 /// The API major version the Reporter was compiled against.
 const SUPPORTED_API_MAJOR: &str = "1";
 
-type GroupKey = (WorkloadType, Option<String>);
+type GroupKey = (WorkloadType, Option<String>, Measurement);
 
-/// Build the grouping key for a spec: (`workload_type`, `input_path`).
+/// Build the grouping key for a spec: (`workload_type`, `input_path`,
+/// measurement settings). Specs share a job only when all three match.
 fn group_key(spec: &TestSpec) -> GroupKey {
     (
         spec.workload_type.clone(),
         spec.target.input.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        spec.measurement.clone(),
     )
 }
 
-/// Build a `JobRequest` for a group of specs that share the same (`workload_type`, `input`).
+/// Build a `JobRequest` for a group of specs that share the same
+/// (`workload_type`, `input`, measurement). It carries every parameter the
+/// contract defines for running the job (SRS-IF-002).
 fn build_job_request(
     workload_type: &WorkloadType,
     input: Option<&String>,
+    measurement: &Measurement,
     specs: &[&TestSpec],
 ) -> JobRequest {
     let max_timeout = specs.iter().map(|s| s.target.timeout.as_secs()).max().unwrap_or(30);
     JobRequest {
         use_case: workload_type.clone(),
         input: input.map(|s| serde_json::Value::String(s.clone())),
-        repetitions: 1,
+        repetitions: measurement.repetitions,
         instrumentation: Instrumentation::default(),
-        mode: MeasurementMode::default(),
-        warmup_repetitions: None,
+        mode: measurement.mode.clone(),
+        warmup_repetitions: Some(measurement.warmup_repetitions),
         timeout_secs: Some(max_timeout),
         tags: None,
     }
@@ -383,10 +386,11 @@ pub async fn run(
 
     let group_items: Vec<(GroupKey, JobRequest, u64)> = groups
         .iter()
-        .map(|((workload_type, input), group)| {
-            let request = build_job_request(workload_type, input.as_ref(), group);
+        .map(|(key, group)| {
+            let (workload_type, input, measurement) = key;
+            let request = build_job_request(workload_type, input.as_ref(), measurement, group);
             let timeout_secs = request.timeout_secs.unwrap_or(30);
-            ((workload_type.clone(), input.clone()), request, timeout_secs)
+            (key.clone(), request, timeout_secs)
         })
         .collect();
 
@@ -610,13 +614,13 @@ mod tests {
     use sqt_types::{JobMetrics, WorkloadType};
 
     use super::{
-        build_job_request, client_side_metric_unavailable_reason, failing_outcome, group_key,
-        submit_and_poll_all,
+        GroupKey, build_job_request, client_side_metric_unavailable_reason, failing_outcome,
+        group_key, submit_and_poll_all,
     };
     use crate::{
         constraint::{Constraint, Op, evaluator::evaluate},
         metrics::{Platform, Target},
-        specs::{OutcomeKind, SpecResult, TestSpec},
+        specs::{Measurement, OutcomeKind, SpecResult, TestSpec},
     };
 
     fn make_target(input: Option<&str>, timeout_secs: u64) -> Target {
@@ -670,6 +674,43 @@ mod tests {
         assert_eq!(group_key(&t).1, None);
     }
 
+    /// Verifies: SRS-IF-002
+    #[test]
+    fn job_request_carries_the_measurement_settings() {
+        let spec = make_spec(WorkloadType::Regression, None, 30);
+        let measurement = Measurement {
+            repetitions: 10,
+            warmup_repetitions: 3,
+            mode: sqt_types::MeasurementMode::Throughput,
+        };
+        let req = build_job_request(&WorkloadType::Regression, None, &measurement, &[&spec]);
+        assert_eq!(req.repetitions, 10);
+        assert_eq!(req.warmup_repetitions, Some(3));
+        assert_eq!(req.mode, sqt_types::MeasurementMode::Throughput);
+
+        // On the wire, as the contract names the fields.
+        let body = serde_json::to_value(&req).unwrap();
+        assert_eq!(body["repetitions"], 10);
+        assert_eq!(body["warmup_repetitions"], 3);
+        assert_eq!(body["mode"], "throughput");
+    }
+
+    /// Verifies: SRS-IF-002, SRS-FUNC-007
+    #[test]
+    fn specs_with_different_measurement_settings_run_as_separate_jobs() {
+        let one = make_spec(WorkloadType::Regression, Some("in.bin"), 30);
+        let mut ten = make_spec(WorkloadType::Regression, Some("in.bin"), 30);
+        ten.measurement.repetitions = 10;
+        let mut throughput = make_spec(WorkloadType::Regression, Some("in.bin"), 30);
+        throughput.measurement.mode = sqt_types::MeasurementMode::Throughput;
+        assert_ne!(group_key(&one), group_key(&ten));
+        assert_ne!(group_key(&one), group_key(&throughput));
+        assert_eq!(
+            group_key(&one),
+            group_key(&make_spec(WorkloadType::Regression, Some("in.bin"), 60))
+        );
+    }
+
     /// Verifies: SRS-FUNC-007, SRS-PERF-004
     #[test]
     fn grouping_takes_max_timeout() {
@@ -677,7 +718,12 @@ mod tests {
         let spec60 = make_spec(WorkloadType::ImageClassification, None, 60);
         let spec45 = make_spec(WorkloadType::ImageClassification, None, 45);
         let refs: Vec<&TestSpec> = vec![&spec30, &spec60, &spec45];
-        let request = build_job_request(&WorkloadType::ImageClassification, None, &refs);
+        let request = build_job_request(
+            &WorkloadType::ImageClassification,
+            None,
+            &Measurement::default(),
+            &refs,
+        );
         assert_eq!(request.timeout_secs, Some(60));
     }
 
@@ -734,7 +780,8 @@ mod tests {
         // The workload type from the group key must appear in the request body.
         let spec = make_spec(WorkloadType::ObjectDetection, None, 30);
         let refs = vec![&spec];
-        let req = build_job_request(&WorkloadType::ObjectDetection, None, &refs);
+        let req =
+            build_job_request(&WorkloadType::ObjectDetection, None, &Measurement::default(), &refs);
         assert_eq!(req.use_case, WorkloadType::ObjectDetection);
     }
 
@@ -745,7 +792,12 @@ mod tests {
         let spec = make_spec(WorkloadType::Regression, Some("data.csv"), 30);
         let refs = vec![&spec];
         let input = Some("data.csv".to_string());
-        let req = build_job_request(&WorkloadType::Regression, input.as_ref(), &refs);
+        let req = build_job_request(
+            &WorkloadType::Regression,
+            input.as_ref(),
+            &Measurement::default(),
+            &refs,
+        );
         assert_eq!(
             req.input,
             Some(serde_json::Value::String("data.csv".into())),
@@ -889,7 +941,7 @@ mod tests {
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
         let shutdown = tokio_util::sync::CancellationToken::new();
 
-        let items: Vec<((WorkloadType, Option<String>), sqt_types::JobRequest, u64)> = (0..njobs)
+        let items: Vec<(GroupKey, sqt_types::JobRequest, u64)> = (0..njobs)
             .map(|i| {
                 let input = Some(format!("in-{i}"));
                 let request = sqt_types::JobRequest {
@@ -902,7 +954,7 @@ mod tests {
                     timeout_secs: Some(30),
                     tags: None,
                 };
-                ((WorkloadType::Regression, input), request, 30)
+                ((WorkloadType::Regression, input, Measurement::default()), request, 30)
             })
             .collect();
 

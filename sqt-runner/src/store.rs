@@ -12,7 +12,7 @@ use std::{
     },
 };
 
-use sqt_types::{JobMetrics, JobOutput, JobRequest, JobStatus, WorkloadType};
+use sqt_types::{JobMetrics, JobOutput, JobRequest, JobStatus, MeasurementMode, WorkloadType};
 use tokio::sync::RwLock;
 
 /// Gives every accepted job its place in the order of submission.
@@ -28,6 +28,8 @@ pub struct JobState {
     pub workload_type: WorkloadType,
     /// Repetitions from the request.
     pub repetitions: u32,
+    /// Measurement mode from the request, echoed in the status.
+    pub mode: MeasurementMode,
     /// Tags from the request, echoed in the status.
     pub tags: Option<HashMap<String, String>>,
     /// Current state.
@@ -54,6 +56,7 @@ impl JobState {
             seq: NEXT_SEQ.fetch_add(1, Ordering::Relaxed),
             workload_type: request.use_case.clone(),
             repetitions: request.repetitions,
+            mode: request.mode.clone(),
             tags: request.tags.clone(),
             status: JobStatus::Accepted,
             created_at: crate::now_iso(),

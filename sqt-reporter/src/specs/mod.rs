@@ -27,6 +27,8 @@ pub struct TestSpec {
     pub fan_out: bool,
     /// Input and timeout of the job.
     pub target: Target,
+    /// How often and how the Runner runs the binary (SRS-IF-002).
+    pub measurement: Measurement,
     /// Constraints, with thresholds in the metric's unit.
     pub constraints: Vec<Constraint>,
     /// Constraints whose value unit does not reduce to the metric's unit. Each
@@ -38,6 +40,26 @@ pub struct TestSpec {
     pub precision_reference: Option<Vec<serde_json::Value>>,
     /// Absolute tolerance for `ml.output_within_tolerance` (SRS-FUNC-016).
     pub precision_tolerance: Option<f64>,
+}
+
+/// How the Runner is asked to run the binary for a specification: the
+/// `repetitions`, `warmup_repetitions` and `mode` of the job request
+/// (SRS-IF-002). Specifications that differ here run as separate jobs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Measurement {
+    /// Measured runs, at least 1. The Runner reports metrics across all of them.
+    pub repetitions: u32,
+    /// Runs before measurement starts, whose results the Runner discards.
+    pub warmup_repetitions: u32,
+    /// Latency or throughput measurement.
+    pub mode: sqt_types::MeasurementMode,
+}
+
+impl Default for Measurement {
+    /// One measured run, no warm-up, latency mode: the contract defaults.
+    fn default() -> Self {
+        Self { repetitions: 1, warmup_repetitions: 0, mode: sqt_types::MeasurementMode::Latency }
+    }
 }
 
 /// A constraint that was declared but cannot be evaluated because its value's

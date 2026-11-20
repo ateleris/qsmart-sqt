@@ -15,7 +15,7 @@ use axum::{
 use sqt_types::{
     ApiError as ApiErrorBody, Attachment, DocsResponse, ErrorResponse, HealthCheckValue,
     HealthChecks, HealthResponse, HealthStatus, JobAccepted, JobRequest, JobStatus,
-    JobStatusResponse, MeasurementMode, StrictdocDocument, VersionResponse,
+    JobStatusResponse, StrictdocDocument, VersionResponse,
 };
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -193,6 +193,7 @@ pub async fn get_job(
                 job.id.clone(),
                 job.workload_type.clone(),
                 job.repetitions,
+                job.mode.clone(),
                 job.tags.clone(),
                 job.status.clone(),
                 job.created_at.clone(),
@@ -210,6 +211,7 @@ pub async fn get_job(
         id,
         workload_type,
         repetitions,
+        mode,
         tags,
         status,
         created_at,
@@ -246,7 +248,7 @@ pub async fn get_job(
     Ok(Json(JobStatusResponse {
         job_id: id,
         use_case: workload_type,
-        mode: MeasurementMode::default(),
+        mode,
         repetitions,
         status,
         queue_position,
@@ -476,7 +478,7 @@ mod tests {
     };
     use base64::Engine as _;
     use http_body_util::BodyExt as _;
-    use sqt_types::{HardwareInfo, JobMetrics};
+    use sqt_types::{HardwareInfo, JobMetrics, MeasurementMode};
     use tokio::sync::Semaphore;
     use tower::ServiceExt as _;
 
@@ -697,7 +699,7 @@ mod tests {
         assert_eq!(json["use_case"], "regression");
     }
 
-    /// Verifies: SRS-INST-001
+    /// Verifies: SRS-INST-001, SRS-IF-002
     #[tokio::test]
     async fn get_job_surfaces_captured_output() {
         // F-H1: a completed job's captured output must reach the response
@@ -721,9 +723,9 @@ mod tests {
             let req = JobRequest {
                 use_case: sqt_types::WorkloadType::Regression,
                 input: None,
-                repetitions: 1,
+                repetitions: 5,
                 instrumentation: sqt_types::Instrumentation::default(),
-                mode: MeasurementMode::default(),
+                mode: MeasurementMode::Throughput,
                 warmup_repetitions: None,
                 timeout_secs: None,
                 tags: None,
@@ -750,6 +752,10 @@ mod tests {
         assert_eq!(json["output"]["result_consistent"], true);
         assert_eq!(json["output"]["outputs_checksum"], "deadbeef");
         assert_eq!(json["output"]["outputs"][0]["prediction"], 0.5);
+        // The status echoes the request's measurement settings (it always
+        // said "latency" before).
+        assert_eq!(json["mode"], "throughput");
+        assert_eq!(json["repetitions"], 5);
     }
 
     /// Verifies: SRS-INST-001
