@@ -341,13 +341,12 @@ metric collectors, traceability matrix, verification-activity triggering,
 operator guidance, performance and reliability; the fulfilment matrix becomes
 authoritative.
 
-State on `dev` at `88db294`, from the test metadata against SRS I1R2 (a
-requirement "has tests" when a test names it):
+State on `dev` at `f9c5639` (2026-11-20, after #38 to #47), from the test
+metadata against SRS I1R2 (a requirement "has tests" when a test names it):
 
 | State | Requirements |
 |---|---|
-| Has tests (20) | FUNC-005, 010; PERF-001..004; REL-001..004; OPS-001, 005, 006, 008; DATA-001..003; RES-001 |
-| Implemented, no test names it | OPS-002 (verbosity), OPS-003 (end-of-run summary), OPS-007 (pre-flight), RES-002 (no implicit network access), HF-001 (self-discoverable interface). **Done** in #38 (P-1). |
+| Has tests (23 of the 32 Test requirements) | FUNC-005, 010; PERF-001..004; REL-001..004; OPS-001, 002, 003, 005, 006, 007, 008; DATA-001..003; RES-001, 002; HF-001 |
 | Feature work | FUNC-006 (Runner-declared metrics, issue #17, D-1); FUNC-011, 012, 013 (configuration-driven run, operator guidance, no manual steps); FUNC-014, 015 (verification activities through the Runner API, needs a contract change); FUNC-021..023 (API profile, representative workloads, profile coverage); RES-003 (bounded memory); HF-002 (end-user operability) |
 | Verified by a note | Analysis: FUNC-006, MAINT-001, MAINT-002. Inspection: FUNC-015, OPS-004 |
 
@@ -374,11 +373,66 @@ Steps, in this order:
 - **P-3** Carry-overs and robustness: IF-002 `repetitions` together with the
   Runner repetition loop (F-M6); FUNC-019 fan-out (F-M7); F-M1, F-M5, F-M10;
   SIGTERM cancelling in-flight jobs (OPS-008); `queue_position`; R-7.
+  **Done** except R-7: #43 (fan-out), #44 (F-M1, F-M5, F-M10, `queue_position`),
+  #45 (repetitions), with the review fixes #46 and #47. The SIGTERM item is
+  replaced by C-3 below: SRS-OPS-008 does not require cancellation, so no
+  contract change is needed. Still open from the reviews: the findings of #44
+  (C-5).
 - **P-4** Features, after the PDR outcome and the release planning: FUNC-006
   (#17); FUNC-014/015 with the contract change; FUNC-021..023; FUNC-011, 013;
   RES-003; HF-002.
 - **P-5** Notes for the analysis and inspection requirements above, signed off
   by a non-author.
+
+### Conformance check against the SRS and the ADD (2026-11-20)
+
+The changes of #38 to #47 were checked against SRS I1R2 and the ADD (SQT-ADD,
+docs tag `pdr`), which are authoritative. They conform: OPS-002, OPS-003 (the
+part covering completed runs), OPS-007 (the part covering requirements,
+reachability and authentication), RES-002, HF-001, IF-002, IF-010 (the
+Orchestrator side), FUNC-019, REL-002, REL-004, PERF-004 and DATA-001, and the
+ADD components C-ORC-03 and C-ORC-04 that carry them. REL-004 holds as the ADD
+designs it: the Runner compares the runs' outputs, the Orchestrator only
+records the Runner's `result_consistent`. The check found these deviations,
+none caused by the recent changes:
+
+- **C-1, pre-flight does not negotiate the contract version.** ADD LLR-017:
+  pre-flight "validates the configuration, negotiates the contract version,
+  fetches the Runner-declared requirements and confirms endpoint reachability
+  and authentication". `preflight::preflight` fetches `/version` but does not
+  apply the major-version check (SRS-IF-008) that a full run applies. Fix: run
+  the same check in pre-flight.
+- **C-2, no summary after an aborted run.** SRS-OPS-003 and ADD LLR-031: a
+  summary of each specification's pass, fail or blocked state, the counts and
+  the evidence location "at the conclusion of every run regardless of
+  outcome". A run that stops before evaluation (contract version mismatch,
+  failed requirement discovery) prints only "Run failed; evidence in …". Fix:
+  print the summary with every specification as blocked.
+- **C-3, a termination signal abandons the running jobs.** SRS-OPS-008 and the
+  ADD (C-ORC-04): stop submitting, then "await completion or acknowledged
+  cancellation of in-flight jobs". On a signal the Orchestrator stops polling
+  and records the in-flight jobs as interrupted while the Runner keeps
+  running them, which is neither. Fix: on the first signal stop submitting
+  and keep polling the in-flight jobs to completion (each bounded by its job
+  timeout, SRS-PERF-004); a second signal stops at once. This needs no contract
+  change; a cancel operation stays optional.
+- **C-4, the reference Runner serves plain HTTP.** SRS-IF-010 (allocation
+  Generic) and the ADD: the Runner API contract "shall be carried over TLS".
+  The Orchestrator verifies certificates and keeps the token to HTTPS or the
+  local host (#42, #46), but `sqt-runner` has no TLS listener, so a remote
+  reference Runner can only be reached securely through a TLS-terminating
+  proxy. Fix: a TLS listener in `sqt-runner` (certificate and key from its
+  configuration), or document the proxy as the supported deployment. Goes
+  with assigning IF-010 to a release (R-10).
+- **C-5, open review findings of #44** (reference Runner): job workspaces
+  written by root-owned tool containers cannot be removed by the Runner, so
+  F-M5's cleanup fails in a real Docker set-up (important); CPU normalisation
+  divides by the configured target `hardware.cores` instead of the CPUs of the
+  host that measured; `max_finished_jobs: 0` makes every job vanish on
+  completion; the valgrind collector drops the leak figure when the binary
+  under test itself exits with 125 to 127; the cppcheck "nothing checked"
+  test depends on English message text; the workspace is removed on an async
+  worker thread; `queue_position` can be off under simultaneous submissions.
 
 Process for SQT-SW-1, not code:
 

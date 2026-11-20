@@ -3,8 +3,9 @@
 **Status**: Working end-to-end (reporter + reference runner). First release
 `v0.1.0` (SQT-SW-0) tagged and published on 2026-11-19; SQT-SW-1 (`v0.2.0`) in
 progress on `dev`.
-**Date**: 2026-11-19 (`dev` after #38 and #39)
-**Tests**: 312 tests, every one naming the SRS requirement it verifies; all CI
+**Date**: 2026-11-20 (`dev` at `f9c5639`, after #47), checked against SRS I1R2
+and the ADD
+**Tests**: 363 tests, every one naming the SRS requirement it verifies; all CI
 gates green (rustfmt, clippy, supply-chain, test, e2e)
 
 ---
@@ -46,7 +47,8 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
 - **Config** (`config/`): `SqtConfig` (`project`, `test_specs.files`, `runner`,
   `report`); validates before any network call; resolves relative paths; rejects
   empty required fields, bad URL scheme, empty spec list, and a set-but-empty
-  `token_env` (SRS-FUNC-002, SRS-IF-006). Unknown keys ignored.
+  `token_env` (SRS-FUNC-002, SRS-IF-006), and a token with a plain `http://`
+  Runner URL to any host but the local one (SRS-IF-010). Unknown keys ignored.
 - **Spec loading** (`specs/loader.rs`): refuses unknown keys, so a misspelt
   `use_case` is an error rather than a fan-out; reads only the files in
   `test_specs.files` — no directory scan (SRS-MAINT-002). Parses `use_case`,
@@ -75,11 +77,13 @@ test, branch, tag tests and release is in `CONTRIBUTING.md`.
   (SRS-OPS-002). Every Runner response is recorded as raw bytes for the
   evidence store.
 - **Orchestrator** (`orchestrator/mod.rs`): version-compatibility gate at session
-  start (SRS-IF-008); groups specs by `(use_case, input)`; submits and polls the
+  start (SRS-IF-008); groups specs by (workload type, input, measurement
+  settings) into jobs; submits and polls the
   jobs concurrently, holding a `max_concurrent_jobs` permit from submit to
   completion (SRS-PERF-001/002), then evaluates; INFRA_ERROR outcome category,
-  including a failed submit, that does not abort the run (SRS-OPS-006); SIGTERM/Ctrl-C handler that drains, persists a partial run, and
-  exits 2 (SRS-OPS-008); per-step progress logging (a start on SRS-FUNC-012, operator guidance).
+  including a failed submit, that does not abort the run (SRS-OPS-006); a SIGTERM/Ctrl-C handler that stops
+  submitting, stops polling (the in-flight jobs are recorded as interrupted, see
+  C-3), persists the partial run and exits 2 (SRS-OPS-008); per-step progress logging (a start on SRS-FUNC-012, operator guidance).
 - **Accuracy/precision** (`accuracy/`): client-side accuracy metrics and
   element-wise precision comparison against spec-declared references (SRS-FUNC-016,
   SRS-FUNC-017), fed by the output the runner now returns.
@@ -150,8 +154,21 @@ and the DTOs disagree on field names.
 ## Known Gaps & Deviations
 
 Full detail, severity and evidence live in **`REVIEW_FINDINGS.md`**, including
-the SQT-SW-1 plan (steps P-1 to P-5) and the release follow-ups R-1 to R-10.
-Summary of what is *not* yet aligned with the architecture or the SRS:
+the SQT-SW-1 plan (steps P-1 to P-5), the release follow-ups R-1 to R-10 and the
+conformance check against the SRS and the ADD (C-1 to C-5, 2026-11-20). The SRS
+and the ADD in the documentation repository are authoritative. Summary of what
+is *not* yet aligned with them:
+
+**Deviations from the SRS and the ADD:**
+- Pre-flight does not apply the contract major-version check (C-1, ADD LLR-017).
+- A run that stops before evaluation prints no end-of-run summary (C-2,
+  SRS-OPS-003, ADD LLR-031).
+- A termination signal stops polling the in-flight jobs instead of awaiting
+  them; the Runner keeps running them (C-3, SRS-OPS-008).
+- The reference Runner serves plain HTTP; SRS-IF-010 wants the contract over
+  TLS (C-4).
+- Open review findings of the reference Runner's clean-up, CPU normalisation
+  and tool checks (C-5).
 
 **SQT-SW-1 requirements without a test yet** (the fulfilment matrix lists them on
 every push): FUNC-011, FUNC-012, FUNC-013, FUNC-014, FUNC-021, FUNC-022,
@@ -170,10 +187,10 @@ FUNC-023, RES-003, HF-002. Among them:
 **Contract / behaviour:**
 - `input`: the OpenAPI `JobInput` union versus the free-form value the code
   accepts is still a pending contract decision (rest of F-H2).
-- SRS-IF-010 is implemented (a bearer token travels only over `https://` or to
-  localhost) but is in no release of the SQT-TN-AP plan yet (R-10).
-- Robustness item F-M8 (traceability provenance); SIGTERM does not cancel
-  in-flight jobs on the Runner.
+- SRS-IF-010 is implemented on the Orchestrator side (a bearer token travels
+  only over `https://`, or over plain `http://` to the local host and never
+  through a proxy) but is in no release of the SQT-TN-AP plan yet (R-10).
+- Robustness item F-M8 (traceability provenance).
 
 **Dependencies:** cargo-audit warns that `chrono` and `unsafe-libyaml` are
 unmaintained and `rustix` (test-only) is unsound; allowed by policy (R-7).
