@@ -23,8 +23,8 @@ pub struct RunBinaryOutput {
     /// Average resident set size in kilobytes, from GNU time.
     pub memory_avg_rss_kb: Option<f64>,
     /// CPU use as GNU time reports it ("Percent of CPU"); can exceed 100 % on
-    /// several cores. Reported as `cpu.avg_normalized_pct` without
-    /// normalisation (backlog F-M10).
+    /// several cores. The executor divides it by the core count before
+    /// reporting it as `cpu.avg_normalized_pct`.
     pub cpu_pct: Option<f64>,
     /// Harness/Docker overhead = outer `docker run` wall clock − inner elapsed
     /// time. `None` when GNU time was unavailable (no inner measurement to

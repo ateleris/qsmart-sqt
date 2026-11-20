@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::config::BinaryConfig;
 use crate::docker::{self, DockerRun};
@@ -16,6 +16,12 @@ use crate::docker::{self, DockerRun};
 ///
 /// Respects `BinaryConfig.args` so the binary is invoked the same way as
 /// in a normal run.
+///
+/// # Errors
+///
+/// Returns an error, so the metric is reported as `null` instead of `0`
+/// (backlog F-M1, SRS-REL-002), when the container cannot run valgrind or when
+/// its XML report is missing or does not show a finished run.
 pub fn collect(
     image: &str,
     binary_config: &BinaryConfig,
@@ -31,6 +37,8 @@ pub fn collect(
     let mut command = vec![
         "valgrind".to_string(),
         "--tool=memcheck".to_string(),
+        // Leak records appear in the XML report only with a full leak check.
+        "--leak-check=full".to_string(),
         "--xml=yes".to_string(),
         format!("--xml-file={}", xml_path.display()),
         binary.clone(),
@@ -51,19 +59,32 @@ pub fn collect(
         env,
     };
 
-    let _output = docker::run_container(&spec).context("valgrind: docker execution failed")?;
+    let output = docker::run_container(&spec).context("valgrind: docker execution failed")?;
+    // Valgrind passes on the exit code of the binary, which may be anything.
+    // 125 to 127 come from Docker or the shell: valgrind itself did not start.
+    if (125..=127).contains(&output.exit_code) {
+        bail!("valgrind: the container could not run valgrind (exit code {})", output.exit_code);
+    }
 
-    // Parse XML output for leaked bytes
     let xml = std::fs::read_to_string(&xml_path).context("valgrind: failed to read XML output")?;
-
-    let leaks = parse_leaked_bytes(&xml);
-    Ok(leaks)
+    leaked_bytes_of_finished_run(&xml)
 }
 
-/// Parse total leaked bytes from valgrind XML output.
-///
-/// Looks for `<leakedbytes>N</leakedbytes>` or sums `<loss_record>` entries.
-/// Falls back to 0 if no leaks section found (meaning no leaks).
+/// Total leaked bytes of a valgrind XML report, if the report shows a run
+/// that finished. A report without a finished run says nothing about leaks,
+/// so it is an error rather than zero (backlog F-M1).
+fn leaked_bytes_of_finished_run(xml: &str) -> Result<f64> {
+    if !xml.contains("<valgrindoutput") {
+        bail!("valgrind: the XML output is not a valgrind report");
+    }
+    if !xml.contains("<state>FINISHED</state>") {
+        bail!("valgrind: the report shows no finished run of the binary");
+    }
+    Ok(parse_leaked_bytes(xml))
+}
+
+/// Sum of all `<leakedbytes>N</leakedbytes>` values in a valgrind XML report;
+/// zero when it lists no leak.
 fn parse_leaked_bytes(xml: &str) -> f64 {
     // Simple approach: sum all <leakedbytes>N</leakedbytes> values
     let mut total: f64 = 0.0;
@@ -122,5 +143,33 @@ mod tests {
     #[test]
     fn parse_leaked_bytes_empty_string() {
         assert_eq!(parse_leaked_bytes(""), 0.0);
+    }
+
+    /// Verifies: SRS-REL-002, SRS-INST-001
+    #[test]
+    fn finished_run_without_leaks_is_zero() {
+        let xml = "<valgrindoutput><status><state>RUNNING</state></status>\
+                   <status><state>FINISHED</state></status></valgrindoutput>";
+        assert_eq!(leaked_bytes_of_finished_run(xml).unwrap(), 0.0);
+    }
+
+    /// Verifies: SRS-REL-002, SRS-INST-001
+    #[test]
+    fn finished_run_sums_its_leaks() {
+        let xml = "<valgrindoutput><status><state>FINISHED</state></status>\
+                   <error><kind>Leak_DefinitelyLost</kind><xwhat><leakedbytes>64</leakedbytes></xwhat></error>\
+                   </valgrindoutput>";
+        assert_eq!(leaked_bytes_of_finished_run(xml).unwrap(), 64.0);
+    }
+
+    /// Verifies: SRS-REL-002
+    #[test]
+    fn report_without_a_finished_run_is_an_error_not_zero() {
+        // Valgrind started but the binary never ran to the end.
+        let unfinished = "<valgrindoutput><status><state>RUNNING</state></status></valgrindoutput>";
+        assert!(leaked_bytes_of_finished_run(unfinished).is_err());
+        // Not a valgrind report at all.
+        assert!(leaked_bytes_of_finished_run("").is_err());
+        assert!(leaked_bytes_of_finished_run("valgrind: failed to start tool").is_err());
     }
 }

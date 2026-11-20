@@ -381,7 +381,10 @@ impl LifecycleBackend for DockerExecutor {
             time_avg_ms: raw.primary.time_execution_ms,
             memory_peak_rss_kb: raw.primary.memory_peak_rss_kb,
             memory_avg_rss_kb: raw.primary.memory_avg_rss_kb,
-            cpu_avg_normalized_pct: raw.primary.cpu_pct,
+            cpu_avg_normalized_pct: normalize_cpu_pct(
+                raw.primary.cpu_pct,
+                core_count(self.hardware.cores),
+            ),
             memory_leaks_bytes: raw.leaks_bytes,
             coverage_line_pct: raw.coverage_line_pct,
             binary_size_kb: raw.binary_size_kb,
@@ -400,6 +403,24 @@ impl LifecycleBackend for DockerExecutor {
     // override it to release boards, power, etc.
 }
 
+/// The number of cores `cpu.avg_normalized_pct` is normalised by: the
+/// configured `hardware.cores`, which the Runner also reports to the client,
+/// or else the CPUs available to this process. Tool containers run on the same
+/// Docker host without a CPU limit, so they see the same CPUs.
+fn core_count(configured: Option<u32>) -> u32 {
+    configured.filter(|&c| c > 0).unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+    })
+}
+
+/// GNU time's "Percent of CPU" divided by the core count, so that 100 means
+/// every core was busy for the whole run, as the contract defines
+/// `cpu.avg_normalized_pct` (backlog F-M10). Clamped to 0..=100.
+fn normalize_cpu_pct(raw_pct: Option<f64>, cores: u32) -> Option<f64> {
+    raw_pct.map(|pct| (pct / f64::from(cores.max(1))).clamp(0.0, 100.0))
+}
+
 /// Return compiler flags for the requested instrumentation mode.
 fn instrumentation_flags(instrumentation: &Instrumentation) -> &'static [&'static str] {
     match instrumentation {
@@ -414,4 +435,34 @@ fn instrumentation_flags(instrumentation: &Instrumentation) -> &'static [&'stati
 fn dedup_volumes(volumes: &mut Vec<(PathBuf, String)>) {
     let mut seen = std::collections::HashSet::new();
     volumes.retain(|(host, _)| seen.insert(host.clone()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies: SRS-FUNC-005, SRS-INST-001
+    #[test]
+    fn cpu_percentage_is_divided_by_the_core_count() {
+        // GNU time reports 350 % for a run that kept 3.5 of 4 cores busy.
+        assert_eq!(normalize_cpu_pct(Some(350.0), 4), Some(87.5));
+        assert_eq!(normalize_cpu_pct(Some(50.0), 1), Some(50.0));
+        assert_eq!(normalize_cpu_pct(None, 4), None);
+    }
+
+    /// Verifies: SRS-FUNC-005
+    #[test]
+    fn cpu_percentage_stays_within_0_and_100() {
+        assert_eq!(normalize_cpu_pct(Some(900.0), 4), Some(100.0));
+        assert_eq!(normalize_cpu_pct(Some(-1.0), 4), Some(0.0));
+        assert_eq!(normalize_cpu_pct(Some(80.0), 0), Some(80.0));
+    }
+
+    /// Verifies: SRS-FUNC-005
+    #[test]
+    fn configured_core_count_wins_over_the_host() {
+        assert_eq!(core_count(Some(4)), 4);
+        assert!(core_count(None) >= 1);
+        assert!(core_count(Some(0)) >= 1);
+    }
 }

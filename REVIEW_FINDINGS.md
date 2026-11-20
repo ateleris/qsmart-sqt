@@ -137,7 +137,13 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   leak records → `memory.leaks_bytes = 0` (`tools/valgrind.rs:49-73`); cppcheck on a
   binary dir with no source → `static.warnings = 0` (`tools/static_analysis.rs`).
   Both read as passing when nothing was measured. Fix: check tool exit codes;
-  distinguish "clean" from "did not run".
+  distinguish "clean" from "did not run". **Fixed** in the runner-robustness
+  PR: valgrind runs with `--leak-check=full` (without it the XML had no leak
+  records at all) and its report must show a finished run; cppcheck must exit 0
+  and find source files; lcov must exit 0. Otherwise the tool's metric is
+  `null`, which fails a constraint on it (SRS-REL-002), and the Runner log
+  says why. The contract has no per-metric diagnostics field to carry the
+  reason to the client.
 - **F-M2** Submit-path failure aborts the whole session (`orchestrator/mod.rs:214`
   `?`), and a non-conformant submit response does the same — should be per-job
   INFRA_ERROR (SRS-IF-007/FUNC-020). **Fixed** in `fa71128` (#15): a submit
@@ -155,7 +161,11 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   evidence manifest.
 - **F-M5** Runner resource leaks: per-job workspace dirs never cleaned up; job
   store grows unbounded with no eviction / queue-depth cap (`handlers.rs`,
-  `store.rs`).
+  `store.rs`). **Fixed** in the runner-robustness PR: a job's working
+  directory is removed when it finishes (`keep_job_workspaces: true` keeps
+  it), and only the newest `max_finished_jobs` finished jobs (default 1000)
+  stay in the store; an evicted job answers 404 `JOB_NOT_FOUND`. Waiting jobs
+  are not capped.
 - **F-M6** Runner ignores `repetitions` / `warmup_repetitions` / `mode` — binary
   runs once, `mode` always echoed `latency` (`handlers.rs:221`). `time.avg_ms` is a
   single sample despite the name.
@@ -171,7 +181,10 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   only.
 - **F-M10** `cpu.avg_normalized_pct` is raw GNU-time "Percent of CPU" (can exceed
   100%), not normalised as the field name and AD-015 promise
-  (`run_binary.rs:90` → `executor/docker.rs:358`).
+  (`run_binary.rs:90` → `executor/docker.rs:358`). **Fixed** in the
+  runner-robustness PR: divided by the core count (the configured
+  `hardware.cores`, else the CPUs available to the Runner) and clamped to
+  0..100, as the contract defines it.
 - **F-M11** `GET /api/v1/docs` drops `attachments` and raw `.sdoc` text after
   parsing — verbatim baseline evidence never reaches the report/QDP (SRS-FUNC-018);
   a docs-fetch failure silently degrades to "empty" rather than being distinguished.
@@ -199,7 +212,8 @@ workspace root. SOW requires ESA Software Community Licence Permissive v2.4.
   to keep the qualification surface honest (relevant to SRS-PORT-002). **Fixed**
   in #20 (landed via #28); only the target descriptor remains in `metrics/`.
 - `queue_position` hardcoded to 1 (`handlers.rs:148,215`) though jobs genuinely
-  queue behind the runner's `Semaphore(1)`.
+  queue behind the runner's `Semaphore(1)`. **Fixed** in the runner-robustness
+  PR: the place among the waiting jobs, in order of submission.
 
 ---
 
