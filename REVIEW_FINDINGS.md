@@ -317,7 +317,7 @@ Left open by the `v0.1.0` release. The documents named here are in
   widen the definition to "the Runner API contract, or the SQT and its delivery
   as a whole". This is an SRS change, so it goes to the ESA Technical Officer
   and the ML-L role at the SQT-SW-1 release planning (SQT-TN-AP, change
-  control).
+  control). Raise N-3 (SRS-PORT-002 to `Generic`) in the same change.
 - **R-9** Known limitations of `v0.1.0` carried into SQT-SW-1, as recorded in the
   SRelD: FUNC-019 fan-out (F-M7), `repetitions` not sent (IF-002, F-M6), OpenAPI
   range and pattern validation (IF-007), Runner-declared metrics (FUNC-006,
@@ -332,6 +332,42 @@ Left open by the `v0.1.0` release. The documents named here are in
   `http://` URL to any host other than localhost is refused, in the
   configuration check and in `ApiClient::new`. Still open: assigning IF-010 to
   a release in the SQT-TN-AP plan (then `ci/requirements.csv`).
+
+### Review of the SQT-SW-0 notes (docs PR #6, 2026-11-26)
+
+From gewlar's review of the inspection and analysis notes. N-1 and N-2 are
+code changes **required for SQT-SW-1 (`v0.2.0`)**; N-3 is an SRS change.
+
+- **N-1, the binaries do not name their commit** (SRS-CDR-001). `--version`
+  prints `sqt 0.1.0` / `sqt-runner 0.1.0`; the commit is found only through
+  the tag. CDR-001 is fulfilled indirectly, but the hash is the more robust
+  reference. Fix: embed the commit at build time and print it, e.g.
+  `sqt 0.2.0 (6c5b2bb)`, in both binaries and in `/version` of the Runner;
+  the build must still work from the source archive, which has no `.git`,
+  so take the hash from the release build environment and fall
+  back to `unknown` only outside a release build. Required for `v0.2.0`.
+  Follow-ups in the documents: the SUM installation check (it quotes the
+  `--version` output), the SRelD of `v0.2.0`, and the CDR-001 note of
+  SQT-SW-1, which can then say "directly".
+- **N-2, `hardware.type` is not checked against the contract** (SRS-IF-007).
+  The contract allows `cpu`, `gpu`, `fpga`, `npu`, `other`. In
+  `sqt-types`, `HardwareInfo::hw_type` is a `String` and
+  `HardwareInfo::default()` sets `"unknown"`; all three example Runner configs
+  set `type: x86_64`. The reference Runner therefore sends values the contract
+  does not allow, and the Orchestrator accepts them, so its schema validation
+  misses this field. Fix: make it an enum in `sqt-types`, so the Orchestrator
+  rejects other values (IF-007, job recorded as infrastructure-failed) and the
+  Runner rejects them when loading its configuration; set the examples to
+  `type: cpu`; decide the value when the configuration has no `hardware`
+  section (`other`, or make it required). Add a test that a response with an
+  undeclared value is rejected. Check the other contract enums for the same
+  gap. Required for `v0.2.0`. Follow-up: record it in the SRelD of `v0.2.0`
+  as an anomaly of `v0.1.0`, fixed.
+- **N-3, SRS-PORT-002 is allocated to the Runner** but constrains the whole
+  SQT distribution ("Target-hardware-specific behaviour shall not appear in
+  the SQT distribution"): Orchestrator, shared types and reference Runner.
+  Proposal: allocate it `Generic`, which fits once R-8 widens the definition.
+  SRS change, raised together with R-8.
 
 ---
 
@@ -384,7 +420,8 @@ Steps, in this order:
   #48. R-7 is done in #49.
 - **P-4** Features, after the PDR outcome and the release planning: FUNC-006
   (#17); FUNC-014/015 with the contract change; FUNC-021..023; FUNC-011, 013;
-  RES-003; HF-002.
+  RES-003; HF-002; N-1 and N-2 (review of the SQT-SW-0 notes), required for
+  `v0.2.0` and independent of the planning.
 - **P-5** Notes for the analysis and inspection requirements above, signed off
   by a non-author.
 
@@ -470,7 +507,8 @@ none caused by the recent changes:
 Process for SQT-SW-1, not code:
 
 - Release planning with ESA and the ML-L role (SQT-TN-AP rolling outlook).
-  SRS change requests to raise there: R-8 (`Generic` allocation). Also assign
+  SRS change requests to raise there: R-8 (`Generic` allocation) with N-3
+  (SRS-PORT-002 to `Generic`). Also assign
   SRS-IF-010 to a release (R-10).
 - TRR at the start and the end of the release; lightweight CDR.
 - ADD and SUM kept current with each feature (Definition of Done).
